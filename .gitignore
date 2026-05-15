@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+backend/target/
+
+# Build output
+frontend/dist/
+backend/target/
+
+# IDE / Editors
+.idea/
+.vscode/
+.obsidian/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Rust
+backend/**/*.rs.bk
+backend/**/target/
+
+# Test artifacts
+coverage/
+coverage-*.json
+*.lcov
+
+# Session / temp files
+.tmp/
+
+# Logs
+*.log
+
+# Thumbnail cache (generated at runtime)
+thumbnails/
+.cache/
+
+# ComfyUI test data (do not commit actual dataset)
+~/ComfyUI/
