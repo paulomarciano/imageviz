@@ -41,6 +41,10 @@ coverage-*.json
 # Thumbnail cache (generated at runtime)
 thumbnails/
 .cache/
+*.webp
+
+# Runtime data
+data/
 
 # ComfyUI test data (do not commit actual dataset)
 ~/ComfyUI/
