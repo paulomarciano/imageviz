@@ -86,6 +86,8 @@ Tests must pass before a ticket is marked done.
 - Commit often and early with helpful messages
 - All changes committed before marking work complete
 - Remote: `git@github.com:paulomarciano/imageviz.git`
+- **After every commit**, spawn a `CodeReviewer` subagent with a fresh context window to review the change.
+  The reviewer reports findings back to the main agent; address any issues before proceeding.
 
 ## Reference: Context System
 
