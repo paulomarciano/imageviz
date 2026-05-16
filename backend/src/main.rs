@@ -33,7 +33,10 @@ async fn main() {
 
     // Build shared config state and media state from the same DB handle
     let config_state = Arc::new(ConfigState { db: Arc::clone(&db) });
-    let media_state = Arc::new(MediaState { db: Arc::clone(&db) });
+    let media_state = Arc::new(MediaState {
+        db: Arc::clone(&db),
+        thumbnail_cache_dir: settings.thumbnail_cache_dir.clone(),
+    });
 
     // Build application router
     // Start with base router from app factory, then add stateful routes.
