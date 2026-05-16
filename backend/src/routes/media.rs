@@ -5,6 +5,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::ops::RangeInclusive;
@@ -23,8 +24,206 @@ pub struct MediaState {
 
 pub fn routes() -> Router<Arc<MediaState>> {
     Router::new()
+        .route("/media", get(list_media))
         .route("/media/{id}/file", get(serve_file))
         .route("/media/{id}/thumbnail", get(serve_thumbnail))
+}
+
+// ---------------------------------------------------------------------------
+// Media list (cursor-based pagination)
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct MediaListParams {
+    #[serde(default = "default_limit")]
+    limit: u32,
+    cursor: Option<String>,
+    cursor_id: Option<String>,
+    mime_type: Option<String>,
+}
+
+fn default_limit() -> u32 {
+    100
+}
+
+#[derive(Serialize)]
+struct MediaItemSummary {
+    id: String,
+    filename: String,
+    path: String,
+    mime_type: String,
+    thumbnail_url: String,
+    width: Option<i64>,
+    height: Option<i64>,
+    file_size: i64,
+    created_at: String,
+    modified_at: String,
+}
+
+/// GET /api/v1/media — list media items with cursor-based pagination.
+///
+/// Query parameters:
+/// - `limit` (default 100, max 500): number of items per page
+/// - `cursor` (ISO 8601 date): exclusive cursor from the last item's `created_at`
+/// - `cursor_id` (UUID): tiebreaker for items with the same `file_created_at`
+/// - `mime_type` (e.g. `image/%`): optional MIME type filter (SQL LIKE)
+///
+/// Returns a JSON object with `data` (array of `MediaItemSummary`) and `meta`
+/// (pagination metadata: `next_cursor`, `next_cursor_id`, `has_more`, `total`).
+async fn list_media(
+    State(state): State<Arc<MediaState>>,
+    Query(params): Query<MediaListParams>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if params.limit == 0 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "limit must be positive"})),
+        ));
+    }
+    if params.limit > 500 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": format!("limit must not exceed 500, got {}", params.limit)})),
+        ));
+    }
+
+    let limit = params.limit;
+    let fetch_limit = limit + 1;
+    let has_cursor = params.cursor.is_some() && params.cursor_id.is_some();
+    let has_mime = params.mime_type.is_some();
+
+    let db = state.db.lock().await;
+
+    // Compute total count (fast COUNT with or without mime_type filter)
+    let total: i64 = if let Some(ref mime_type) = params.mime_type {
+        db.query_row(
+            "SELECT COUNT(*) FROM media_items WHERE mime_type LIKE ?1",
+            rusqlite::params![mime_type],
+            |row| row.get(0),
+        )
+        .unwrap_or(0)
+    } else {
+        db.query_row("SELECT COUNT(*) FROM media_items", [], |row| row.get(0))
+            .unwrap_or(0)
+    };
+
+    // Build SQL dynamically for cursor-based pagination
+    let mut sql = String::from(
+        "SELECT id, filename, relative_path, mime_type, width, height, file_size, \
+         file_created_at, file_modified_at FROM media_items",
+    );
+
+    let mut where_parts: Vec<String> = Vec::new();
+    let mut next_param = 1;
+    if has_cursor {
+        where_parts.push(format!("(file_created_at, id) < (?{}, ?{})", next_param, next_param + 1));
+        next_param += 2;
+    }
+    if has_mime {
+        where_parts.push(format!("mime_type LIKE ?{}", next_param));
+        next_param += 1;
+    }
+
+    if !where_parts.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&where_parts.join(" AND "));
+    }
+
+    sql.push_str(" ORDER BY file_created_at DESC, id DESC LIMIT ?");
+    sql.push_str(&next_param.to_string());
+
+    // Collect parameter values in the same order as their placeholders
+    let mut values: Vec<rusqlite::types::Value> = Vec::new();
+    if let (Some(cursor), Some(cursor_id)) = (&params.cursor, &params.cursor_id) {
+        values.push(rusqlite::types::Value::Text(cursor.clone()));
+        values.push(rusqlite::types::Value::Text(cursor_id.clone()));
+    }
+    if let Some(ref mime_type) = params.mime_type {
+        values.push(rusqlite::types::Value::Text(mime_type.clone()));
+    }
+    values.push(rusqlite::types::Value::Integer(fetch_limit as i64));
+
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+        values.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
+
+    let mut items: Vec<MediaItemSummary> = {
+        let mut stmt = db.prepare(&sql).map_err(|e| {
+            tracing::error!(error = %e, "Failed to prepare media list query");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Internal server error"})),
+            )
+        })?;
+
+        let rows = stmt
+            .query_map(param_refs.as_slice(), |row| {
+                let id: String = row.get(0)?;
+                let filename: String = row.get(1)?;
+                let relative_path: String = row.get(2)?;
+                let mime_type: String = row.get(3)?;
+                let width: Option<i64> = row.get(4)?;
+                let height: Option<i64> = row.get(5)?;
+                let file_size: i64 = row.get(6)?;
+                let file_created_at: String = row.get(7)?;
+                let file_modified_at: String = row.get(8)?;
+                Ok(MediaItemSummary {
+                    thumbnail_url: format!("/api/v1/media/{}/thumbnail", id),
+                    id,
+                    filename,
+                    path: relative_path,
+                    mime_type,
+                    width,
+                    height,
+                    file_size,
+                    created_at: file_created_at,
+                    modified_at: file_modified_at,
+                })
+            })
+            .map_err(|e| {
+                tracing::error!(error = %e, "Failed to query media items");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": "Internal server error"})),
+                )
+            })?;
+
+        let mut items: Vec<MediaItemSummary> = Vec::new();
+        for row in rows {
+            match row {
+                Ok(item) => items.push(item),
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to read media row");
+                    return Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({"error": "Internal server error"})),
+                    ));
+                }
+            }
+        }
+        items
+    };
+
+    drop(db);
+
+    let has_more = items.len() > limit as usize;
+    items.truncate(limit as usize);
+
+    let (next_cursor, next_cursor_id) = if has_more {
+        let last = items.last().expect("items non-empty when has_more is true");
+        (Some(last.created_at.clone()), Some(last.id.clone()))
+    } else {
+        (None, None)
+    };
+
+    Ok(Json(json!({
+        "data": items,
+        "meta": {
+            "next_cursor": next_cursor,
+            "next_cursor_id": next_cursor_id,
+            "has_more": has_more,
+            "total": total,
+        }
+    })))
 }
 
 /// Resolve a media item's absolute file path, MIME type, and filename from the
@@ -395,6 +594,8 @@ mod tests {
         body::Body,
         http::{Request, StatusCode},
     };
+    use chrono::NaiveDateTime;
+
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
@@ -410,6 +611,8 @@ mod tests {
                 filename TEXT NOT NULL,
                 relative_path TEXT NOT NULL UNIQUE,
                 mime_type TEXT NOT NULL,
+                width INTEGER,
+                height INTEGER,
                 file_size INTEGER NOT NULL DEFAULT 0,
                 file_created_at TEXT NOT NULL DEFAULT '',
                 file_modified_at TEXT NOT NULL DEFAULT '',
@@ -457,6 +660,30 @@ mod tests {
             "INSERT INTO media_items (id, filename, relative_path, mime_type, file_size, file_created_at, file_modified_at, checksum)
              VALUES (?1, ?2, ?3, ?4, 1024, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z', ?5)",
             rusqlite::params![id, filename, relative_path, mime_type, checksum],
+        )
+        .expect("Failed to seed media item");
+    }
+
+    /// Seed a media item with full fields including dimensions and custom dates.
+    /// Used by cursor pagination tests to create items at specific timestamps.
+    #[allow(dead_code)]
+    async fn seed_media_item_full(
+        state: &Arc<MediaState>,
+        id: &str,
+        filename: &str,
+        relative_path: &str,
+        mime_type: &str,
+        checksum: &str,
+        width: Option<i64>,
+        height: Option<i64>,
+        file_created_at: &str,
+        file_modified_at: &str,
+    ) {
+        let db = state.db.lock().await;
+        db.execute(
+            "INSERT INTO media_items (id, filename, relative_path, mime_type, file_size, width, height, file_created_at, file_modified_at, checksum)
+             VALUES (?1, ?2, ?3, ?4, 1024, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![id, filename, relative_path, mime_type, width, height, file_created_at, file_modified_at, checksum],
         )
         .expect("Failed to seed media item");
     }
@@ -941,5 +1168,308 @@ mod tests {
             .and_then(|v| v.to_str().ok())
             .unwrap();
         assert_eq!(cache_control, "private, max-age=3600");
+    }
+
+    // -----------------------------------------------------------------------
+    // Media list / cursor pagination tests
+    // -----------------------------------------------------------------------
+
+    /// Helper to seed N media items descending from a base date.
+    /// Items get sequential IDs and dates spaced 1 second apart.
+    async fn seed_n_items(
+        state: &Arc<MediaState>,
+        n: u32,
+        base_date: &str,
+        mime_type: &str,
+    ) {
+        let base = NaiveDateTime::parse_from_str(base_date, "%Y-%m-%dT%H:%M:%S")
+            .expect("Invalid base date");
+
+        for i in 0..n {
+            let date = base - chrono::Duration::seconds(i as i64);
+            let date_str = date.format("%Y-%m-%dT%H:%M:%S").to_string();
+            let id = format!("00000000-0000-0000-0000-{:012}", i);
+            seed_media_item_full(
+                state,
+                &id,
+                &format!("file_{}.png", i),
+                &format!("2025-01-01/file_{}.png", i),
+                mime_type,
+                "checksum",
+                Some(100),
+                Some(100),
+                &date_str,
+                &date_str,
+            )
+            .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_media_list_empty_database() {
+        let state = test_state();
+        let app = routes().with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/media")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+        assert_eq!(body["data"].as_array().unwrap().len(), 0, "empty DB should return empty data");
+        assert_eq!(body["meta"]["has_more"], false, "empty DB should have has_more=false");
+        assert_eq!(body["meta"]["total"], 0, "empty DB should have total=0");
+        assert!(body["meta"]["next_cursor"].is_null(), "empty DB should have null next_cursor");
+        assert!(body["meta"]["next_cursor_id"].is_null(), "empty DB should have null next_cursor_id");
+    }
+
+    #[tokio::test]
+    async fn test_media_list_first_page() {
+        let state = test_state();
+        seed_n_items(&state, 250, "2025-06-15T12:00:00", "image/png").await;
+        let app = routes().with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/media?limit=100")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+        let data = body["data"].as_array().unwrap();
+        assert_eq!(data.len(), 100, "first page should return exactly 100 items");
+        assert_eq!(body["meta"]["has_more"], true, "250 items, 100 limit should have more");
+        assert!(body["meta"]["next_cursor"].is_string(), "has_more=true should have next_cursor");
+        assert!(body["meta"]["next_cursor_id"].is_string(), "has_more=true should have next_cursor_id");
+
+        // Items should be ordered newest first (descending date)
+        if data.len() >= 2 {
+            let first_created = data[0]["created_at"].as_str().unwrap();
+            let second_created = data[1]["created_at"].as_str().unwrap();
+            assert!(
+                first_created >= second_created,
+                "items should be ordered newest first"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_media_list_cursor_pagination() {
+        let state = test_state();
+        seed_n_items(&state, 250, "2025-06-15T12:00:00", "image/png").await;
+        let app = routes().with_state(state);
+
+        // First page
+        let response1 = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/media?limit=100")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let body1: Value = serde_json::from_slice(
+            &response1.into_body().collect().await.unwrap().to_bytes(),
+        )
+        .unwrap();
+        let page1_ids: Vec<&str> = body1["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(page1_ids.len(), 100);
+        let next_cursor = body1["meta"]["next_cursor"].as_str().unwrap().to_string();
+        let next_cursor_id = body1["meta"]["next_cursor_id"].as_str().unwrap().to_string();
+
+        // Second page using cursor
+        let response2 = app
+            .oneshot(
+                Request::builder()
+                    .uri(&format!(
+                        "/media?limit=100&cursor={}&cursor_id={}",
+                        next_cursor, next_cursor_id
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let body2: Value = serde_json::from_slice(
+            &response2.into_body().collect().await.unwrap().to_bytes(),
+        )
+        .unwrap();
+        let page2_ids: Vec<&str> = body2["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["id"].as_str().unwrap())
+            .collect();
+
+        assert!(!page2_ids.is_empty(), "second page should have items");
+        assert_eq!(body2["meta"]["has_more"], true, "250 items, page 2 should still have more");
+
+        // Verify no overlap between pages
+        for id in &page2_ids {
+            assert!(!page1_ids.contains(id), "cursor pagination should have no overlap: {} is in both pages", id);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_media_list_last_page() {
+        let state = test_state();
+        seed_n_items(&state, 50, "2025-06-15T12:00:00", "image/png").await;
+        let app = routes().with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/media?limit=100")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+        let data = body["data"].as_array().unwrap();
+        assert_eq!(data.len(), 50, "should return all 50 items when less than limit");
+        assert_eq!(body["meta"]["has_more"], false, "50 items, 100 limit should have no more");
+        assert_eq!(body["meta"]["total"], 50, "total should be 50");
+    }
+
+    #[tokio::test]
+    async fn test_media_list_mime_type_filter() {
+        let state = test_state();
+        // Insert 25 images and 25 videos
+        for i in 0..25 {
+            let date_str = format!("2025-06-15T12:{:02}:00", 59 - i);
+            let id = format!("img-{:012}", i);
+            seed_media_item_full(
+                &state,
+                &id,
+                &format!("img_{}.png", i),
+                &format!("img_{}.png", i),
+                "image/png",
+                "chk",
+                Some(100),
+                Some(100),
+                &date_str,
+                &date_str,
+            )
+            .await;
+
+            let vid_id = format!("vid-{:012}", i);
+            let vid_date = format!("2025-06-15T12:{:02}:00", 29 - i);
+            seed_media_item_full(
+                &state,
+                &vid_id,
+                &format!("vid_{}.mp4", i),
+                &format!("vid_{}.mp4", i),
+                "video/mp4",
+                "chk",
+                None,
+                None,
+                &vid_date,
+                &vid_date,
+            )
+            .await;
+        }
+
+        let app = routes().with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/media?limit=100&mime_type=image/%")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+        let data = body["data"].as_array().unwrap();
+        assert_eq!(data.len(), 25, "should return only 25 images");
+        assert_eq!(body["meta"]["total"], 25, "total should be 25 images");
+
+        // Verify all returned items are images
+        for item in data {
+            let mime = item["mime_type"].as_str().unwrap();
+            assert!(
+                mime.starts_with("image/"),
+                "all items should be images, got: {}",
+                mime
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_media_list_invalid_limit() {
+        let state = test_state();
+        let app = routes().with_state(state);
+
+        // Test limit > 500
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/media?limit=1000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert!(
+            body["error"].as_str().unwrap().contains("500"),
+            "error should mention 500 limit"
+        );
+
+        // Test limit = 0
+        let response2 = app
+            .oneshot(
+                Request::builder()
+                    .uri("/media?limit=0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response2.status(), StatusCode::BAD_REQUEST);
     }
 }

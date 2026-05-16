@@ -1,3 +1,7 @@
+pub mod handler;
+
+pub use handler::SseEvent;
+
 use notify::RecursiveMode;
 use notify_debouncer_mini::{new_debouncer, DebounceEventResult, Debouncer};
 use std::path::{Path, PathBuf};

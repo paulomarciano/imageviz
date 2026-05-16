@@ -4,6 +4,7 @@ use std::path::PathBuf;
 pub struct Settings {
     pub database_path: PathBuf,
     pub thumbnail_cache_dir: PathBuf,
+    pub tantivy_index_dir: PathBuf,
     pub port: u16,
 }
 
@@ -20,6 +21,10 @@ impl Settings {
             thumbnail_cache_dir: PathBuf::from(
                 std::env::var("IMAGEVIZ_CACHE_DIR")
                     .unwrap_or_else(|_| data_dir.join("thumbnails").to_string_lossy().to_string()),
+            ),
+            tantivy_index_dir: PathBuf::from(
+                std::env::var("IMAGEVIZ_TANTIVY_DIR")
+                    .unwrap_or_else(|_| data_dir.join("tantivy").to_string_lossy().to_string()),
             ),
             port: std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(3001),
         }
