@@ -34,7 +34,7 @@ pub fn scan_folder(root: &Path) -> Result<Vec<FileEntry>, WalkerError> {
     for entry in WalkDir::new(root)
         .follow_links(false)
         .into_iter()
-        .filter_entry(|e| !is_hidden(e))
+        .filter_entry(|e| e.depth() == 0 || !is_hidden(e))
     {
         let entry = match entry {
             Ok(e) => e,
@@ -116,13 +116,14 @@ fn is_hidden(entry: &walkdir::DirEntry) -> bool {
         .is_some_and(|s| s.starts_with('.'))
 }
 
-/// Convert a SystemTime to ISO 8601 string.
+/// Convert a SystemTime to ISO 8601 string with sub-second precision.
 fn datetime_to_iso(time: SystemTime) -> String {
     let duration = time
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    let secs = duration.as_secs();
-    let naive = chrono::DateTime::from_timestamp(secs as i64, 0)
+    let secs = duration.as_secs() as i64;
+    let nsecs = duration.subsec_nanos();
+    let naive = chrono::DateTime::from_timestamp(secs, nsecs)
         .unwrap_or_default();
     naive.to_rfc3339()
 }

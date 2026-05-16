@@ -44,7 +44,10 @@ pub async fn detect_media(path: &Path) -> Result<MediaInfo, DetectionError> {
         // Video dimensions via ffprobe
         match parse_video_metadata(path).await {
             Ok(meta) => (Some(meta.width), Some(meta.height)),
-            Err(_) => (None, None),
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "Failed to extract video dimensions");
+                (None, None)
+            }
         }
     };
 
