@@ -39,6 +39,7 @@ export const ThumbnailCard = memo(function ThumbnailCard({ item, onClick, index,
               src={item.thumbnail_url}
               alt={item.filename}
               loading="lazy"
+              decoding="async"
               onLoad={() => setImageLoaded(true)}
               onError={() => setImageError(true)}
               className={`w-full h-full object-cover transition-opacity duration-300 ${

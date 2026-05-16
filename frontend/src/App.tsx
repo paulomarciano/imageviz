@@ -1,11 +1,15 @@
-import { useCallback, useEffect, useMemo } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo } from 'react';
 import { useAtom, useAtomValue } from 'jotai';
 import { DndProvider } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import { AppShell } from './components/layout/app-shell';
 import { ThumbnailGrid } from './components/media/thumbnail-grid';
-import { DetailView } from './components/viewer/detail-view';
-import { ConfigPanel } from './components/config/config-panel';
+const DetailView = lazy(() =>
+  import('./components/viewer/detail-view').then((m) => ({ default: m.DetailView })),
+);
+const ConfigPanel = lazy(() =>
+  import('./components/config/config-panel').then((m) => ({ default: m.ConfigPanel })),
+);
 import { ShortcutsPanel } from './components/shared/shortcuts-panel';
 import { selectedMediaItemAtom, detailViewOpenAtom } from './store/media-atoms';
 import { searchQueryAtom, mediaViewModeAtom } from './store/search-atoms';
@@ -88,21 +92,25 @@ function App() {
       <AppShell>
         <ThumbnailGrid onItemClick={handleItemClick} />
       </AppShell>
-      {detailOpen && selectedItem && currentIndex >= 0 && (
-        <DetailView
-          items={allItems}
-          currentIndex={currentIndex}
-          onNavigate={handleNavigate}
-          onClose={handleClose}
-        />
-      )}
+      <Suspense fallback={null}>
+        {detailOpen && selectedItem && currentIndex >= 0 && (
+          <DetailView
+            items={allItems}
+            currentIndex={currentIndex}
+            onNavigate={handleNavigate}
+            onClose={handleClose}
+          />
+        )}
+      </Suspense>
       <ShortcutsPanel
         isOpen={shortcutsOpen}
         onClose={() => setShortcutsOpen(false)}
       />
-      {configOpen && (
-        <ConfigPanel onClose={() => setConfigOpen(false)} />
-      )}
+      <Suspense fallback={null}>
+        {configOpen && (
+          <ConfigPanel onClose={() => setConfigOpen(false)} />
+        )}
+      </Suspense>
     </DndProvider>
   );
 }

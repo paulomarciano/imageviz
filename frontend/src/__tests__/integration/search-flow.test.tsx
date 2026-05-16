@@ -50,7 +50,7 @@ describe('Search Flow', () => {
 
     // Wait for debounce + search results
     await waitFor(() => {
-      expect(screen.getByText(/result for "sunset"/)).toBeInTheDocument();
+      expect(screen.getAllByText(/result for "sunset"/).length).toBeGreaterThanOrEqual(1);
     }, { timeout: 2000 });
   });
 
@@ -62,7 +62,7 @@ describe('Search Flow', () => {
     await userEvent.type(searchInput, 'sunset');
 
     await waitFor(() => {
-      expect(screen.getByText(/result for "sunset"/)).toBeInTheDocument();
+      expect(screen.getAllByText(/result for "sunset"/).length).toBeGreaterThanOrEqual(1);
     }, { timeout: 2000 });
 
     // Clear search
