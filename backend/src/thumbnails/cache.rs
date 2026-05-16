@@ -96,8 +96,21 @@ static LOCKS: LazyLock<LockMap> = LazyLock::new(|| Mutex::new(HashMap::new()));
 /// The first caller to acquire the lock for a given key proceeds to generate
 /// the thumbnail; subsequent callers block and then find the cached file after
 /// the lock is released.
+///
+/// # Panics
+/// Only panics if the global lock map cannot be locked — this is a fatal state
+/// that indicates a corrupted process. Individual per-key mutex poisoning is
+/// recovered from gracefully.
 fn acquire_lock(key: &str) -> Arc<tokio::sync::Mutex<()>> {
-    let mut map = LOCKS.lock().expect("cache lock map poisoned");
+    let mut map = match LOCKS.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            // Recover from a poisoned lock by consuming the error and
+            // extracting the inner value, rather than panicking.
+            tracing::warn!("cache lock map was poisoned, recovering");
+            poisoned.into_inner()
+        }
+    };
     map.entry(key.to_string())
         .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
         .clone()

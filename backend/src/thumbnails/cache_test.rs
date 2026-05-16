@@ -142,6 +142,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_invalid_width_rejected() {
+        // Arrange
+        let cache_dir = tempdir().unwrap();
+        let source_dir = tempdir().unwrap();
+        let source_path = source_dir.path().join("test.png");
+        create_test_png(&source_path, 100, 100);
+
+        // Act — width below minimum
+        let result =
+            get_or_generate_thumbnail(&source_path, TEST_CHECKSUM, 50, cache_dir.path()).await;
+
+        // Assert
+        assert!(result.is_err(), "width=50 should be rejected");
+        assert!(
+            matches!(result.unwrap_err(), CacheError::InvalidWidth { width: 50, .. }),
+            "expected InvalidWidth for width=50"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generation_failure_returns_error() {
+        // Arrange
+        let cache_dir = tempdir().unwrap();
+        let source_dir = tempdir().unwrap();
+        let bad_path = source_dir.path().join("corrupt.bin");
+        std::fs::write(&bad_path, b"not an image").unwrap();
+
+        // Act — generate from corrupt/non-image file
+        let result =
+            get_or_generate_thumbnail(&bad_path, TEST_CHECKSUM, 200, cache_dir.path()).await;
+
+        // Assert
+        assert!(result.is_err(), "corrupt source should produce an error");
+        assert!(
+            matches!(result.unwrap_err(), CacheError::Generation(_)),
+            "expected CacheError::Generation for corrupt source"
+        );
+    }
+
+    #[tokio::test]
     async fn test_cache_with_different_widths() {
         // Arrange
         let cache_dir = tempdir().unwrap();
