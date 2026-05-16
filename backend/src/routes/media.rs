@@ -263,14 +263,15 @@ async fn get_media_item(
              FROM media_items WHERE id = ?1",
             rusqlite::params![id],
             |row| {
+                let id: String = row.get(0)?;
                 let metadata_raw: Option<String> = row.get(9)?;
                 Ok(MediaItemDetail {
-                    id: row.get(0)?,
+                    id: id.clone(),
                     filename: row.get(1)?,
                     path: row.get(2)?,
                     mime_type: row.get(3)?,
-                    thumbnail_url: format!("/api/v1/media/{}/thumbnail", row.get::<_, String>(0)?),
-                    file_url: format!("/api/v1/media/{}/file", row.get::<_, String>(0)?),
+                    thumbnail_url: format!("/api/v1/media/{}/thumbnail", id),
+                    file_url: format!("/api/v1/media/{}/file", id),
                     width: row.get(4)?,
                     height: row.get(5)?,
                     file_size: row.get(6)?,
@@ -320,8 +321,9 @@ async fn get_media_metadata(
         Some(json_str) => match serde_json::from_str(&json_str) {
             Ok(val) => Ok(Json(val)),
             Err(_) => {
-                // Return the raw string if it's not valid JSON
-                Ok(Json(json!({"raw": json_str})))
+                // Non-JSON metadata — return empty rather than serving
+                // raw strings that would confuse the frontend.
+                Ok(Json(json!({})))
             }
         },
         None => Ok(Json(json!({}))),
@@ -1601,10 +1603,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_media_item_happy_path() {
         let state = test_state();
-        let watched = tempfile::tempdir().unwrap();
-        seed_config(&state, watched.path()).await;
 
-        // Seed an item with metadata_json
         {
             let db = state.db.lock().await;
             db.execute(
@@ -1661,8 +1660,6 @@ mod tests {
     #[tokio::test]
     async fn test_get_media_item_no_metadata_returns_null() {
         let state = test_state();
-        let watched = tempfile::tempdir().unwrap();
-        seed_config(&state, watched.path()).await;
 
         {
             let db = state.db.lock().await;
@@ -1730,8 +1727,6 @@ mod tests {
     #[tokio::test]
     async fn test_get_media_metadata_happy_path() {
         let state = test_state();
-        let watched = tempfile::tempdir().unwrap();
-        seed_config(&state, watched.path()).await;
 
         {
             let db = state.db.lock().await;
@@ -1779,8 +1774,6 @@ mod tests {
     #[tokio::test]
     async fn test_get_media_metadata_empty_when_no_metadata() {
         let state = test_state();
-        let watched = tempfile::tempdir().unwrap();
-        seed_config(&state, watched.path()).await;
 
         {
             let db = state.db.lock().await;
@@ -1820,6 +1813,6 @@ mod tests {
         let body: Value = serde_json::from_slice(&body_bytes).unwrap();
 
         // Should return empty JSON object when no metadata
-        assert!(body.as_object().map_or(false, |o| o.is_empty()));
+        assert_eq!(body, json!({}));
     }
 }

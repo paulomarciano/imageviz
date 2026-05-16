@@ -24,6 +24,7 @@ Thumbs.db
 # Rust
 backend/**/*.rs.bk
 backend/**/target/
+rust_out
 
 # Test artifacts
 coverage/
