@@ -1,6 +1,7 @@
 import { forwardRef, useCallback, type HTMLAttributes } from 'react';
 import { VirtuosoGrid } from 'react-virtuoso';
 import { useInfiniteMedia } from '../../hooks/use-infinite-media';
+import { useScrollRestore } from '../../hooks/use-scroll-restore';
 import { ThumbnailCard } from './thumbnail-card';
 import { EmptyState } from '../shared/empty-state';
 import { ErrorState } from '../shared/error-state';
@@ -50,6 +51,8 @@ export function ThumbnailGrid({ onItemClick }: ThumbnailGridProps) {
     }
   }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
 
+  const { savedIndex, handleRangeChanged } = useScrollRestore();
+
   if (isLoading) {
     return <SkeletonGrid />;
   }
@@ -84,6 +87,8 @@ export function ThumbnailGrid({ onItemClick }: ThumbnailGridProps) {
         overscan={200}
         increaseViewportBy={200}
         computeItemKey={(index) => allItems[index]?.id ?? index}
+        initialTopMostItemIndex={savedIndex}
+        rangeChanged={handleRangeChanged}
       />
       {isFetchingNextPage && (
         <div className="absolute bottom-0 left-0 right-0 flex justify-center py-4 bg-gradient-to-t from-gray-900">
