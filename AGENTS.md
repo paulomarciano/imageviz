@@ -25,14 +25,17 @@
 | Run dev | `cargo run` (port 3001) | `npm run dev` (Vite proxies `/api` → :3001) |
 | Run all tests | `cargo test` | `npm test` (Vitest) |
 | Run single test | `cargo test test_name` | `npx vitest run -t "test name"` |
-| Lint | `cargo clippy -D warnings` + `cargo fmt --check` | `npm run lint` + `npm run format:check` |
+| Lint | `cargo clippy -- -D warnings` + `cargo fmt --check` | `npm run lint` + `npm run format:check` |
 | Type check | `cargo check` | `npm run typecheck` (= `tsc --noEmit`) |
 | Build | `cargo build --release` | `npm run build` (= `tsc -b && vite build`) |
 
 Frontend package manager is **npm** (not pnpm/yarn).
 
-**Rustfmt**: `max_width = 100`, `tab_spaces = 4`, `edition = "2024"`, `newline_style = "Unix"`.
-Backend builds with `-D warnings` via `.cargo/config.toml`.
+**Rustfmt** (`backend/rustfmt.toml`): `max_width = 100`, `tab_spaces = 4`, `edition = "2024"`, `newline_style = "Unix"`, `use_small_heuristics = "Max"`. Backend builds with `-D warnings` via `.cargo/config.toml`.
+
+**Prettier** (`frontend/.prettierrc`): `singleQuote`, `trailingComma: "all"`, `semi`, `printWidth: 100`, `tabWidth: 2`.
+
+**ESLint** (`frontend/eslint.config.mjs`): `typescript-eslint` recommended. `no-unused-vars` is error, `no-explicit-any` is warn.
 
 ## Environment Variables
 
@@ -47,7 +50,7 @@ Where `{data_dir}` = `$XDG_DATA_HOME/imageviz` (Linux), `~/Library/Application S
 
 ## Architecture Notes
 
-- **Route assembly**: `backend/src/lib.rs::app()` builds the base router. Stateful routes (config, media, search, events, stats) are mounted by `main.rs`. Integration tests reuse the same `app()` factory.
+- **Route assembly**: `backend/src/lib.rs::health_router()` builds a minimal router with only the health endpoint. `main.rs` nests stateful routes (config, media, search, events, stats) on top of it. All routes are under `/api/v1`. Integration tests reuse `health_router()` + the same nesting pattern.
 - **DB lock strategy**: Write-heavy operations use `Arc<Mutex<Connection>>` with explicit lock-and-release cycles. The Tantivy reindex opens a **separate read-only connection** (WAL allows concurrent readers) so the API stays responsive during startup.
 - **Thumbnail generation**: `spawn_blocking` for CPU-bound image work. Never blocks the async runtime.
 - **File serving**: `tokio::fs::File` + streaming — never loads a full file into memory. Range requests supported for video seeking.
@@ -56,11 +59,15 @@ Where `{data_dir}` = `$XDG_DATA_HOME/imageviz` (Linux), `~/Library/Application S
 ## Test Conventions
 
 - **Rust unit tests**: co-located via `#[path = "filename_test.rs"]` (e.g., `src/metadata/png_test.rs` beside `png.rs`).
-- **Rust integration tests**: in `backend/tests/` using `reqwest` + real SQLite (in-memory) + tempdir for Tantivy and files. See `tests/common/mod.rs` for `create_test_app_with_search()`.
-- **Test support**: `backend/src/test_support.rs` provides `fixture_path(name)` resolving to `test-fixtures/{name}` (only compiled under `cfg(test)`).
-- **Frontend tests**: co-located `__tests__/` dirs next to components. Vitest with jsdom, `@testing-library/react`, `@testing-library/jest-dom`.
+- **Rust integration tests**: in `backend/tests/` using `tower::ServiceExt::oneshot` on the `Router` (in-process, no real server socket). Larger tests use `TestApp` from `tests/common/mod.rs` with in-memory SQLite + tempdir Tantivy + real `reqwest` client. See `create_test_app_with_search()`.
+- **Test support**: `backend/src/test_support.rs` provides `fixture_path(name)` resolving to `test-fixtures/{name}` (only compiled under `cfg(test)`). Use `crate::test_support::fixture_path` in unit tests, `imageviz_backend::test_support::fixture_path` in integration tests.
+- **Frontend unit/component tests**: co-located `__tests__/` dirs next to components. Vitest with jsdom, `@testing-library/react`, `@testing-library/jest-dom`.
+- **Frontend integration tests**: use **MSW** (Mock Service Worker) — handlers live at `frontend/src/test-utils/msw-handlers.ts`. Render helpers at `test-utils/render-utils.tsx` wrap QueryClient + Jotai Provider.
+- **Frontend test setup** (`frontend/src/setup-tests.ts`): mocks `EventSource` (jsdom doesn't implement it) and `VirtuosoGrid` from react-virtuoso (no real virtual-scroll DOM measurements in jsdom). Any test rendering `<App />` or `ThumbnailGrid` needs these mocks.
+- **Frontend path alias**: `@/` maps to `./src/` (configured in both `vite.config.ts` and `tsconfig.json`). Use `import { ... } from '@/...'`.
 - **Fixture generation**: Run `./scripts/generate-fixtures.sh` before running fixture-dependent tests (`cargo test -- --ignored`). Requires **ffmpeg** on PATH. Generates PNGs with ComfyUI-style tEXt chunks and short video files.
 - **Test fixture files** (`.png`, `.webm`, `.mp4`, `.jpg`) are gitignored — only `.gitkeep` is committed.
+- **E2E tests** (Playwright): in `frontend/e2e/`. Run with `npx playwright test` from `frontend/`. Requires `npx playwright install chromium` once. Playwright auto-starts both servers via `webServer` config in `playwright.config.ts`.
 
 ## TDD Workflow (Mandatory)
 
@@ -75,7 +82,7 @@ Per task, in order:
 
 Runs on push and PR to `main`. Four parallel jobs (15-min timeout each):
 1. **backend-lint**: `cargo fmt --check` → `cargo clippy -- -D warnings`
-2. **backend-test**: `cargo test` (Node 22, actions-rust-lang/setup-rust-toolchain, Swatinem/rust-cache)
+2. **backend-test**: `cargo test` (actions-rust-lang/setup-rust-toolchain, Swatinem/rust-cache)
 3. **frontend-lint**: `npm ci` → `npx prettier --check .` → `npx eslint .`
 4. **frontend-test**: `npm ci` → `npx tsc --noEmit` → `npx vitest run`
 
