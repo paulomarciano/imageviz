@@ -23,6 +23,7 @@ pub struct IndexStats {
     pub total: u64,
     pub by_mime_type: HashMap<String, u64>,
     pub total_file_size: u64,
+    pub last_indexed_at: Option<String>,
     pub indexing: IndexingInfo,
 }
 
@@ -44,7 +45,13 @@ async fn get_stats(
     // Total file count
     let total: u64 = db
         .query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0))
-        .unwrap_or(0);
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to count media items");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Internal server error"})),
+            )
+        })?;
 
     // Total file size
     let total_file_size: u64 = db
@@ -53,7 +60,13 @@ async fn get_stats(
             [],
             |r| r.get(0),
         )
-        .unwrap_or(0);
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to sum media file sizes");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Internal server error"})),
+            )
+        })?;
 
     // MIME type histogram
     let mut stmt = db
@@ -85,6 +98,11 @@ async fn get_stats(
         .filter_map(|r| r.ok())
         .collect();
 
+    // Last indexed timestamp (most recent `indexed_at` across all items)
+    let last_indexed_at: Option<String> = db
+        .query_row("SELECT MAX(indexed_at) FROM media_items", [], |r| r.get(0))
+        .unwrap_or(None);
+
     // Indexing status from the ProgressTracker
     let snapshot = state.progress.snapshot();
     let indexing = IndexingInfo {
@@ -104,6 +122,7 @@ async fn get_stats(
         total,
         by_mime_type,
         total_file_size,
+        last_indexed_at,
         indexing,
     }))
 }
@@ -166,6 +185,7 @@ mod tests {
         assert_eq!(body["total"], 0);
         assert!(body["by_mime_type"].as_object().unwrap().is_empty());
         assert_eq!(body["total_file_size"], 0);
+        assert!(body["last_indexed_at"].is_null());
 
         // ProgressTracker defaults to Idle with zeros
         assert_eq!(body["indexing"]["status"], "Idle");
@@ -216,6 +236,7 @@ mod tests {
         // Total counts
         assert_eq!(body["total"], 3);
         assert_eq!(body["total_file_size"], 5300);
+        assert!(body["last_indexed_at"].is_string());
 
         // MIME type histogram
         let by_mime = body["by_mime_type"].as_object().unwrap();
