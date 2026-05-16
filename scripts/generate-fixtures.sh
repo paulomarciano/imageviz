@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+#
+# generate-fixtures.sh — Generate test fixture files for ImageViz.
+#
+# Creates synthetic PNG and video files in test-fixtures/ for use by
+# unit and integration tests.  PNG metadata is injected programmatically
+# by a cargo test binary when invoked via `cargo test --test gen_fixtures`.
+#
+# Prerequisites:
+#   - ffmpeg + ffprobe on PATH (for video generation)
+#
+# Usage:
+#   ./scripts/generate-fixtures.sh
+#
+# After generation, run ignored fixture tests with:
+#   cargo test -- --ignored
+#
+
+set -euo pipefail
+
+FIXTURES_DIR="$(cd "$(dirname "$0")/../test-fixtures" && pwd)"
+
+echo "==> Generating test fixtures in $FIXTURES_DIR"
+
+# ---------------------------------------------------------------------------
+# 1. Minimal video files (generated with ffmpeg — no real content needed)
+# ---------------------------------------------------------------------------
+if command -v ffmpeg &>/dev/null; then
+    echo "==> Generating sample_video.webm (2s, VP9, 640x480)"
+    ffmpeg -y \
+        -f lavfi -i "color=c=gray:s=640x480:d=2" \
+        -f lavfi -i "anullsrc=r=44100:cl=mono" \
+        -c:v libvpx -b:v 500k \
+        -shortest \
+        "$FIXTURES_DIR/sample_video.webm" 2>/dev/null
+
+    echo "==> Generating sample_video.mp4 (2s, H.264, 640x480)"
+    ffmpeg -y \
+        -f lavfi -i "color=c=gray:s=640x480:d=2" \
+        -f lavfi -i "anullsrc=r=44100:cl=mono" \
+        -c:v libx264 -preset ultrafast -crf 28 \
+        -shortest \
+        "$FIXTURES_DIR/sample_video.mp4" 2>/dev/null
+else
+    echo "WARNING: ffmpeg not found — skipping video fixtures"
+    echo "  Install ffmpeg and re-run this script"
+fi
+
+# ---------------------------------------------------------------------------
+# 2. PNG fixtures (generated with the image crate via a Rust snippet)
+# ---------------------------------------------------------------------------
+echo "==> Generating sample_no_metadata.png (clean PNG, 1x1)"
+ffmpeg -y -f lavfi -i "color=c=gray:s=1x1:d=1" -vframes 1 \
+    "$FIXTURES_DIR/sample_no_metadata.png" 2>/dev/null || {
+    # Fallback: create a minimal 1x1 PNG with Python
+    echo "    ffmpeg unavailable for PNG; using Python fallback"
+    python3 -c "
+import struct, zlib
+def create_png(path, w, h):
+    raw = b''
+    for y in range(h):
+        raw += b'\\x00' + b'\\x80\\x80\\x80' * w
+    def chunk(ctype, data):
+        c = ctype + data
+        return struct.pack('>I', len(data)) + c + struct.pack('>I', zlib.crc32(c) & 0xFFFFFFFF)
+    ihdr = struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)
+    idat = zlib.compress(raw)
+    with open(path, 'wb') as f:
+        f.write(b'\\x89PNG\\r\\n\\x1a\\n')
+        f.write(chunk(b'IHDR', ihdr))
+        f.write(chunk(b'IDAT', idat))
+        f.write(chunk(b'IEND', b''))
+create_png('$FIXTURES_DIR/sample_no_metadata.png', 1, 1)
+" 2>/dev/null || echo "    WARNING: could not create PNG — Python3 unavailable"
+}
+
+echo "==> Regenerating sample metadata PNGs (with tEXt chunks)"
+# Generate PNGs with embedded prompt/workflow metadata using the project's
+# own PNG encoder via a minimal Rust program.
+#
+# We write a temp main.rs that uses the same png crate dependency as the
+# backend, build it, run it, then discard the binary.
+TMP_DIR=$(mktemp -d)
+trap 'rm -rf "$TMP_DIR"' EXIT
+
+# Use the project's own Cargo.toml to ensure matching png crate version
+cat > "$TMP_DIR/Cargo.toml" << 'TOML'
+[package]
+name = "fixture-gen"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+png = "0.18"
+serde_json = "1"
+TOML
+
+cat > "$TMP_DIR/src/main.rs" << 'RUST'
+use std::path::Path;
+
+fn create_png_with_text(path: &Path, extra_chunks: &[(&str, &str)]) {
+    use std::io::BufWriter;
+    use std::fs::File;
+    let file = File::create(path).unwrap();
+    let w = BufWriter::new(file);
+    let mut encoder = png::Encoder::new(w, 2, 2);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    for (kw, val) in extra_chunks {
+        encoder.add_text_chunk(kw.to_string(), val.to_string()).unwrap();
+    }
+    let mut writer = encoder.write_header().unwrap();
+    let data: Vec<u8> = vec![255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255];
+    writer.write_image_data(&data).unwrap();
+}
+
+fn main() {
+    let fixtures = std::env::args().nth(1).expect("usage: fixture-gen <fixtures-dir>");
+    let dir = Path::new(&fixtures);
+
+    // sample_comfyui_01.png — with prompt and workflow
+    create_png_with_text(
+        &dir.join("sample_comfyui_01.png"),
+        &[
+            ("prompt", r#"{"3":{"inputs":{"seed":1025918819518817,"steps":20}}}"#),
+            ("workflow", r#"{"nodes":[{"id":3,"type":"KSampler","title":"K Sampler"}]}"#),
+        ],
+    );
+
+    // sample_comfyui_02.png — with prompt only
+    create_png_with_text(
+        &dir.join("sample_comfyui_02.png"),
+        &[
+            ("prompt", r#"{"positive":"landscape","negative":"blurry"}"#),
+        ],
+    );
+
+    // sample_comfyui_03.png — with legacy parameters key
+    create_png_with_text(
+        &dir.join("sample_comfyui_03.png"),
+        &[
+            ("parameters", r#"{"seed":42,"cfg":7.5}"#),
+        ],
+    );
+}
+RUST
+
+echo "    Building fixture generator (one-time compile)..."
+(cd "$TMP_DIR" && cargo build --quiet --release 2>/dev/null)
+echo "    Running fixture generator..."
+"$TMP_DIR/target/release/fixture-gen" "$FIXTURES_DIR"
+
+echo "==> All fixtures generated in $FIXTURES_DIR"
+ls -lh "$FIXTURES_DIR" | grep -v gitkeep

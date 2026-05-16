@@ -1,17 +1,9 @@
 #[cfg(test)]
 mod tests {
     use crate::metadata::video::*;
-    use std::path::{Path, PathBuf};
+    use crate::test_support::fixture_path;
+    use std::path::Path;
     use tempfile::TempDir;
-
-    /// Return the absolute path to a file in test-fixtures/.
-    fn fixture_path(name: &str) -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("CARGO_MANIFEST_DIR should have a parent")
-            .join("test-fixtures")
-            .join(name)
-    }
 
     #[tokio::test]
     async fn test_nonexistent_file() {
@@ -36,15 +28,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires test-fixtures/sample_video.webm (run scripts/generate-fixtures.sh)"]
     async fn test_parse_webm_metadata_success() {
         let path = fixture_path("sample_video.webm");
-        if !path.exists() {
-            eprintln!(
-                "Skipping test: fixture {} not found (run generate-fixtures.sh)",
-                path.display()
-            );
-            return;
-        }
+        assert!(path.exists(), "Fixture not found: {}", path.display());
 
         let meta = parse_video_metadata(&path).await.unwrap();
         assert!(meta.width > 0, "webm should have width > 0");
@@ -54,15 +41,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires test-fixtures/sample_video.mp4 (run scripts/generate-fixtures.sh)"]
     async fn test_parse_mp4_metadata_success() {
         let path = fixture_path("sample_video.mp4");
-        if !path.exists() {
-            eprintln!(
-                "Skipping test: fixture {} not found (run generate-fixtures.sh)",
-                path.display()
-            );
-            return;
-        }
+        assert!(path.exists(), "Fixture not found: {}", path.display());
 
         let meta = parse_video_metadata(&path).await.unwrap();
         assert!(meta.width > 0, "mp4 should have width > 0");

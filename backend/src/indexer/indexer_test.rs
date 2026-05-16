@@ -248,6 +248,7 @@ async fn test_indexed_item_has_all_required_fields() {
     assert!(!row.7.is_empty(), "file_created_at should be non-empty");
     assert!(!row.8.is_empty(), "file_modified_at should be non-empty");
     assert!(!row.9.is_empty(), "indexed_at should be non-empty");
+    assert!(row.10.is_none(), "metadata_json should be None for a minimal PNG without text chunks");
     assert!(row.11.is_some(), "checksum should be present");
     assert_eq!(row.11.as_ref().unwrap().len(), 64, "checksum should be SHA-256 (64 hex chars)");
     drop(conn);

@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
     use crate::metadata::detect::*;
+    use crate::test_support::fixture_path;
     use std::io::Write;
     use tempfile::TempDir;
 
@@ -88,12 +89,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires test-fixtures/sample_video.webm (run scripts/generate-fixtures.sh)"]
     async fn test_detect_webm_video() {
         let path = fixture_path("sample_video.webm");
-        if !path.exists() {
-            eprintln!("Skipping test: fixture not found: {}", path.display());
-            return;
-        }
+        assert!(path.exists(), "Fixture not found: {}", path.display());
 
         let info = detect_media(&path).await.unwrap();
         assert_eq!(info.mime_type, "video/webm");
@@ -103,26 +102,15 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires test-fixtures/sample_video.mp4 (run scripts/generate-fixtures.sh)"]
     async fn test_detect_mp4_video() {
         let path = fixture_path("sample_video.mp4");
-        if !path.exists() {
-            eprintln!("Skipping test: fixture not found: {}", path.display());
-            return;
-        }
+        assert!(path.exists(), "Fixture not found: {}", path.display());
 
         let info = detect_media(&path).await.unwrap();
         assert_eq!(info.mime_type, "video/mp4");
         assert!(info.width.is_some_and(|w| w > 0), "mp4 should have width > 0");
         assert!(info.height.is_some_and(|h| h > 0), "mp4 should have height > 0");
         assert!(info.file_size > 0);
-    }
-
-    /// Return the absolute path to a file in test-fixtures/.
-    fn fixture_path(name: &str) -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("CARGO_MANIFEST_DIR should have a parent")
-            .join("test-fixtures")
-            .join(name)
     }
 }

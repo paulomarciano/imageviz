@@ -5,6 +5,9 @@ pub mod metadata;
 pub mod routes;
 pub mod scanner;
 
+#[cfg(test)]
+pub mod test_support;
+
 /// Build the base application router with stateless routes mounted under `/api/v1`.
 ///
 /// This is the single source of truth for route assembly, used by both
