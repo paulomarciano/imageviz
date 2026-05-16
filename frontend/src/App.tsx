@@ -1,8 +1,12 @@
+import { AppShell } from './components/layout/app-shell';
+
 function App() {
   return (
-    <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">
-      <h1 className="text-2xl font-bold">ImageViz</h1>
-    </div>
+    <AppShell>
+      <div className="h-full flex items-center justify-center text-gray-500">
+        <p>Configure watched folders to start viewing media</p>
+      </div>
+    </AppShell>
   );
 }
 
