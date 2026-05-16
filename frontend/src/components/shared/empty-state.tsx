@@ -31,9 +31,7 @@ export function EmptyState({ message, description, icon, action }: EmptyStatePro
         </svg>
       )}
       <p className="text-gray-400 text-lg font-medium mb-1">{message}</p>
-      {description && (
-        <p className="text-gray-500 text-sm max-w-md">{description}</p>
-      )}
+      {description && <p className="text-gray-500 text-sm max-w-md">{description}</p>}
       {action && (
         <button
           type="button"

@@ -219,21 +219,11 @@ describe('useSse', () => {
 
     // Assert
     expect(onEvent).toHaveBeenCalledTimes(5);
-    expect(onEvent).toHaveBeenCalledWith(
-      expect.objectContaining({ event: 'connected' }),
-    );
-    expect(onEvent).toHaveBeenCalledWith(
-      expect.objectContaining({ event: 'file_deleted' }),
-    );
-    expect(onEvent).toHaveBeenCalledWith(
-      expect.objectContaining({ event: 'file_modified' }),
-    );
-    expect(onEvent).toHaveBeenCalledWith(
-      expect.objectContaining({ event: 'indexing_complete' }),
-    );
-    expect(onEvent).toHaveBeenCalledWith(
-      expect.objectContaining({ event: 'lagged' }),
-    );
+    expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ event: 'connected' }));
+    expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ event: 'file_deleted' }));
+    expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ event: 'file_modified' }));
+    expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ event: 'indexing_complete' }));
+    expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ event: 'lagged' }));
   });
 
   it('handles malformed JSON gracefully', () => {

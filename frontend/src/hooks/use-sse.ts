@@ -28,11 +28,7 @@ const RECONNECT_BASE_DELAY = 1_000;
  * @param options.onError   - Optional callback invoked on connection errors.
  * @param options.autoConnect - Whether to connect on mount (default true).
  */
-export function useSse({
-  onEvent,
-  onError,
-  autoConnect = true,
-}: UseSseOptions): UseSseReturn {
+export function useSse({ onEvent, onError, autoConnect = true }: UseSseOptions): UseSseReturn {
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectAttemptRef = useRef(0);

@@ -31,8 +31,7 @@ function App() {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       const tag = document.activeElement?.tagName;
-      const isInput =
-        tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+      const isInput = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
 
       if (e.key === '?' && !isInput) {
         e.preventDefault();
@@ -102,14 +101,9 @@ function App() {
           />
         )}
       </Suspense>
-      <ShortcutsPanel
-        isOpen={shortcutsOpen}
-        onClose={() => setShortcutsOpen(false)}
-      />
+      <ShortcutsPanel isOpen={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
       <Suspense fallback={null}>
-        {configOpen && (
-          <ConfigPanel onClose={() => setConfigOpen(false)} />
-        )}
+        {configOpen && <ConfigPanel onClose={() => setConfigOpen(false)} />}
       </Suspense>
     </DndProvider>
   );

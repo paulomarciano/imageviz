@@ -83,8 +83,7 @@ export function ShortcutsPanel({ isOpen, onClose }: ShortcutsPanelProps) {
     const handleTabKey = (e: KeyboardEvent) => {
       if (e.key !== 'Tab') return;
 
-      const focusableElements =
-        element.querySelectorAll<HTMLElement>(focusableSelector);
+      const focusableElements = element.querySelectorAll<HTMLElement>(focusableSelector);
       if (focusableElements.length === 0) return;
 
       const first = focusableElements[0]!;
@@ -102,8 +101,7 @@ export function ShortcutsPanel({ isOpen, onClose }: ShortcutsPanelProps) {
     element.addEventListener('keydown', handleTabKey);
 
     // Focus the first focusable element on open
-    const firstFocusable =
-      element.querySelector<HTMLElement>(focusableSelector);
+    const firstFocusable = element.querySelector<HTMLElement>(focusableSelector);
     firstFocusable?.focus();
 
     return () => element.removeEventListener('keydown', handleTabKey);
@@ -125,20 +123,13 @@ export function ShortcutsPanel({ isOpen, onClose }: ShortcutsPanelProps) {
         aria-modal="true"
       >
         <div className="flex items-center justify-between p-4 border-b border-gray-700">
-          <h2 className="text-lg font-semibold text-white">
-            Keyboard Shortcuts
-          </h2>
+          <h2 className="text-lg font-semibold text-white">Keyboard Shortcuts</h2>
           <button
             onClick={onClose}
             className="p-1 text-gray-400 hover:text-white transition-colors rounded"
             aria-label="Close shortcuts"
           >
-            <svg
-              className="w-5 h-5"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path
                 strokeLinecap="round"
                 strokeLinejoin="round"
@@ -152,15 +143,10 @@ export function ShortcutsPanel({ isOpen, onClose }: ShortcutsPanelProps) {
         <div className="p-4 space-y-6">
           {SHORTCUT_SECTIONS.map(({ category, items }) => (
             <section key={category}>
-              <h3 className="text-sm font-medium text-gray-300 mb-2">
-                {category}
-              </h3>
+              <h3 className="text-sm font-medium text-gray-300 mb-2">{category}</h3>
               <div className="space-y-1.5">
                 {items.map(({ keys, description }) => (
-                  <div
-                    key={description}
-                    className="flex items-center justify-between text-sm"
-                  >
+                  <div key={description} className="flex items-center justify-between text-sm">
                     <span className="text-gray-400">{description}</span>
                     <div className="flex gap-1 ml-4">
                       {keys.map((key) => (

@@ -53,7 +53,9 @@ vi.mock('react-virtuoso', () => ({
     return React.createElement(
       List,
       null,
-      Array.from({ length: count }, (_, i) => React.createElement(Item, { key: i }, itemContent?.(i))),
+      Array.from({ length: count }, (_, i) =>
+        React.createElement(Item, { key: i }, itemContent?.(i)),
+      ),
     );
   },
 }));

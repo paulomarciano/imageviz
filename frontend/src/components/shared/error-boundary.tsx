@@ -35,7 +35,12 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
       return (
         <div className="h-full flex items-center justify-center p-8">
           <div className="bg-gray-800 border border-gray-700 rounded-lg p-6 max-w-md text-center">
-            <svg className="w-12 h-12 text-red-400 mx-auto mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <svg
+              className="w-12 h-12 text-red-400 mx-auto mb-3"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
               <path
                 strokeLinecap="round"
                 strokeLinejoin="round"

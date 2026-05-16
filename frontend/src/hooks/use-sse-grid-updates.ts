@@ -12,11 +12,7 @@ import { useCallback, useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useSetAtom } from 'jotai';
 import { useSse } from './use-sse';
-import {
-  sseStatusAtom,
-  recentSseEventsAtom,
-  newFileCountAtom,
-} from '../store/sse-atoms';
+import { sseStatusAtom, recentSseEventsAtom, newFileCountAtom } from '../store/sse-atoms';
 import type { SseEvent, MediaItem } from '../types';
 
 /**
@@ -45,34 +41,31 @@ export function useSseGridUpdates() {
 
           // Prepend to cached media list pages using partial key matching
           // (actual keys include limit param: ['media', 'list', { limit }])
-          queryClient.setQueriesData(
-            { queryKey: ['media', 'list'] },
-            (oldData: unknown) => {
-              if (!oldData || typeof oldData !== 'object') return oldData;
-              const typed = oldData as {
-                pages: Array<{
-                  data: MediaItem[];
-                  meta: { total?: number };
-                }>;
-              };
-              if (!typed.pages || typed.pages.length === 0) return oldData;
+          queryClient.setQueriesData({ queryKey: ['media', 'list'] }, (oldData: unknown) => {
+            if (!oldData || typeof oldData !== 'object') return oldData;
+            const typed = oldData as {
+              pages: Array<{
+                data: MediaItem[];
+                meta: { total?: number };
+              }>;
+            };
+            if (!typed.pages || typed.pages.length === 0) return oldData;
 
-              const firstPage = typed.pages[0]!;
-              const newPages = [
-                {
-                  ...firstPage,
-                  data: [newItem, ...firstPage.data],
-                  meta: {
-                    ...firstPage.meta,
-                    total: (firstPage.meta?.total ?? 0) + 1,
-                  },
+            const firstPage = typed.pages[0]!;
+            const newPages = [
+              {
+                ...firstPage,
+                data: [newItem, ...firstPage.data],
+                meta: {
+                  ...firstPage.meta,
+                  total: (firstPage.meta?.total ?? 0) + 1,
                 },
-                ...typed.pages.slice(1),
-              ];
+              },
+              ...typed.pages.slice(1),
+            ];
 
-              return { ...typed, pages: newPages };
-            },
-          );
+            return { ...typed, pages: newPages };
+          });
 
           // Track new file count for "new files" indicator
           setNewFileCount((prev) => prev + 1);
@@ -83,30 +76,27 @@ export function useSseGridUpdates() {
           const deletedId = event.data.id;
 
           // Remove from cached pages (partial key matching)
-          queryClient.setQueriesData(
-            { queryKey: ['media', 'list'] },
-            (oldData: unknown) => {
-              if (!oldData || typeof oldData !== 'object') return oldData;
-              const typed = oldData as {
-                pages: Array<{
-                  data: MediaItem[];
-                  meta: { total?: number };
-                }>;
-              };
-              if (!typed.pages) return oldData;
+          queryClient.setQueriesData({ queryKey: ['media', 'list'] }, (oldData: unknown) => {
+            if (!oldData || typeof oldData !== 'object') return oldData;
+            const typed = oldData as {
+              pages: Array<{
+                data: MediaItem[];
+                meta: { total?: number };
+              }>;
+            };
+            if (!typed.pages) return oldData;
 
-              const newPages = typed.pages.map((page) => ({
-                ...page,
-                data: page.data.filter((item) => item.id !== deletedId),
-                meta: {
-                  ...page.meta,
-                  total: Math.max(0, (page.meta?.total ?? 0) - 1),
-                },
-              }));
+            const newPages = typed.pages.map((page) => ({
+              ...page,
+              data: page.data.filter((item) => item.id !== deletedId),
+              meta: {
+                ...page.meta,
+                total: Math.max(0, (page.meta?.total ?? 0) - 1),
+              },
+            }));
 
-              return { ...typed, pages: newPages };
-            },
-          );
+            return { ...typed, pages: newPages };
+          });
 
           // Also remove from single-item cache
           queryClient.removeQueries({

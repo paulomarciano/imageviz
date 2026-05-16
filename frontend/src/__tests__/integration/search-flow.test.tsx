@@ -49,9 +49,12 @@ describe('Search Flow', () => {
     await userEvent.type(searchInput, 'sunset');
 
     // Wait for debounce + search results
-    await waitFor(() => {
-      expect(screen.getAllByText(/result for "sunset"/).length).toBeGreaterThanOrEqual(1);
-    }, { timeout: 2000 });
+    await waitFor(
+      () => {
+        expect(screen.getAllByText(/result for "sunset"/).length).toBeGreaterThanOrEqual(1);
+      },
+      { timeout: 2000 },
+    );
   });
 
   it('clears search and returns to full list', async () => {
@@ -61,9 +64,12 @@ describe('Search Flow', () => {
     const searchInput = screen.getByPlaceholderText('Search media...');
     await userEvent.type(searchInput, 'sunset');
 
-    await waitFor(() => {
-      expect(screen.getAllByText(/result for "sunset"/).length).toBeGreaterThanOrEqual(1);
-    }, { timeout: 2000 });
+    await waitFor(
+      () => {
+        expect(screen.getAllByText(/result for "sunset"/).length).toBeGreaterThanOrEqual(1);
+      },
+      { timeout: 2000 },
+    );
 
     // Clear search
     await userEvent.click(screen.getByLabelText('Clear search'));
@@ -96,8 +102,11 @@ describe('Search Flow', () => {
     const searchInput = screen.getByPlaceholderText('Search media...');
     await userEvent.type(searchInput, 'zzzznonexistent');
 
-    await waitFor(() => {
-      expect(screen.getByText(/0 results/)).toBeInTheDocument();
-    }, { timeout: 2000 });
+    await waitFor(
+      () => {
+        expect(screen.getByText(/0 results/)).toBeInTheDocument();
+      },
+      { timeout: 2000 },
+    );
   });
 });

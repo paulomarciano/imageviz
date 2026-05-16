@@ -49,8 +49,7 @@ export function ConfigPanel({ onClose }: ConfigPanelProps) {
     const el = panelRef.current;
     if (!el) return;
 
-    const focusableSelector =
-      'button, input, select, textarea, [tabindex]:not([tabindex="-1"])';
+    const focusableSelector = 'button, input, select, textarea, [tabindex]:not([tabindex="-1"])';
 
     const handleTabKey = (e: KeyboardEvent) => {
       if (e.key !== 'Tab') return;
@@ -143,7 +142,12 @@ export function ConfigPanel({ onClose }: ConfigPanelProps) {
           aria-label="Close settings"
         >
           <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M6 18L18 6M6 6l12 12"
+            />
           </svg>
         </button>
       </div>
@@ -168,7 +172,9 @@ export function ConfigPanel({ onClose }: ConfigPanelProps) {
               placeholder="Folder path (e.g., ~/ComfyUI/output)"
               value={newPath}
               onChange={(e) => setNewPath(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') addFolder(); }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') addFolder();
+              }}
               className="flex-1 px-3 py-1.5 bg-gray-800 border border-gray-600 rounded text-sm text-white placeholder-gray-400 focus:outline-none focus:border-blue-500"
               aria-label="Folder path"
             />
@@ -177,7 +183,9 @@ export function ConfigPanel({ onClose }: ConfigPanelProps) {
               placeholder="Label"
               value={newLabel}
               onChange={(e) => setNewLabel(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') addFolder(); }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') addFolder();
+              }}
               className="w-20 px-2 py-1.5 bg-gray-800 border border-gray-600 rounded text-sm text-white placeholder-gray-400 focus:outline-none focus:border-blue-500"
               aria-label="Folder label (optional)"
             />
@@ -192,11 +200,16 @@ export function ConfigPanel({ onClose }: ConfigPanelProps) {
 
           {/* Folder list */}
           {localFolders.length === 0 ? (
-            <p className="text-gray-500 text-sm">No folders configured. Add a folder to start indexing.</p>
+            <p className="text-gray-500 text-sm">
+              No folders configured. Add a folder to start indexing.
+            </p>
           ) : (
             <ul className="space-y-2">
               {localFolders.map((folder, i) => (
-                <li key={`${folder.path}-${i}`} className="flex items-center justify-between p-2 bg-gray-800 rounded">
+                <li
+                  key={`${folder.path}-${i}`}
+                  className="flex items-center justify-between p-2 bg-gray-800 rounded"
+                >
                   <div className="min-w-0 flex-1">
                     <p className="text-sm text-white truncate">{folder.label || folder.path}</p>
                     {folder.label && (
@@ -209,7 +222,12 @@ export function ConfigPanel({ onClose }: ConfigPanelProps) {
                     aria-label={`Remove ${folder.path}`}
                   >
                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M6 18L18 6M6 6l12 12"
+                      />
                     </svg>
                   </button>
                 </li>
@@ -242,12 +260,16 @@ export function ConfigPanel({ onClose }: ConfigPanelProps) {
               {statsQuery.data.last_indexed_at && (
                 <div className="flex justify-between pt-1 border-t border-gray-700">
                   <span className="text-gray-400">Last indexed</span>
-                  <span className="text-white text-xs">{new Date(statsQuery.data.last_indexed_at).toLocaleString()}</span>
+                  <span className="text-white text-xs">
+                    {new Date(statsQuery.data.last_indexed_at).toLocaleString()}
+                  </span>
                 </div>
               )}
               <div className="flex justify-between">
                 <span className="text-gray-400">Index status</span>
-                <span className="text-xs font-medium text-blue-400">{statsQuery.data.indexing.status}</span>
+                <span className="text-xs font-medium text-blue-400">
+                  {statsQuery.data.indexing.status}
+                </span>
               </div>
               {statsQuery.data.indexing.status !== 'Idle' && (
                 <div className="flex justify-between">

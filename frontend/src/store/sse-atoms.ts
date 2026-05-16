@@ -9,11 +9,7 @@ import { atom } from 'jotai';
 import type { SseEvent } from '../types/api';
 
 /** Connection status of the SSE stream. */
-export type SseConnectionStatus =
-  | 'connecting'
-  | 'connected'
-  | 'disconnected'
-  | 'error';
+export type SseConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
 
 /** The current connection status for the SSE stream. */
 export const sseStatusAtom = atom<SseConnectionStatus>('disconnected');

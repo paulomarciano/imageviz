@@ -11,7 +11,12 @@ export function ErrorState({ message, details, onRetry }: ErrorStateProps) {
 
   return (
     <div className="flex flex-col items-center justify-center h-full p-8 text-center">
-      <svg className="w-12 h-12 text-red-400 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <svg
+        className="w-12 h-12 text-red-400 mb-4"
+        fill="none"
+        viewBox="0 0 24 24"
+        stroke="currentColor"
+      >
         <path
           strokeLinecap="round"
           strokeLinejoin="round"
