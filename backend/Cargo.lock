@@ -1048,10 +1048,13 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "chrono",
+ "crc32fast",
  "futures-util",
  "hex",
+ "http-body-util",
  "image",
  "mime_guess",
+ "png",
  "reqwest",
  "rusqlite",
  "serde",
