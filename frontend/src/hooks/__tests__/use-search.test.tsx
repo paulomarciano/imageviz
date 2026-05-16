@@ -97,7 +97,7 @@ describe('useSearch', () => {
     expect(result.current.noResults).toBe(false);
   });
 
-  it('indicates debouncing while query is changing', async () => {
+  it('disables search when query is empty', () => {
     // Arrange
     vi.mocked(searchApi.searchMedia).mockResolvedValue({
       data: [],
@@ -109,16 +109,12 @@ describe('useSearch', () => {
       },
     });
 
-    // Act — start with empty query
-    const { result, rerender } = renderHook((q: string = '') => useSearch(q), {
+    // Act
+    const { result } = renderHook(() => useSearch(''), {
       wrapper: createWrapper(),
-      initialProps: '',
     });
 
-    // Re-render with a new query — the debounce is still pending
-    rerender('new query');
-
     // Assert
-    expect(result.current.isDebouncing).toBe(true);
+    expect(result.current.isFetching).toBe(false);
   });
 });

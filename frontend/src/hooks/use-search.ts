@@ -1,44 +1,32 @@
-import { useState, useEffect, useRef } from 'react';
 import { useInfiniteQuery } from '@tanstack/react-query';
 import { searchMedia } from '../api/search.ts';
 import type { MediaItem, PaginatedResponse } from '../types';
 
 /**
- * Custom hook for debounced full-text search with cursor-based pagination.
+ * Custom hook for full-text search with cursor-based pagination.
  *
  * Returns flattened results, total count, pagination controls, and convenience
- * booleans (hasResults, noResults, isDebouncing).
+ * booleans (hasResults, noResults).
+ *
+ * Debouncing is handled upstream by the SearchBar component so this hook
+ * uses the `query` value directly — no additional debounce needed here.
  *
  * Uses TanStack Query's infinite queries with cursor-based page params that
  * match the backend pagination model.
  *
- * @param query - The raw (non-debounced) search query from the user input.
+ * @param query - The search query to send to the backend (already debounced upstream).
  * @param limit - Max items per page (default 100).
  */
 export function useSearch(query: string, limit = 100) {
-  const [debouncedQuery, setDebouncedQuery] = useState(query);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-
-  // Debounce: update debouncedQuery 300ms after the user stops typing.
-  useEffect(() => {
-    timerRef.current = setTimeout(() => {
-      setDebouncedQuery(query);
-    }, 300);
-
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
-  }, [query]);
-
-  // Disable search when the debounced query is empty.
-  const enabled = debouncedQuery.trim().length > 0;
+  // Disable search when the query is empty.
+  const enabled = query.trim().length > 0;
 
   const infiniteQuery = useInfiniteQuery<PaginatedResponse<MediaItem>, Error>({
-    queryKey: ['search', debouncedQuery, { limit }],
+    queryKey: ['search', query, { limit }],
     queryFn: ({ pageParam }) => {
       const cursor = pageParam as { cursor?: string; cursor_id?: string } | undefined;
       return searchMedia({
-        q: debouncedQuery,
+        q: query,
         limit,
         cursor: cursor?.cursor,
         cursor_id: cursor?.cursor_id,
@@ -68,8 +56,6 @@ export function useSearch(query: string, limit = 100) {
     ...infiniteQuery,
     results: allResults,
     totalCount,
-    /** True while the user is still typing (before the debounce settles). */
-    isDebouncing: query !== debouncedQuery,
     /** True when results exist and loading is complete. */
     hasResults: enabled && !infiniteQuery.isLoading && allResults.length > 0,
     /** True when the search completed with zero results. */

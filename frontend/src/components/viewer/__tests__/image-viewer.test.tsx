@@ -142,8 +142,8 @@ describe('ImageViewer', () => {
     fireEvent.mouseDown(container, { clientX: 100, clientY: 100 });
     fireEvent.mouseMove(container, { clientX: 150, clientY: 120 });
 
-    // Assert
-    expect(container).toHaveClass('active:cursor-grabbing');
+    // Assert — class is now dynamically applied based on isDragging state
+    expect(container).toHaveClass('cursor-grabbing');
   });
 
   /* ---------- Zoom indicator ---------- */

@@ -15,7 +15,7 @@ export function MetadataPanel({ metadata }: MetadataPanelProps) {
   }
 
   return (
-    <div className="h-full overflow-y-auto p-3 bg-gray-850 border-l border-gray-700">
+    <div className="h-full overflow-y-auto p-3 bg-gray-800/70 border-l border-gray-700">
       <h3 className="text-sm font-medium text-gray-300 mb-3">Metadata</h3>
 
       {metadata.prompt && (

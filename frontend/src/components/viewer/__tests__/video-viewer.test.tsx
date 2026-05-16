@@ -5,11 +5,23 @@
  * loading state transitions, error handling with retry, and file info overlay.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeAll } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { VideoViewer } from '../video-viewer';
 import { createMockMediaItem } from '../../../test-utils/render-utils';
 import type { MediaItemDetail } from '../../../types/media';
+
+// jsdom does not implement HTMLMediaElement.prototype.play / pause.
+// We mock them with spies that also toggle the paused property.
+beforeAll(() => {
+  HTMLVideoElement.prototype.play = vi.fn(function (this: HTMLVideoElement) {
+    Object.defineProperty(this, 'paused', { value: false, writable: true, configurable: true });
+    return Promise.resolve();
+  });
+  HTMLVideoElement.prototype.pause = vi.fn(function (this: HTMLVideoElement) {
+    Object.defineProperty(this, 'paused', { value: true, writable: true, configurable: true });
+  });
+});
 
 /* ------------------------------------------------------------------ */
 /*  Fixture                                                            */
@@ -150,5 +162,98 @@ describe('VideoViewer', () => {
     // Assert
     expect(screen.getByText(/test\.mp4/)).toBeInTheDocument();
     expect(screen.getByText(/1920×1080/)).toBeInTheDocument();
+  });
+
+  /* ---------- Keyboard shortcuts ---------- */
+
+  it('toggles play/pause on Space key', () => {
+    // Arrange
+    vi.clearAllMocks();
+    const item = createMockVideoDetail();
+    render(<VideoViewer item={item} />);
+    const video = document.querySelector('video')!;
+    fireEvent.loadedMetadata(video);
+
+    // Start in a "playing" state
+    Object.defineProperty(video, 'paused', { value: false, writable: true, configurable: true });
+
+    // Act — dispatch keydown on the container div
+    const container = video.parentElement!;
+    fireEvent.keyDown(container, { key: ' ' });
+
+    // Assert — pause should have been called
+    expect(video.pause).toHaveBeenCalledOnce();
+    expect(video.paused).toBe(true);
+
+    // Now start in a "paused" state
+    Object.defineProperty(video, 'paused', { value: true, writable: true, configurable: true });
+    fireEvent.keyDown(container, { key: ' ' });
+
+    // Assert — play should have been called
+    expect(video.play).toHaveBeenCalledOnce();
+  });
+
+  it('seeks backward on ArrowLeft', () => {
+    // Arrange
+    const item = createMockVideoDetail();
+    render(<VideoViewer item={item} />);
+    const video = document.querySelector('video')!;
+    fireEvent.loadedMetadata(video);
+    Object.defineProperty(video, 'currentTime', { value: 30, writable: true });
+    Object.defineProperty(video, 'duration', { value: 120, writable: true });
+
+    // Act
+    const container = video.parentElement!;
+    fireEvent.keyDown(container, { key: 'ArrowLeft' });
+
+    // Assert
+    expect(video.currentTime).toBe(25);
+  });
+
+  it('seeks forward on ArrowRight', () => {
+    // Arrange
+    const item = createMockVideoDetail();
+    render(<VideoViewer item={item} />);
+    const video = document.querySelector('video')!;
+    fireEvent.loadedMetadata(video);
+    Object.defineProperty(video, 'currentTime', { value: 30, writable: true });
+    Object.defineProperty(video, 'duration', { value: 120, writable: true });
+
+    // Act
+    const container = video.parentElement!;
+    fireEvent.keyDown(container, { key: 'ArrowRight' });
+
+    // Assert
+    expect(video.currentTime).toBe(35);
+  });
+
+  it('toggles fullscreen on F key', () => {
+    // Arrange
+    const item = createMockVideoDetail();
+    render(<VideoViewer item={item} />);
+    const video = document.querySelector('video')!;
+    fireEvent.loadedMetadata(video);
+    const requestFullscreen = vi.fn();
+    video.requestFullscreen = requestFullscreen;
+
+    // Act
+    const container = video.parentElement!;
+    fireEvent.keyDown(container, { key: 'f' });
+
+    // Assert
+    expect(requestFullscreen).toHaveBeenCalled();
+  });
+
+  it('does not interfere with component when video ref is null', () => {
+    // Arrange
+    const item = createMockVideoDetail();
+    // Remove any video element to simulate missing ref
+    const { container } = render(<VideoViewer item={item} />);
+
+    // Act — dispatch on container (no-op, should not throw)
+    const containerDiv = container.firstElementChild!;
+    expect(() => {
+      fireEvent.keyDown(containerDiv, { key: ' ' });
+    }).not.toThrow();
   });
 });

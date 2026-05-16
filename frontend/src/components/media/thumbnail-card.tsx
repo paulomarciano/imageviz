@@ -1,17 +1,12 @@
 import { memo, useState, type KeyboardEvent } from 'react';
 import type { MediaItem } from '../../types/media';
+import { formatFileSize } from '../../utils/format';
 
 interface ThumbnailCardProps {
   readonly item: MediaItem;
   readonly onClick: (item: MediaItem) => void;
   readonly index?: number;
   readonly isFocused?: boolean;
-}
-
-function formatFileSize(bytes: number): string {
-  if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
-  if (bytes >= 1_000) return `${(bytes / 1_000).toFixed(1)} KB`;
-  return `${bytes} B`;
 }
 
 export const ThumbnailCard = memo(function ThumbnailCard({ item, onClick, index, isFocused = false }: ThumbnailCardProps) {

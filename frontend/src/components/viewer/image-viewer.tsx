@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback } from 'react';
 import type { MediaItemDetail } from '../../types/media';
 
 interface ImageViewerProps {
@@ -13,7 +13,6 @@ export function ImageViewer({ item }: ImageViewerProps) {
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
   const [fitMode, setFitMode] = useState(true);
-  const containerRef = useRef<HTMLDivElement>(null);
 
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
@@ -66,8 +65,9 @@ export function ImageViewer({ item }: ImageViewerProps) {
 
   return (
     <div
-      ref={containerRef}
-      className="relative w-full h-full flex items-center justify-center bg-black/90 overflow-hidden cursor-grab active:cursor-grabbing select-none"
+      className={`relative w-full h-full flex items-center justify-center bg-black/90 overflow-hidden select-none ${
+        isDragging ? 'cursor-grabbing' : 'cursor-grab'
+      }`}
       onWheel={handleWheel}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}

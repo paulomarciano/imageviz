@@ -7,9 +7,10 @@
  * `currentIndex` for arrow-based navigation.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import type { MediaItem, MediaItemDetail } from '../../types/media';
 import { fetchMediaItem } from '../../api/media';
+import { formatFileSize } from '../../utils/format';
 import { ImageViewer } from './image-viewer';
 import { VideoViewer } from './video-viewer';
 import { MetadataPanel } from './metadata-panel';
@@ -21,11 +22,42 @@ interface DetailViewProps {
   readonly onClose: () => void;
 }
 
-/** Format a byte count into a human-readable file-size string. */
-function formatFileSize(bytes: number): string {
-  if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
-  if (bytes >= 1_000) return `${(bytes / 1_000).toFixed(1)} KB`;
-  return `${bytes} B`;
+/**
+ * Trap focus within the modal so Tab/Shift+Tab cycle among interactive
+ * elements inside the dialog rather than escaping to the page behind it.
+ */
+function useFocusTrap(containerRef: React.RefObject<HTMLDivElement | null>) {
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'Tab') return;
+
+      const focusable = el.querySelectorAll<HTMLElement>(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+      );
+      if (focusable.length === 0) return;
+
+      const first = focusable[0]!;
+      const last = focusable[focusable.length - 1]!;
+
+      if (e.shiftKey) {
+        if (document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else {
+        if (document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    };
+
+    el.addEventListener('keydown', handleKeyDown);
+    return () => el.removeEventListener('keydown', handleKeyDown);
+  }, [containerRef]);
 }
 
 export function DetailView({
@@ -36,9 +68,16 @@ export function DetailView({
 }: DetailViewProps) {
   const [detailItem, setDetailItem] = useState<MediaItemDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const overlayRef = useRef<HTMLDivElement | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
 
   const item = items[currentIndex];
   if (!item) return null;
+
+  // Focus the close button on mount (first focusable element).
+  useEffect(() => {
+    closeButtonRef.current?.focus();
+  }, []);
 
   // Fetch full detail when the selected item changes.
   useEffect(() => {
@@ -97,10 +136,19 @@ export function DetailView({
     };
   }, []);
 
+  // Focus trap inside the modal.
+  useFocusTrap(overlayRef);
+
   const isVideo = item.mime_type.startsWith('video/');
 
   return (
-    <div className="fixed inset-0 z-50 bg-gray-900 flex animate-fade-in">
+    <div
+      ref={overlayRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Media detail view"
+      className="fixed inset-0 z-50 bg-gray-900 flex animate-fade-in"
+    >
       {/* ---- Main viewer area ---- */}
       <div className="flex-1 relative flex items-center justify-center">
         {loadingDetail ? (
@@ -117,6 +165,7 @@ export function DetailView({
 
         {/* Close button (top-right corner) */}
         <button
+          ref={closeButtonRef}
           onClick={onClose}
           className="absolute top-4 right-4 z-10 w-8 h-8 flex items-center justify-center rounded-full
                      bg-black/50 hover:bg-black/70 text-white transition-colors"

@@ -2,9 +2,12 @@
  * Video viewer component with native controls, keyboard shortcuts, and
  * loading/error states. Uses the `<video>` element with browser-native
  * controls for play/pause, seek, volume, and fullscreen.
+ *
+ * Keyboard shortcuts are scoped to the container div (not window) so they
+ * don't interfere with other UI elements like the metadata panel.
  */
 
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import type { MediaItemDetail } from '../../types/media';
 
 interface VideoViewerProps {
@@ -33,39 +36,37 @@ export function VideoViewer({ item }: VideoViewerProps) {
     videoRef.current?.load();
   }, []);
 
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      const video = videoRef.current;
-      if (!video) return;
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    const video = videoRef.current;
+    if (!video) return;
 
-      switch (e.key) {
-        case ' ':
-          e.preventDefault();
-          if (video.paused) {
-            void video.play();
-          } else {
-            video.pause();
-          }
-          break;
-        case 'ArrowLeft':
-          video.currentTime = Math.max(0, video.currentTime - 5);
-          break;
-        case 'ArrowRight':
-          video.currentTime = Math.min(video.duration, video.currentTime + 5);
-          break;
-        case 'f':
-        case 'F':
-          if (document.fullscreenElement) {
-            void document.exitFullscreen();
-          } else {
-            void video.requestFullscreen();
-          }
-          break;
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    switch (e.key) {
+      case ' ':
+        e.preventDefault();
+        if (video.paused) {
+          void video.play();
+        } else {
+          video.pause();
+        }
+        break;
+      case 'ArrowLeft':
+        e.preventDefault();
+        video.currentTime = Math.max(0, video.currentTime - 5);
+        break;
+      case 'ArrowRight':
+        e.preventDefault();
+        video.currentTime = Math.min(video.duration, video.currentTime + 5);
+        break;
+      case 'f':
+      case 'F':
+        e.preventDefault();
+        if (document.fullscreenElement) {
+          void document.exitFullscreen();
+        } else {
+          void video.requestFullscreen();
+        }
+        break;
+    }
   }, []);
 
   return (
@@ -94,7 +95,10 @@ export function VideoViewer({ item }: VideoViewerProps) {
           </button>
         </div>
       ) : (
-        <>
+        <div
+          className="relative w-full h-full flex items-center justify-center"
+          onKeyDown={handleKeyDown}
+        >
           {isLoading && (
             <div className="absolute inset-0 flex items-center justify-center z-10">
               <div className="animate-spin h-8 w-8 border-2 border-blue-500 border-t-transparent rounded-full" />
@@ -112,7 +116,7 @@ export function VideoViewer({ item }: VideoViewerProps) {
           >
             Your browser does not support the video tag.
           </video>
-        </>
+        </div>
       )}
       {!error && !isLoading && (
         <div className="absolute top-4 left-4 bg-black/70 text-white text-xs px-2 py-1 rounded pointer-events-none">

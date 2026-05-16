@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useMemo, type HTMLAttributes } from 'react';
+import { forwardRef, useCallback, useState, useEffect, type HTMLAttributes } from 'react';
 import { VirtuosoGrid } from 'react-virtuoso';
 import { useAtomValue } from 'jotai';
 import { searchQueryAtom, mediaViewModeAtom } from '../../store/search-atoms';
@@ -86,8 +86,9 @@ export function ThumbnailGrid({ onItemClick }: ThumbnailGridProps) {
 
   const { savedIndex, handleRangeChanged } = useScrollRestore();
 
-  // Determine number of columns from grid class for keyboard nav
-  const columns = useMemo(() => {
+  // Determine number of columns from grid class for keyboard nav.
+  // Updates on window resize so keyboard nav stays accurate.
+  const computeColumns = useCallback(() => {
     if (typeof window !== 'undefined') {
       if (window.innerWidth >= 1280) return 5;
       if (window.innerWidth >= 1024) return 4;
@@ -95,6 +96,14 @@ export function ThumbnailGrid({ onItemClick }: ThumbnailGridProps) {
     }
     return 2;
   }, []);
+
+  const [columns, setColumns] = useState(computeColumns);
+
+  useEffect(() => {
+    const onResize = () => setColumns(computeColumns());
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [computeColumns]);
 
   const { focusIndex, containerRef, handleKeyDown } = useKeyboardNav({
     itemCount: items.length,
