@@ -642,7 +642,7 @@ async fn serve_thumbnail(
 
     // Look up media item, resolve file path, and get checksum (single lock)
     let db = state.db.lock().await;
-    let (file_path, _, _) = resolve_media_path(&db, &id)?;
+    let (file_path, mime_type, _) = resolve_media_path(&db, &id)?;
 
     let checksum: String = db
         .query_row(
@@ -659,6 +659,7 @@ async fn serve_thumbnail(
         &checksum,
         width,
         &state.thumbnail_cache_dir,
+        &mime_type,
     )
     .await
     .map_err(|e| {

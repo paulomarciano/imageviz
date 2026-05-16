@@ -33,7 +33,7 @@ mod tests {
 
         // Act
         let result =
-            get_or_generate_thumbnail(&source_path, TEST_CHECKSUM, 200, cache_dir.path()).await;
+            get_or_generate_thumbnail(&source_path, TEST_CHECKSUM, 200, cache_dir.path(), "image/png").await;
 
         // Assert
         assert!(result.is_ok(), "cache miss should generate: {:?}", result.err());
@@ -58,12 +58,12 @@ mod tests {
 
         // Act — first call (cache miss)
         let first =
-            get_or_generate_thumbnail(&source_path, TEST_CHECKSUM, 200, cache_dir.path()).await;
+            get_or_generate_thumbnail(&source_path, TEST_CHECKSUM, 200, cache_dir.path(), "image/png").await;
         assert!(first.is_ok(), "first call should generate: {:?}", first.err());
 
         // Act — second call (cache hit)
         let second =
-            get_or_generate_thumbnail(&source_path, TEST_CHECKSUM, 200, cache_dir.path()).await;
+            get_or_generate_thumbnail(&source_path, TEST_CHECKSUM, 200, cache_dir.path(), "image/png").await;
 
         // Assert
         assert!(second.is_ok(), "second call should succeed: {:?}", second.err());
@@ -84,7 +84,7 @@ mod tests {
 
         // Act
         let result =
-            get_or_generate_thumbnail(&source_path, TEST_CHECKSUM, 200, cache_dir.path()).await;
+            get_or_generate_thumbnail(&source_path, TEST_CHECKSUM, 200, cache_dir.path(), "image/png").await;
         assert!(result.is_ok(), "generation should succeed: {:?}", result.err());
         let path = result.unwrap();
 
@@ -110,7 +110,7 @@ mod tests {
 
         // Act
         let result =
-            get_or_generate_thumbnail(&source_path, TEST_CHECKSUM, 200, &cache_subdir).await;
+            get_or_generate_thumbnail(&source_path, TEST_CHECKSUM, 200, &cache_subdir, "image/png").await;
 
         // Assert
         assert!(
@@ -129,7 +129,7 @@ mod tests {
         let nonexistent = Path::new("/nonexistent/file.png");
 
         // Act
-        let result = get_or_generate_thumbnail(nonexistent, TEST_CHECKSUM, 200, cache_dir.path()).await;
+        let result = get_or_generate_thumbnail(nonexistent, TEST_CHECKSUM, 200, cache_dir.path(), "image/png").await;
 
         // Assert
         assert!(result.is_err(), "non-existent source should produce an error");
@@ -151,7 +151,7 @@ mod tests {
 
         // Act — width below minimum
         let result =
-            get_or_generate_thumbnail(&source_path, TEST_CHECKSUM, 50, cache_dir.path()).await;
+            get_or_generate_thumbnail(&source_path, TEST_CHECKSUM, 50, cache_dir.path(), "image/png").await;
 
         // Assert
         assert!(result.is_err(), "width=50 should be rejected");
@@ -171,7 +171,7 @@ mod tests {
 
         // Act — generate from corrupt/non-image file
         let result =
-            get_or_generate_thumbnail(&bad_path, TEST_CHECKSUM, 200, cache_dir.path()).await;
+            get_or_generate_thumbnail(&bad_path, TEST_CHECKSUM, 200, cache_dir.path(), "image/png").await;
 
         // Assert
         assert!(result.is_err(), "corrupt source should produce an error");
@@ -191,9 +191,9 @@ mod tests {
 
         // Act
         let w200 =
-            get_or_generate_thumbnail(&source_path, TEST_CHECKSUM, 200, cache_dir.path()).await;
+            get_or_generate_thumbnail(&source_path, TEST_CHECKSUM, 200, cache_dir.path(), "image/png").await;
         let w300 =
-            get_or_generate_thumbnail(&source_path, TEST_CHECKSUM, 300, cache_dir.path()).await;
+            get_or_generate_thumbnail(&source_path, TEST_CHECKSUM, 300, cache_dir.path(), "image/png").await;
 
         // Assert
         assert!(w200.is_ok(), "200px thumbnail should succeed: {:?}", w200.err());

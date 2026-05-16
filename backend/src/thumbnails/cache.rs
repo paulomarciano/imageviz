@@ -123,10 +123,13 @@ fn acquire_lock(key: &str) -> Arc<tokio::sync::Mutex<()>> {
 /// Retrieve a thumbnail from the content-addressed cache, generating it if absent.
 ///
 /// # Arguments
-/// * `source_path` — Path to the source image file.
+/// * `source_path` — Path to the source media file.
 /// * `checksum` — Full SHA-256 hex digest of the source file content.
 /// * `target_width` — Desired thumbnail width in pixels.
 /// * `cache_dir` — Root directory for the on-disk cache.
+/// * `mime_type` — MIME type of the source (e.g. `image/png`, `video/mp4`).
+///   Used to select the appropriate generation strategy: the `image` crate for
+///   images, ffmpeg + `image` crate for videos.
 ///
 /// # Cache key
 /// `{checksum[:16]}_{target_width}.webp` — purely content-addressed via checksum
@@ -148,6 +151,7 @@ pub async fn get_or_generate_thumbnail(
     checksum: &str,
     target_width: u32,
     cache_dir: &Path,
+    mime_type: &str,
 ) -> Result<PathBuf, CacheError> {
     // --- Validate width range (fail fast) ---
     if !(image::MIN_WIDTH..=image::MAX_WIDTH).contains(&target_width) {
@@ -183,10 +187,36 @@ pub async fn get_or_generate_thumbnail(
     // Ensure the cache directory exists.
     tokio::fs::create_dir_all(cache_dir).await?;
 
-    // Generate the thumbnail (returns a temp path in the system temp dir).
-    let generated_path = image::generate_image_thumbnail(source_path, target_width)
+    // Generate the thumbnail.
+    // For video files: extract a PNG keyframe via ffmpeg, then convert to WebP.
+    // For images: resize the source to WebP directly.
+    let generated_path = if mime_type.starts_with("video/") {
+        let video_temp = std::env::temp_dir().join("imageviz-video-thumbs");
+        tokio::fs::create_dir_all(&video_temp).await?;
+
+        let frame_path = super::video::extract_video_thumbnail(
+            source_path,
+            &video_temp,
+            1, // extract frame at 1 second
+        )
         .await
         .map_err(|e| CacheError::Generation(e.to_string()))?;
+
+        // Convert the extracted PNG frame to a WebP thumbnail at the
+        // requested width.
+        let webp_path = image::generate_image_thumbnail(&frame_path, target_width)
+            .await
+            .map_err(|e| CacheError::Generation(e.to_string()))?;
+
+        // Clean up the intermediate frame PNG.
+        let _ = tokio::fs::remove_file(&frame_path).await;
+
+        webp_path
+    } else {
+        image::generate_image_thumbnail(source_path, target_width)
+            .await
+            .map_err(|e| CacheError::Generation(e.to_string()))?
+    };
 
     // Atomic write: copy to a temp file inside the cache directory, then
     // rename (which is atomic on the same filesystem).
