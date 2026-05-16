@@ -8,7 +8,7 @@
  */
 
 import { http, HttpResponse } from 'msw';
-import type { MediaItem } from '../types/media';
+import type { MediaItem, MediaItemDetail } from '../types/media';
 
 /** Create a mock MediaItem with sensible defaults and optional overrides. */
 function createMockMediaItem(id: string, overrides?: Partial<MediaItem>): MediaItem {
@@ -65,5 +65,26 @@ export const handlers = [
 
   http.get('/api/v1/health', () => {
     return HttpResponse.json({ status: 'ok', version: '0.1.0' });
+  }),
+
+  http.get('/api/v1/media/:id', ({ params }) => {
+    const id = params.id as string;
+    return HttpResponse.json({
+      id,
+      filename: `detail_${id}.png`,
+      path: `2025/detail_${id}.png`,
+      mime_type: 'image/png',
+      thumbnail_url: `/api/v1/media/${id}/thumbnail`,
+      file_url: `/api/v1/media/${id}/file`,
+      width: 896,
+      height: 1216,
+      file_size: 245760,
+      created_at: '2025-01-01T00:00:00Z',
+      modified_at: '2025-01-01T00:00:00Z',
+      metadata: {
+        prompt: { seed: 12345, positive_prompt: 'a beautiful landscape' },
+        workflow: { nodes: [{ id: 1, type: 'KSampler' }] },
+      },
+    } satisfies MediaItemDetail);
   }),
 ];
