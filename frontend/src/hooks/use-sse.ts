@@ -36,7 +36,7 @@ export function useSse({
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectAttemptRef = useRef(0);
-  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const getReconnectDelay = useCallback(() => {
     const delay = Math.min(
@@ -90,17 +90,15 @@ export function useSse({
     ] as const;
 
     for (const eventType of eventTypes) {
-      es.addEventListener(
-        eventType,
-        ((event: MessageEvent) => {
-          try {
-            const data: unknown = JSON.parse(event.data);
-            onEvent({ event: eventType, data } as SseEvent);
-          } catch {
-            // ignore malformed events
-          }
-        }) as EventListener,
-      );
+      es.addEventListener(eventType, ((event: Event) => {
+        const msgEvent = event as MessageEvent;
+        try {
+          const data: unknown = JSON.parse(msgEvent.data);
+          onEvent({ event: eventType, data } as SseEvent);
+        } catch {
+          // ignore malformed events
+        }
+      }) as EventListener);
     }
 
     es.onerror = (error: Event) => {

@@ -8,7 +8,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import { useSse } from '../use-sse';
-import type { SseEvent } from '../../types/api';
 
 interface MockEventListener {
   (event: MessageEvent): void;

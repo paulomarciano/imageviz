@@ -31,8 +31,8 @@ describe('Detail View Flow', () => {
       expect(screen.getByText('image_mock-id-0.png')).toBeInTheDocument();
     });
 
-    // Click the first thumbnail card
-    const cards = screen.getAllByRole('button');
+    // Click the first thumbnail card (use aria-label to distinguish from settings button)
+    const cards = screen.getAllByRole('button', { name: /^View / });
     await userEvent.click(cards[0]!);
 
     // Detail view should appear with close button
@@ -48,7 +48,7 @@ describe('Detail View Flow', () => {
       expect(screen.getByText('image_mock-id-0.png')).toBeInTheDocument();
     });
 
-    const cards = screen.getAllByRole('button');
+    const cards = screen.getAllByRole('button', { name: /^View / });
     await userEvent.click(cards[0]!);
 
     await waitFor(() => {
@@ -69,7 +69,7 @@ describe('Detail View Flow', () => {
       expect(screen.getByText('image_mock-id-0.png')).toBeInTheDocument();
     });
 
-    const cards = screen.getAllByRole('button');
+    const cards = screen.getAllByRole('button', { name: /^View / });
     await userEvent.click(cards[0]!);
 
     await waitFor(() => {
@@ -90,7 +90,7 @@ describe('Detail View Flow', () => {
       expect(screen.getByText('image_mock-id-0.png')).toBeInTheDocument();
     });
 
-    const cards = screen.getAllByRole('button');
+    const cards = screen.getAllByRole('button', { name: /^View / });
     await userEvent.click(cards[0]!);
 
     // The metadata panel should render the 'prompt' key name
