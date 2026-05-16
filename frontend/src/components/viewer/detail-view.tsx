@@ -60,12 +60,7 @@ function useFocusTrap(containerRef: React.RefObject<HTMLDivElement | null>) {
   }, [containerRef]);
 }
 
-export function DetailView({
-  items,
-  currentIndex,
-  onNavigate,
-  onClose,
-}: DetailViewProps) {
+export function DetailView({ items, currentIndex, onNavigate, onClose }: DetailViewProps) {
   const [detailItem, setDetailItem] = useState<MediaItemDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const overlayRef = useRef<HTMLDivElement | null>(null);
@@ -153,7 +148,10 @@ export function DetailView({
       <div className="flex-1 relative flex items-center justify-center">
         {loadingDetail ? (
           <div className="flex items-center justify-center">
-            <div aria-label="Loading media details" className="animate-spin h-8 w-8 border-2 border-blue-500 border-t-transparent rounded-full" />
+            <div
+              aria-label="Loading media details"
+              className="animate-spin h-8 w-8 border-2 border-blue-500 border-t-transparent rounded-full"
+            />
           </div>
         ) : detailItem ? (
           isVideo ? (
@@ -185,9 +183,7 @@ export function DetailView({
                 {item.height}
               </span>
             )}
-            <span className="ml-2 text-gray-400">
-              {formatFileSize(item.file_size)}
-            </span>
+            <span className="ml-2 text-gray-400">{formatFileSize(item.file_size)}</span>
           </div>
         )}
 

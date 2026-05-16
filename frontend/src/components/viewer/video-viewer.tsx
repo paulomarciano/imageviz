@@ -24,9 +24,7 @@ export function VideoViewer({ item }: VideoViewerProps) {
   }, []);
 
   const handleError = useCallback(() => {
-    setError(
-      'Unable to play video. The file may be corrupted or in an unsupported format.',
-    );
+    setError('Unable to play video. The file may be corrupted or in an unsupported format.');
     setIsLoading(false);
   }, []);
 
@@ -87,10 +85,7 @@ export function VideoViewer({ item }: VideoViewerProps) {
             />
           </svg>
           <p className="text-lg mb-2">{error}</p>
-          <button
-            onClick={handleRetry}
-            className="text-blue-400 hover:text-blue-300"
-          >
+          <button onClick={handleRetry} className="text-blue-400 hover:text-blue-300">
             Retry
           </button>
         </div>
@@ -121,9 +116,7 @@ export function VideoViewer({ item }: VideoViewerProps) {
       {!error && !isLoading && (
         <div className="absolute top-4 left-4 bg-black/70 text-white text-xs px-2 py-1 rounded pointer-events-none">
           {item.filename}
-          {item.width != null &&
-            item.height != null &&
-            ` (${item.width}\u00D7${item.height})`}
+          {item.width != null && item.height != null && ` (${item.width}\u00D7${item.height})`}
         </div>
       )}
     </div>

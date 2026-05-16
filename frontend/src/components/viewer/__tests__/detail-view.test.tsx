@@ -65,24 +65,14 @@ describe('DetailView', () => {
 
   it('renders nothing when items array is empty', () => {
     const { container } = render(
-      <DetailView
-        items={[]}
-        currentIndex={0}
-        onNavigate={vi.fn()}
-        onClose={vi.fn()}
-      />,
+      <DetailView items={[]} currentIndex={0} onNavigate={vi.fn()} onClose={vi.fn()} />,
     );
     expect(container.innerHTML).toBe('');
   });
 
   it('renders nothing when currentIndex is out of bounds', () => {
     const { container } = render(
-      <DetailView
-        items={mockItems}
-        currentIndex={99}
-        onNavigate={vi.fn()}
-        onClose={vi.fn()}
-      />,
+      <DetailView items={mockItems} currentIndex={99} onNavigate={vi.fn()} onClose={vi.fn()} />,
     );
     expect(container.innerHTML).toBe('');
   });
@@ -110,12 +100,7 @@ describe('DetailView', () => {
   /* ---------- Navigation buttons ---------- */
 
   it('shows previous button when not at first item', () => {
-    render(
-      <DetailView
-        {...defaultProps}
-        currentIndex={1}
-      />,
-    );
+    render(<DetailView {...defaultProps} currentIndex={1} />);
     expect(screen.getByLabelText('Previous item')).toBeInTheDocument();
   });
 
@@ -136,22 +121,14 @@ describe('DetailView', () => {
 
   it('calls onNavigate with previous index when previous is clicked', () => {
     const onNavigate = vi.fn();
-    render(
-      <DetailView
-        {...defaultProps}
-        currentIndex={1}
-        onNavigate={onNavigate}
-      />,
-    );
+    render(<DetailView {...defaultProps} currentIndex={1} onNavigate={onNavigate} />);
     fireEvent.click(screen.getByLabelText('Previous item'));
     expect(onNavigate).toHaveBeenCalledWith(0);
   });
 
   it('calls onNavigate with next index when next is clicked', () => {
     const onNavigate = vi.fn();
-    render(
-      <DetailView {...defaultProps} currentIndex={0} onNavigate={onNavigate} />,
-    );
+    render(<DetailView {...defaultProps} currentIndex={0} onNavigate={onNavigate} />);
     fireEvent.click(screen.getByLabelText('Next item'));
     expect(onNavigate).toHaveBeenCalledWith(1);
   });
@@ -167,18 +144,14 @@ describe('DetailView', () => {
 
   it('navigates forward with ArrowRight', () => {
     const onNavigate = vi.fn();
-    render(
-      <DetailView {...defaultProps} currentIndex={0} onNavigate={onNavigate} />,
-    );
+    render(<DetailView {...defaultProps} currentIndex={0} onNavigate={onNavigate} />);
     fireEvent.keyDown(window, { key: 'ArrowRight' });
     expect(onNavigate).toHaveBeenCalledWith(1);
   });
 
   it('navigates backward with ArrowLeft', () => {
     const onNavigate = vi.fn();
-    render(
-      <DetailView {...defaultProps} currentIndex={1} onNavigate={onNavigate} />,
-    );
+    render(<DetailView {...defaultProps} currentIndex={1} onNavigate={onNavigate} />);
     fireEvent.keyDown(window, { key: 'ArrowLeft' });
     expect(onNavigate).toHaveBeenCalledWith(0);
   });
@@ -192,9 +165,7 @@ describe('DetailView', () => {
 
   it('does not navigate right when at last item', () => {
     const onNavigate = vi.fn();
-    render(
-      <DetailView {...defaultProps} currentIndex={1} onNavigate={onNavigate} />,
-    );
+    render(<DetailView {...defaultProps} currentIndex={1} onNavigate={onNavigate} />);
     fireEvent.keyDown(window, { key: 'ArrowRight' });
     expect(onNavigate).not.toHaveBeenCalled();
   });

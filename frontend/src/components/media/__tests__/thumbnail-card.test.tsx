@@ -67,6 +67,18 @@ describe('ThumbnailCard', () => {
     expect(img).toHaveAttribute('src', mockItem.thumbnail_url);
   });
 
+  it('disables native browser image drag to prevent interfering with custom DnD', () => {
+    // Arrange — browser default image drag would set dataTransfer to the
+    // thumbnail URL, overriding the custom dragstart handler in DragSource
+    // that correctly sets it to the full file URL.
+    // Act
+    render(<ThumbnailCard item={mockItem} onClick={vi.fn()} />);
+    const img = screen.getByRole('img');
+
+    // Assert
+    expect(img).toHaveAttribute('draggable', 'false');
+  });
+
   it('shows placeholder when image fails to load', async () => {
     // Arrange
     render(<ThumbnailCard item={mockItem} onClick={vi.fn()} />);

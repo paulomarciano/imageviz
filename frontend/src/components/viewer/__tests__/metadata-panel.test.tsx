@@ -12,9 +12,7 @@ import { MetadataPanel } from '../metadata-panel';
 describe('MetadataPanel', () => {
   it('shows no metadata message when null', () => {
     render(<MetadataPanel metadata={null} />);
-    expect(
-      screen.getByText('No metadata available for this file'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('No metadata available for this file')).toBeInTheDocument();
   });
 
   it('renders prompt data as JSON tree', () => {
@@ -38,9 +36,7 @@ describe('MetadataPanel', () => {
   it('shows no structured metadata when both are null', () => {
     const metadata = { prompt: null, workflow: null };
     render(<MetadataPanel metadata={metadata} />);
-    expect(
-      screen.getByText('No structured metadata found.'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('No structured metadata found.')).toBeInTheDocument();
   });
 
   it('expands prompt by default and shows children', () => {

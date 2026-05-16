@@ -78,10 +78,7 @@ export function ImageViewer({ item }: ImageViewerProps) {
       {imageError ? (
         <div className="text-gray-400 text-center">
           <p className="text-lg">Unable to load image</p>
-          <button
-            onClick={handleRetry}
-            className="mt-2 text-blue-400 hover:text-blue-300"
-          >
+          <button onClick={handleRetry} className="mt-2 text-blue-400 hover:text-blue-300">
             Retry
           </button>
         </div>

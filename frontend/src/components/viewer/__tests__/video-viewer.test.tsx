@@ -27,9 +27,7 @@ beforeAll(() => {
 /*  Fixture                                                            */
 /* ------------------------------------------------------------------ */
 
-function createMockVideoDetail(
-  overrides?: Partial<MediaItemDetail>,
-): MediaItemDetail {
+function createMockVideoDetail(overrides?: Partial<MediaItemDetail>): MediaItemDetail {
   const base = createMockMediaItem({
     id: 'video-1',
     filename: 'test.mp4',
@@ -76,10 +74,7 @@ describe('VideoViewer', () => {
     const video = document.querySelector('video');
 
     // Assert
-    expect(video).toHaveAttribute(
-      'poster',
-      '/api/v1/media/video-1/thumbnail',
-    );
+    expect(video).toHaveAttribute('poster', '/api/v1/media/video-1/thumbnail');
   });
 
   /* ---------- Loading state ---------- */
@@ -143,9 +138,7 @@ describe('VideoViewer', () => {
     fireEvent.click(screen.getByText('Retry'));
 
     // Assert
-    expect(
-      screen.queryByText(/Unable to play video/),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/Unable to play video/)).not.toBeInTheDocument();
     expect(document.querySelector('.animate-spin')).toBeInTheDocument();
   });
 

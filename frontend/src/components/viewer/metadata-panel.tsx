@@ -66,12 +66,7 @@ function ValueDisplay({ value }: { readonly value: unknown }) {
   return <span className="text-gray-300">{String(value)}</span>;
 }
 
-function JsonNode({
-  keyName,
-  value,
-  depth,
-  defaultExpanded = false,
-}: JsonNodeProps) {
+function JsonNode({ keyName, value, depth, defaultExpanded = false }: JsonNodeProps) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const isExpandable = typeof value === 'object' && value !== null;
 
@@ -95,12 +90,7 @@ function JsonNode({
         <span className="text-gray-500">{`: Array[${value.length}]`}</span>
         {expanded &&
           value.map((item, i) => (
-            <JsonNode
-              key={i}
-              keyName={String(i)}
-              value={item}
-              depth={depth + 1}
-            />
+            <JsonNode key={i} keyName={String(i)} value={item} depth={depth + 1} />
           ))}
       </div>
     );
@@ -120,9 +110,7 @@ function JsonNode({
         <span className="text-blue-300">{keyName}</span>
         <span className="text-gray-500">{`: {} ${entries.length} keys`}</span>
         {expanded &&
-          entries.map(([k, v]) => (
-            <JsonNode key={k} keyName={k} value={v} depth={depth + 1} />
-          ))}
+          entries.map(([k, v]) => <JsonNode key={k} keyName={k} value={v} depth={depth + 1} />)}
       </div>
     );
   }

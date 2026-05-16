@@ -9,7 +9,12 @@ interface ThumbnailCardProps {
   readonly isFocused?: boolean;
 }
 
-export const ThumbnailCard = memo(function ThumbnailCard({ item, onClick, index, isFocused = false }: ThumbnailCardProps) {
+export const ThumbnailCard = memo(function ThumbnailCard({
+  item,
+  onClick,
+  index,
+  isFocused = false,
+}: ThumbnailCardProps) {
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
 
@@ -40,6 +45,7 @@ export const ThumbnailCard = memo(function ThumbnailCard({ item, onClick, index,
               alt={item.filename}
               loading="lazy"
               decoding="async"
+              draggable={false}
               onLoad={() => setImageLoaded(true)}
               onError={() => setImageError(true)}
               className={`w-full h-full object-cover transition-opacity duration-300 ${
