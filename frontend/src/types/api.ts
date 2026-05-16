@@ -67,21 +67,19 @@ export type SseEvent =
 
 /** Overall indexing statistics from the /api/v1/stats endpoint. */
 export interface IndexStats {
-  readonly total_files: number;
-  readonly total_size_bytes: number;
+  readonly total: number;
+  readonly total_file_size: number;
   readonly by_mime_type: Record<string, number>;
   readonly last_indexed_at: string | null;
-  readonly indexing_status: IndexProgress;
-  readonly watched_folders_count: number;
+  readonly indexing: IndexingInfo;
 }
 
-/** Progress information for the current or last indexing run. */
-export interface IndexProgress {
-  readonly status: 'Idle' | 'Scanning' | 'Indexing' | 'Complete' | 'Error';
-  readonly total_files: number;
-  readonly processed_files: number;
-  readonly current_file: string | null;
-  readonly error_count: number;
+/** Indexing status snapshot from the backend ProgressTracker. */
+export interface IndexingInfo {
+  readonly status: string;
+  readonly total: number;
+  readonly processed: number;
+  readonly errors: string[];
 }
 
 /** Application configuration from the /api/v1/config endpoint. */

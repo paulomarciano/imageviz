@@ -5,12 +5,14 @@ import { HTML5Backend } from 'react-dnd-html5-backend';
 import { AppShell } from './components/layout/app-shell';
 import { ThumbnailGrid } from './components/media/thumbnail-grid';
 import { DetailView } from './components/viewer/detail-view';
+import { ConfigPanel } from './components/config/config-panel';
 import { ShortcutsPanel } from './components/shared/shortcuts-panel';
 import { selectedMediaItemAtom, detailViewOpenAtom } from './store/media-atoms';
 import { searchQueryAtom, mediaViewModeAtom } from './store/search-atoms';
-import { shortcutsPanelOpenAtom } from './store/ui-atoms';
+import { shortcutsPanelOpenAtom, configPanelOpenAtom } from './store/ui-atoms';
 import { useInfiniteMedia } from './hooks/use-infinite-media';
 import { useSearch } from './hooks/use-search';
+import { useSseGridUpdates } from './hooks/use-sse-grid-updates';
 import type { MediaItem } from './types/media';
 
 function App() {
@@ -19,6 +21,7 @@ function App() {
   const [selectedItem, setSelectedItem] = useAtom(selectedMediaItemAtom);
   const [detailOpen, setDetailOpen] = useAtom(detailViewOpenAtom);
   const [shortcutsOpen, setShortcutsOpen] = useAtom(shortcutsPanelOpenAtom);
+  const [configOpen, setConfigOpen] = useAtom(configPanelOpenAtom);
 
   // Global key handler: ? toggles shortcuts, / focuses search
   useEffect(() => {
@@ -44,6 +47,9 @@ function App() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [setShortcutsOpen]);
+
+  // Wire SSE events → TanStack Query cache
+  useSseGridUpdates();
 
   const browseData = useInfiniteMedia();
   const searchData = useSearch(searchQuery);
@@ -94,6 +100,9 @@ function App() {
         isOpen={shortcutsOpen}
         onClose={() => setShortcutsOpen(false)}
       />
+      {configOpen && (
+        <ConfigPanel onClose={() => setConfigOpen(false)} />
+      )}
     </DndProvider>
   );
 }

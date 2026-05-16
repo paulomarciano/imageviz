@@ -14,7 +14,7 @@ export type {
   SearchParams,
   SseEvent,
   IndexStats,
-  IndexProgress,
+  IndexingInfo,
   AppConfig,
   WatchedFolder,
 } from './api.ts';

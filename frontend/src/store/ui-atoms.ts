@@ -14,3 +14,6 @@ export const gridScrollIndexAtom = atomWithStorage<number>(
 
 /** Whether the keyboard shortcuts overlay is visible. */
 export const shortcutsPanelOpenAtom = atom<boolean>(false);
+
+/** Whether the configuration panel is open. */
+export const configPanelOpenAtom = atom<boolean>(false);
