@@ -25,6 +25,8 @@ pub struct MediaState {
 pub fn routes() -> Router<Arc<MediaState>> {
     Router::new()
         .route("/media", get(list_media))
+        .route("/media/{id}", get(get_media_item))
+        .route("/media/{id}/metadata", get(get_media_metadata))
         .route("/media/{id}/file", get(serve_file))
         .route("/media/{id}/thumbnail", get(serve_thumbnail))
 }
@@ -224,6 +226,106 @@ async fn list_media(
             "total": total,
         }
     })))
+}
+
+// ---------------------------------------------------------------------------
+// Media item detail (GET /media/:id)
+// ---------------------------------------------------------------------------
+
+/// Full media item response for the detail view.
+#[derive(Serialize)]
+struct MediaItemDetail {
+    id: String,
+    filename: String,
+    path: String,
+    mime_type: String,
+    thumbnail_url: String,
+    file_url: String,
+    width: Option<i64>,
+    height: Option<i64>,
+    file_size: i64,
+    created_at: String,
+    modified_at: String,
+    metadata: Option<Value>,
+}
+
+/// GET /api/v1/media/{id} — return a single media item with full metadata.
+async fn get_media_item(
+    State(state): State<Arc<MediaState>>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let db = state.db.lock().await;
+
+    let row = db
+        .query_row(
+            "SELECT id, filename, relative_path, mime_type, width, height, file_size,
+                    file_created_at, file_modified_at, metadata_json
+             FROM media_items WHERE id = ?1",
+            rusqlite::params![id],
+            |row| {
+                let metadata_raw: Option<String> = row.get(9)?;
+                Ok(MediaItemDetail {
+                    id: row.get(0)?,
+                    filename: row.get(1)?,
+                    path: row.get(2)?,
+                    mime_type: row.get(3)?,
+                    thumbnail_url: format!("/api/v1/media/{}/thumbnail", row.get::<_, String>(0)?),
+                    file_url: format!("/api/v1/media/{}/file", row.get::<_, String>(0)?),
+                    width: row.get(4)?,
+                    height: row.get(5)?,
+                    file_size: row.get(6)?,
+                    created_at: row.get(7)?,
+                    modified_at: row.get(8)?,
+                    metadata: metadata_raw.and_then(|s| serde_json::from_str(&s).ok()),
+                })
+            },
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                (StatusCode::NOT_FOUND, Json(json!({"error": "Media not found"})))
+            }
+            _ => {
+                tracing::error!(error = %e, "Database error fetching media item");
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
+            }
+        })?;
+
+    Ok(Json(json!(row)))
+}
+
+/// GET /api/v1/media/{id}/metadata — return the structured metadata for an item.
+async fn get_media_metadata(
+    State(state): State<Arc<MediaState>>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let db = state.db.lock().await;
+
+    let metadata_json: Option<String> = db
+        .query_row(
+            "SELECT metadata_json FROM media_items WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => {
+                (StatusCode::NOT_FOUND, Json(json!({"error": "Media not found"})))
+            }
+            _ => {
+                tracing::error!(error = %e, "Database error fetching metadata");
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
+            }
+        })?;
+
+    match metadata_json {
+        Some(json_str) => match serde_json::from_str(&json_str) {
+            Ok(val) => Ok(Json(val)),
+            Err(_) => {
+                // Return the raw string if it's not valid JSON
+                Ok(Json(json!({"raw": json_str})))
+            }
+        },
+        None => Ok(Json(json!({}))),
+    }
 }
 
 /// Resolve a media item's absolute file path, MIME type, and filename from the
@@ -606,22 +708,23 @@ mod tests {
         let conn = rusqlite::Connection::open_in_memory()
             .expect("Failed to create in-memory database");
         conn.execute_batch(
-            "CREATE TABLE media_items (
-                id TEXT PRIMARY KEY NOT NULL,
-                filename TEXT NOT NULL,
-                relative_path TEXT NOT NULL UNIQUE,
-                mime_type TEXT NOT NULL,
-                width INTEGER,
-                height INTEGER,
-                file_size INTEGER NOT NULL DEFAULT 0,
-                file_created_at TEXT NOT NULL DEFAULT '',
-                file_modified_at TEXT NOT NULL DEFAULT '',
-                checksum TEXT
-            );
-            CREATE TABLE config (
-                key TEXT PRIMARY KEY NOT NULL,
-                value TEXT NOT NULL
-            );",
+        "CREATE TABLE media_items (
+            id TEXT PRIMARY KEY NOT NULL,
+            filename TEXT NOT NULL,
+            relative_path TEXT NOT NULL UNIQUE,
+            mime_type TEXT NOT NULL,
+            width INTEGER,
+            height INTEGER,
+            file_size INTEGER NOT NULL DEFAULT 0,
+            file_created_at TEXT NOT NULL DEFAULT '',
+            file_modified_at TEXT NOT NULL DEFAULT '',
+            metadata_json TEXT,
+            checksum TEXT
+        );
+        CREATE TABLE config (
+            key TEXT PRIMARY KEY NOT NULL,
+            value TEXT NOT NULL
+        );",
         )
         .expect("Failed to create test tables");
         Arc::new(MediaState {
@@ -1471,5 +1574,252 @@ mod tests {
             .unwrap();
 
         assert_eq!(response2.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // -----------------------------------------------------------------------
+    // Media item detail (GET /media/:id)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_get_media_item_not_found_returns_404() {
+        let state = test_state();
+        let app = routes().with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/media/00000000-0000-0000-0000-000000000000")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_get_media_item_happy_path() {
+        let state = test_state();
+        let watched = tempfile::tempdir().unwrap();
+        seed_config(&state, watched.path()).await;
+
+        // Seed an item with metadata_json
+        {
+            let db = state.db.lock().await;
+            db.execute(
+                "INSERT INTO media_items \
+                 (id, filename, relative_path, mime_type, width, height, file_size, \
+                  file_created_at, file_modified_at, metadata_json, checksum) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                rusqlite::params![
+                    "00000000-0000-0000-0000-000000000100",
+                    "detail.png",
+                    "sub/detail.png",
+                    "image/png",
+                    800_i64,
+                    600_i64,
+                    4096_i64,
+                    "2025-06-15T12:00:00Z",
+                    "2025-06-15T12:00:00Z",
+                    r#"{"prompt":{"text":"a test image"}}"#,
+                    "checksum100",
+                ],
+            )
+            .expect("seed media item");
+        }
+
+        let app = routes().with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/media/00000000-0000-0000-0000-000000000100")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+        assert_eq!(body["id"], "00000000-0000-0000-0000-000000000100");
+        assert_eq!(body["filename"], "detail.png");
+        assert_eq!(body["path"], "sub/detail.png");
+        assert_eq!(body["mime_type"], "image/png");
+        assert_eq!(body["width"], 800);
+        assert_eq!(body["height"], 600);
+        assert_eq!(body["file_size"], 4096);
+        assert!(body["thumbnail_url"].as_str().unwrap().contains("/media/00000000-0000-0000-0000-000000000100/thumbnail"));
+        assert!(body["file_url"].as_str().unwrap().contains("/media/00000000-0000-0000-0000-000000000100/file"));
+        assert_eq!(body["metadata"]["prompt"]["text"], "a test image");
+    }
+
+    #[tokio::test]
+    async fn test_get_media_item_no_metadata_returns_null() {
+        let state = test_state();
+        let watched = tempfile::tempdir().unwrap();
+        seed_config(&state, watched.path()).await;
+
+        {
+            let db = state.db.lock().await;
+            db.execute(
+                "INSERT INTO media_items \
+                 (id, filename, relative_path, mime_type, file_size, \
+                  file_created_at, file_modified_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    "00000000-0000-0000-0000-000000000101",
+                    "no_meta.png",
+                    "no_meta.png",
+                    "image/png",
+                    512_i64,
+                    "2025-06-15T12:00:00Z",
+                    "2025-06-15T12:00:00Z",
+                ],
+            )
+            .expect("seed media item");
+        }
+
+        let app = routes().with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/media/00000000-0000-0000-0000-000000000101")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+        assert_eq!(body["filename"], "no_meta.png");
+        assert!(body["metadata"].is_null(), "metadata should be null when not present");
+    }
+
+    // -----------------------------------------------------------------------
+    // Media metadata endpoint (GET /media/:id/metadata)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_get_media_metadata_not_found_returns_404() {
+        let state = test_state();
+        let app = routes().with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/media/00000000-0000-0000-0000-000000000000/metadata")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_get_media_metadata_happy_path() {
+        let state = test_state();
+        let watched = tempfile::tempdir().unwrap();
+        seed_config(&state, watched.path()).await;
+
+        {
+            let db = state.db.lock().await;
+            db.execute(
+                "INSERT INTO media_items \
+                 (id, filename, relative_path, mime_type, file_size, \
+                  file_created_at, file_modified_at, metadata_json) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                rusqlite::params![
+                    "00000000-0000-0000-0000-000000000200",
+                    "with_meta.png",
+                    "with_meta.png",
+                    "image/png",
+                    2048_i64,
+                    "2025-06-15T12:00:00Z",
+                    "2025-06-15T12:00:00Z",
+                    r#"{"seed":12345,"steps":20,"cfg":7.5}"#,
+                ],
+            )
+            .expect("seed media item");
+        }
+
+        let app = routes().with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/media/00000000-0000-0000-0000-000000000200/metadata")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+        assert_eq!(body["seed"], 12345);
+        assert_eq!(body["steps"], 20);
+        assert_eq!(body["cfg"], 7.5);
+    }
+
+    #[tokio::test]
+    async fn test_get_media_metadata_empty_when_no_metadata() {
+        let state = test_state();
+        let watched = tempfile::tempdir().unwrap();
+        seed_config(&state, watched.path()).await;
+
+        {
+            let db = state.db.lock().await;
+            db.execute(
+                "INSERT INTO media_items \
+                 (id, filename, relative_path, mime_type, file_size, \
+                  file_created_at, file_modified_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    "00000000-0000-0000-0000-000000000201",
+                    "no_meta.png",
+                    "no_meta.png",
+                    "image/png",
+                    512_i64,
+                    "2025-06-15T12:00:00Z",
+                    "2025-06-15T12:00:00Z",
+                ],
+            )
+            .expect("seed media item");
+        }
+
+        let app = routes().with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/media/00000000-0000-0000-0000-000000000201/metadata")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+        // Should return empty JSON object when no metadata
+        assert!(body.as_object().map_or(false, |o| o.is_empty()));
     }
 }
