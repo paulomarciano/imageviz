@@ -4,6 +4,7 @@ use tokio::sync::Mutex;
 use tower_http::cors::CorsLayer;
 
 use imageviz_backend::routes::config::ConfigState;
+use imageviz_backend::routes::media::MediaState;
 
 #[tokio::main]
 async fn main() {
@@ -27,13 +28,18 @@ async fn main() {
     imageviz_backend::db::migrations::run_migrations(&mut conn_mut)
         .expect("Failed to run database migrations");
 
-    // Build shared config state (Arc + Mutex for thread-safe access)
-    let config_state = Arc::new(ConfigState { db: Mutex::new(conn_mut) });
+    // Wrap DB connection in Arc + Mutex so it can be shared across state structs
+    let db = Arc::new(Mutex::new(conn_mut));
+
+    // Build shared config state and media state from the same DB handle
+    let config_state = Arc::new(ConfigState { db: Arc::clone(&db) });
+    let media_state = Arc::new(MediaState { db: Arc::clone(&db) });
 
     // Build application router
-    // Start with base router from app factory, then add stateful config routes.
+    // Start with base router from app factory, then add stateful routes.
     let app = imageviz_backend::app()
         .nest("/api/v1", imageviz_backend::routes::config::routes().with_state(config_state))
+        .nest("/api/v1", imageviz_backend::routes::media::routes().with_state(media_state))
         .layer(CorsLayer::permissive());
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], settings.port));

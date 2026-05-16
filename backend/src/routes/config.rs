@@ -7,10 +7,11 @@ use crate::config::AppConfig;
 
 /// Shared application state for config endpoints.
 ///
-/// Wraps a SQLite connection behind a mutex so that concurrent requests are
-/// serialized — acceptable for infrequent config reads/writes.
+/// Wraps a SQLite connection behind an Arc<Mutex<>> so that concurrent requests
+/// are serialized — acceptable for infrequent config reads/writes.  The Arc is
+/// shared with other state structs (e.g. MediaState) that need DB access.
 pub struct ConfigState {
-    pub db: Mutex<rusqlite::Connection>,
+    pub db: Arc<Mutex<rusqlite::Connection>>,
 }
 
 pub fn routes() -> Router<Arc<ConfigState>> {
@@ -71,7 +72,7 @@ mod tests {
             rusqlite::Connection::open_in_memory().expect("Failed to create in-memory database");
         conn.execute_batch("CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT);")
             .expect("Failed to create config table");
-        Arc::new(ConfigState { db: Mutex::new(conn) })
+        Arc::new(ConfigState { db: Arc::new(Mutex::new(conn)) })
     }
 
     /// Create a state with a database that has no `config` table.
@@ -85,7 +86,7 @@ mod tests {
     fn bad_state() -> Arc<ConfigState> {
         let conn =
             rusqlite::Connection::open_in_memory().expect("Failed to create in-memory database");
-        Arc::new(ConfigState { db: Mutex::new(conn) })
+        Arc::new(ConfigState { db: Arc::new(Mutex::new(conn)) })
     }
 
     #[tokio::test]
