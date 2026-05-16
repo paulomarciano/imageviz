@@ -9,10 +9,11 @@
 //! - `video` — Video keyframe extraction via ffmpeg sidecar (task 2.2)
 //! - `cache` — Content-addressed on-disk cache (task 2.3)
 
+pub mod cache;
 pub mod image;
 pub mod video;
-// pub mod cache;  // will be added by task 2.3
 
+pub use self::cache::get_or_generate_thumbnail;
 pub use self::image::generate_image_thumbnail;
 
 use std::path::PathBuf;
