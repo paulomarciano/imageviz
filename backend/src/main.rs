@@ -48,7 +48,35 @@ async fn main() {
 
     let (sse_tx, _) = tokio::sync::broadcast::channel::<SseEvent>(256);
 
-    let config_state = Arc::new(ConfigState { db: Arc::clone(&db) });
+    // Load startup config before creating the watcher and background
+    // indexer so that both see the same configuration.
+    let config = {
+        let conn = db.lock().await;
+        imageviz_backend::config::load_config(&conn).unwrap_or_default()
+    };
+
+    // Start file system watcher.  This always creates a watcher + event
+    // handler so that the config route can add watches dynamically at
+    // runtime when the user adds a new watched folder.
+    let config_clone = config.clone();
+    let watcher = Arc::new(Mutex::new(start_file_watcher(
+        Arc::clone(&db),
+        Arc::clone(&index_manager),
+        sse_tx.clone(),
+        &config_clone,
+    )));
+
+    // Keep a reference alive for the server lifetime — dropping the
+    // _watcher_guard would stop file system monitoring.
+    let _watcher_guard = Arc::clone(&watcher);
+
+    let config_state = Arc::new(ConfigState {
+        db: Arc::clone(&db),
+        watcher: Arc::clone(&watcher),
+        index_manager: Arc::clone(&index_manager),
+        progress: Arc::clone(&progress),
+        db_path: settings.database_path.clone(),
+    });
     let media_state = Arc::new(MediaState {
         db: Arc::clone(&db),
         thumbnail_cache_dir: settings.thumbnail_cache_dir.clone(),
@@ -65,20 +93,6 @@ async fn main() {
         sse_tx: sse_tx.clone(),
     });
 
-    let app = imageviz_backend::health_router()
-        .nest("/api/v1", imageviz_backend::routes::config::routes().with_state(config_state))
-        .nest("/api/v1", imageviz_backend::routes::media::routes().with_state(media_state))
-        .nest("/api/v1", imageviz_backend::routes::search::routes().with_state(search_state))
-        .nest("/api/v1", imageviz_backend::routes::stats::routes().with_state(stats_state))
-        .nest("/api/v1", imageviz_backend::routes::events::routes().with_state(events_state))
-        .layer(CorsLayer::permissive());
-
-    let config = {
-        let conn = db.lock().await;
-        imageviz_backend::config::load_config(&conn).unwrap_or_default()
-    };
-
-    let config_clone = config.clone();
     spawn_background_indexing(
         Arc::clone(&db),
         Arc::clone(&index_manager),
@@ -88,15 +102,13 @@ async fn main() {
         &settings.database_path,
     );
 
-    // Start file system watcher (kept alive for the lifetime of the server).
-    // When the user updates watched folders via PUT /config, the watcher
-    // should be re-created — this is a future enhancement (Wave 7).
-    let _watcher = start_file_watcher(
-        Arc::clone(&db),
-        Arc::clone(&index_manager),
-        sse_tx.clone(),
-        &config_clone,
-    );
+    let app = imageviz_backend::health_router()
+        .nest("/api/v1", imageviz_backend::routes::config::routes().with_state(config_state))
+        .nest("/api/v1", imageviz_backend::routes::media::routes().with_state(media_state))
+        .nest("/api/v1", imageviz_backend::routes::search::routes().with_state(search_state))
+        .nest("/api/v1", imageviz_backend::routes::stats::routes().with_state(stats_state))
+        .nest("/api/v1", imageviz_backend::routes::events::routes().with_state(events_state))
+        .layer(CorsLayer::permissive());
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], settings.port));
     tracing::info!("Server running on http://{}", addr);
@@ -213,34 +225,28 @@ fn spawn_background_indexing(
 /// forwarded to [`run_event_handler`], which updates SQLite, Tantivy, and
 /// broadcasts an SSE event to all connected clients.
 ///
-/// Returns `Some(FileWatcher)` when folders are configured, or `None` when
-/// the config is empty. **The returned watcher must be kept alive** — dropping
-/// it stops all monitoring.  Callers typically bind the return value to
+/// **The returned watcher must be kept alive** — dropping it stops all
+/// monitoring.  Callers typically bind the return value to
 /// `let _watcher = ...` so it lives for the duration of `main`.
+///
+/// Unlike the earlier design, this function always creates a watcher and
+/// event handler, even when the config has no folders.  This allows the
+/// [`routes::config::update_config`] handler to dynamically add watches
+/// at runtime via [`FileWatcher::watch`].
 fn start_file_watcher(
     db: Arc<Mutex<rusqlite::Connection>>,
     index_manager: Arc<IndexManager>,
     sse_tx: tokio::sync::broadcast::Sender<SseEvent>,
     config: &AppConfig,
-) -> Option<FileWatcher> {
-    if config.watched_folders.is_empty() {
-        tracing::info!("No watched folders configured — file watcher not started");
-        return None;
-    }
-
+) -> FileWatcher {
     let paths: Vec<PathBuf> = config
         .watched_folders
         .iter()
         .map(|f| PathBuf::from(&f.path))
         .collect();
 
-    let (watcher, rx) = match FileWatcher::new(&paths) {
-        Ok(w) => w,
-        Err(e) => {
-            tracing::error!(error = %e, "Failed to create file watcher");
-            return None;
-        }
-    };
+    let (watcher, rx) =
+        FileWatcher::new(&paths).expect("Failed to create file watcher");
 
     tokio::spawn(imageviz_backend::watcher::handler::run_event_handler(
         rx, db, index_manager, sse_tx,
@@ -248,8 +254,9 @@ fn start_file_watcher(
 
     tracing::info!(
         paths = %paths.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>().join(", "),
-        "File watcher started"
+        "File watcher started ({} paths)",
+        paths.len(),
     );
 
-    Some(watcher)
+    watcher
 }

@@ -143,10 +143,10 @@ async fn process_file_metadata(file: &FileEntry) -> Result<ProcessedFile<'_>, In
     let new_hash = compute_file_hash(abs_path).await?;
     let media_info = detect_media(abs_path).await?;
 
-    // Extract PNG metadata (ComfyUI prompt/workflow) if applicable
+    // Extract PNG metadata (tEXt/iTXt chunks) — prompt/workflow parsed as JSON, rest in raw_text_entries
     let metadata_json = if media_info.mime_type == "image/png" {
         parse_png_metadata(abs_path).ok().and_then(|meta| {
-            if meta.prompt.is_some() || meta.workflow.is_some() {
+            if meta.prompt.is_some() || meta.workflow.is_some() || !meta.raw_text_entries.is_empty() {
                 serde_json::to_string(&meta).ok()
             } else {
                 None

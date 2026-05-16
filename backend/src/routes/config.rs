@@ -1,19 +1,31 @@
 use axum::{Router, extract::{Query, State}, http::StatusCode, response::Json, routing::get};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::config::AppConfig;
+use crate::indexer::progress::ProgressTracker;
+use crate::search::IndexManager;
+use crate::watcher::FileWatcher;
 
 /// Shared application state for config endpoints.
 ///
-/// Wraps a SQLite connection behind an Arc<Mutex<>> so that concurrent requests
-/// are serialized — acceptable for infrequent config reads/writes.  The Arc is
-/// shared with other state structs (e.g. MediaState) that need DB access.
+/// Wraps a SQLite connection, file watcher, Tantivy index manager, and
+/// progress tracker so that the [`update_config`] handler can dynamically
+/// add watched folders at runtime and trigger a background re-index.
 pub struct ConfigState {
     pub db: Arc<Mutex<rusqlite::Connection>>,
+    /// File-system watcher — used to add/remove watches for new folders.
+    pub watcher: Arc<Mutex<FileWatcher>>,
+    /// Tantivy search index manager — needed for background re-index.
+    pub index_manager: Arc<IndexManager>,
+    /// Indexing progress tracker (shared with stats route).
+    pub progress: Arc<ProgressTracker>,
+    /// Path to the SQLite database (needed to open a separate read‑only
+    /// connection for Tantivy re-indexing).
+    pub db_path: PathBuf,
 }
 
 pub fn routes() -> Router<Arc<ConfigState>> {
@@ -38,6 +50,11 @@ async fn get_config(
 ///
 /// Body must contain a `watched_folders` array. Each entry must have a
 /// non-empty `path` string and may optionally include a `label`.
+///
+/// In addition to persisting the config to the database, this handler:
+/// 1. Diffs old vs. new folder lists and updates the file watcher.
+/// 2. Spawns a background re-index so existing files in newly-added
+///    folders are immediately visible in the search index and gallery.
 async fn update_config(
     State(state): State<Arc<ConfigState>>,
     Json(config): Json<AppConfig>,
@@ -52,11 +69,102 @@ async fn update_config(
         }
     }
 
-    let db = state.db.lock().await;
-    crate::config::save_config(&db, &config).map_err(|e| {
-        tracing::error!(error = %e, "Failed to save config to database");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Failed to save configuration"})))
-    })?;
+    // Load the old config from the database *before* overwriting so that
+    // we can diff the folder lists and know which paths to add/remove.
+    let old_config = {
+        let db = state.db.lock().await;
+        crate::config::load_config(&db).map_err(|e| {
+            tracing::error!(error = %e, "Failed to load config from database");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Failed to load configuration"})))
+        })?
+    };
+
+    // Persist the new config.
+    {
+        let db = state.db.lock().await;
+        crate::config::save_config(&db, &config).map_err(|e| {
+            tracing::error!(error = %e, "Failed to save config to database");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Failed to save configuration"})))
+        })?;
+    }
+
+    // Diff old vs. new watched folders and update the file watcher.
+    {
+        let old_paths: Vec<PathBuf> = old_config
+            .watched_folders
+            .iter()
+            .map(|f| PathBuf::from(&f.path))
+            .collect();
+        let new_paths: Vec<PathBuf> = config
+            .watched_folders
+            .iter()
+            .map(|f| PathBuf::from(&f.path))
+            .collect();
+
+        let mut watcher = state.watcher.lock().await;
+
+        // Add watches for newly-added folders.
+        for path in &new_paths {
+            if !old_paths.contains(path) {
+                if let Err(e) = watcher.watch(path) {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "Failed to start watching new folder",
+                    );
+                } else {
+                    tracing::info!(path = %path.display(), "Now watching new folder");
+                }
+            }
+        }
+
+        // Remove watches for removed folders (best-effort — the underlying
+        // notify backend on some platforms may not clean up sub‑directory
+        // watches, but the watch handle is released).
+        for path in &old_paths {
+            if !new_paths.contains(path) && let Err(e) = watcher.unwatch(path) {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "Failed to stop watching removed folder",
+                );
+            }
+        }
+    }
+
+    // Spawn a background re-index so that existing files in newly-added
+    // folders are indexed immediately (not just new files created after
+    // the watcher was added).
+    let db = Arc::clone(&state.db);
+    let config_clone = config.clone();
+    let im = Arc::clone(&state.index_manager);
+    let progress = Arc::clone(&state.progress);
+    let db_path = state.db_path.clone();
+
+    tokio::spawn(async move {
+        // Phase 1: scan files and populate SQLite.
+        if let Err(e) = crate::indexer::full_index(&db, &config_clone, &progress).await {
+            tracing::error!(error = %e, "Re-index after config update failed (Phase 1)");
+            return;
+        }
+
+        // Phase 2: rebuild Tantivy full-text index from SQLite using a
+        // separate read‑only connection (WAL mode permits concurrent
+        // readers) so that the shared db Mutex stays available for API
+        // requests during the re-index.
+        let read_conn = match crate::db::open(&db_path) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to open DB for Tantivy reindex");
+                return;
+            }
+        };
+
+        if let Err(e) = crate::search::indexer::full_reindex(&read_conn, &im) {
+            tracing::error!(error = %e, "Tantivy reindex after config update failed (Phase 2)");
+        }
+    });
+
     Ok(Json(config))
 }
 
@@ -85,13 +193,13 @@ fn resolve_path(path: &str) -> String {
     if path == "~" {
         return std::env::var("HOME").unwrap_or_else(|_| "~".to_string());
     }
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            let mut resolved = home;
-            resolved.push('/');
-            resolved.push_str(rest);
-            return resolved;
-        }
+    if let Some(rest) = path.strip_prefix("~/")
+        && let Ok(home) = std::env::var("HOME")
+    {
+        let mut resolved = home;
+        resolved.push('/');
+        resolved.push_str(rest);
+        return resolved;
     }
     path.to_string()
 }
@@ -160,12 +268,35 @@ mod tests {
     use serde_json::json;
     use tower::ServiceExt;
 
-    fn test_state() -> Arc<ConfigState> {
+    /// Build a full ConfigState for tests.  The caller **must** retain the
+    /// returned `TempDir` for the lifetime of the test so that the Tantivy
+    /// index directory is not removed while `IndexManager` holds open handles.
+    fn test_state() -> (Arc<ConfigState>, tempfile::TempDir) {
+        let tantivy_dir = tempfile::tempdir().expect("tempdir");
         let mut conn =
             crate::db::open_in_memory().expect("Failed to create in-memory database");
         crate::db::migrations::run_migrations(&mut conn)
             .expect("Failed to run migrations");
-        Arc::new(ConfigState { db: Arc::new(Mutex::new(conn)) })
+
+        let index_manager = Arc::new(
+            crate::search::IndexManager::open_or_create(
+                &tantivy_dir.path().join("tantivy"),
+            )
+            .expect("IndexManager"),
+        );
+
+        let (watcher, _rx) =
+            crate::watcher::FileWatcher::new(&[]).expect("FileWatcher");
+
+        let state = Arc::new(ConfigState {
+            db: Arc::new(Mutex::new(conn)),
+            watcher: Arc::new(Mutex::new(watcher)),
+            index_manager,
+            progress: Arc::new(crate::indexer::progress::ProgressTracker::new()),
+            db_path: tantivy_dir.path().join("imageviz.db"),
+        });
+
+        (state, tantivy_dir)
     }
 
     /// Create a state with a database that has no tables at all.
@@ -173,16 +304,39 @@ mod tests {
     /// Any query against the config table will fail with "no such table",
     /// triggering the 500 error path in route handlers. Kept as a raw
     /// in-memory connection (no migrations) so the MISSING-TABLE error
-    /// path remains exercised.
-    fn bad_state() -> Arc<ConfigState> {
-        let conn =
-            rusqlite::Connection::open_in_memory().expect("Failed to create in-memory database");
-        Arc::new(ConfigState { db: Arc::new(Mutex::new(conn)) })
+    /// path remains exercised.  The watcher and index manager fields are
+    /// populated with valid but quiescent instances — they are never
+    /// reached in the error path.
+    fn bad_state() -> (Arc<ConfigState>, tempfile::TempDir) {
+        let tantivy_dir = tempfile::tempdir().expect("tempdir");
+        let conn = rusqlite::Connection::open_in_memory()
+            .expect("Failed to create in-memory database");
+
+        let index_manager = Arc::new(
+            crate::search::IndexManager::open_or_create(
+                &tantivy_dir.path().join("tantivy"),
+            )
+            .expect("IndexManager"),
+        );
+
+        let (watcher, _rx) =
+            crate::watcher::FileWatcher::new(&[]).expect("FileWatcher");
+
+        let state = Arc::new(ConfigState {
+            db: Arc::new(Mutex::new(conn)),
+            watcher: Arc::new(Mutex::new(watcher)),
+            index_manager,
+            progress: Arc::new(crate::indexer::progress::ProgressTracker::new()),
+            db_path: tantivy_dir.path().join("imageviz.db"),
+        });
+
+        (state, tantivy_dir)
     }
 
     #[tokio::test]
     async fn test_get_config_empty() {
-        let app = routes().with_state(test_state());
+        let (state, _dir) = test_state();
+        let app = routes().with_state(state);
 
         let response = app
             .oneshot(Request::builder().uri("/config").body(Body::empty()).unwrap())
@@ -199,7 +353,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_put_and_get_roundtrip() {
-        let app = routes().with_state(test_state());
+        let (state, _dir) = test_state();
+        let app = routes().with_state(state);
 
         let input = json!({
             "watched_folders": [
@@ -244,7 +399,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_put_empty_path_returns_400() {
-        let app = routes().with_state(test_state());
+        let (state, _dir) = test_state();
+        let app = routes().with_state(state);
 
         let input = json!({
             "watched_folders": [
@@ -274,7 +430,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_config_without_table_returns_500() {
-        let app = routes().with_state(bad_state());
+        let (state, _dir) = bad_state();
+        let app = routes().with_state(state);
 
         let response = app
             .oneshot(Request::builder().uri("/config").body(Body::empty()).unwrap())
@@ -286,7 +443,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_put_config_without_table_returns_500() {
-        let app = routes().with_state(bad_state());
+        let (state, _dir) = bad_state();
+        let app = routes().with_state(state);
 
         let input = json!({"watched_folders": [{"path": "/tmp/test"}]});
         let response = app

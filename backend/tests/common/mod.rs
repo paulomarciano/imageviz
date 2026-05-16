@@ -69,9 +69,17 @@ pub fn create_test_app_with_search() -> TestApp {
     // 4. Progress tracker for stats
     let progress = Arc::new(imageviz_backend::indexer::progress::ProgressTracker::new());
 
-    // 5. Build state structs
+    // 5. File watcher (watches nothing — used only to satisfy ConfigState)
+    let (watcher, _watcher_rx) =
+        imageviz_backend::watcher::FileWatcher::new(&[]).expect("FileWatcher");
+
+    // 7. Build state structs
     let config_state = Arc::new(imageviz_backend::routes::config::ConfigState {
         db: Arc::clone(&db),
+        watcher: Arc::new(Mutex::new(watcher)),
+        index_manager: Arc::clone(&index_manager),
+        progress: Arc::clone(&progress),
+        db_path: tantivy_dir.path().join("imageviz.db"),
     });
     let cache_dir = tempfile::tempdir().expect("tempdir for thumbnail cache");
     let media_state = Arc::new(imageviz_backend::routes::media::MediaState {
