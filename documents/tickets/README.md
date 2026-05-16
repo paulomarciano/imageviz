@@ -1,8 +1,8 @@
 # ImageViz — Task Tickets
 
 > Generated from `documents/plans/development-plan.md`  
-> 76 tickets across 8 development waves  
-> Last updated: 2026-05-15
+> 78 tickets across 8 development waves  
+> Last updated: 2026-05-16
 
 ---
 
@@ -121,7 +121,7 @@
 
 ---
 
-## Wave 7 — Production Readiness & Hardening (10 tickets, ~8–10h)
+## Wave 7 — Production Readiness & Hardening (12 tickets, ~12–14h)
 
 | # | Ticket | Est. | Deps | Description |
 |---|--------|------|------|-------------|
@@ -135,6 +135,8 @@
 | 7.8 | [Build scripts](./wave-7-08-build-scripts.md) | 1h | 0.2, 0.3 | dev.sh + build.sh |
 | 7.9 | [Missing thumbnail handling](./wave-7-09-missing-thumbnails.md) | 30m | 4.6 | Placeholder for broken thumbnails |
 | 7.10 | [Project README](./wave-7-10-readme.md) | 2h | All | Comprehensive project documentation |
+| 7.11 | [Connection pool (r2d2)](./wave-7-11-connection-pool.md) | 2h | 1.1 | Replace Arc\<Mutex\<Connection>> with r2d2 pool |
+| 7.12 | [folder_id column](./wave-7-12-folder-id-column.md) | 2h | 1.1, 1.2, 1.8 | Resolve path ambiguity across multiple folders |
 
 ---
 
@@ -149,8 +151,8 @@
 | 4 | Frontend: Core + Infinite Scroll | 10 | 12–16h |
 | 5 | Frontend: Search + Detail + Drag | 9 | 12–16h |
 | 6 | Frontend: SSE + Config + Polish | 11 | 10–14h |
-| 7 | Production Hardening | 10 | 8–10h |
-| **Total** | | **76** | **74–100h** |
+| 7 | Production Hardening | 12 | 12–14h |
+| **Total** | | **78** | **78–104h** |
 
 ---
 
