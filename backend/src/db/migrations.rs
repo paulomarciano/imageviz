@@ -7,9 +7,8 @@ use rusqlite::Connection;
 /// `CREATE TABLE IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS` so that
 /// re-running a completed version is safe.
 pub fn run_migrations(conn: &mut Connection) -> Result<(), rusqlite::Error> {
-    let version: i32 = conn
-        .pragma_query_value(None, "user_version", |r| r.get::<_, i32>(0))
-        .unwrap_or(0);
+    let version: i32 =
+        conn.pragma_query_value(None, "user_version", |r| r.get::<_, i32>(0)).unwrap_or(0);
 
     if version < 1 {
         let tx = conn.transaction()?;

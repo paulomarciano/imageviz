@@ -1,5 +1,5 @@
-use png::text_metadata::{ITXtChunk, TEXtChunk};
 use png::Decoder;
+use png::text_metadata::{ITXtChunk, TEXtChunk};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;

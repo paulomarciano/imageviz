@@ -8,9 +8,8 @@ mod tests {
         migrations::run_migrations(&mut conn).unwrap();
 
         // Verify tables exist
-        let count: i32 = conn
-            .query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get::<_, i32>(0))
-            .unwrap();
+        let count: i32 =
+            conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get::<_, i32>(0)).unwrap();
         assert_eq!(count, 0);
 
         // Insert a media item
@@ -36,9 +35,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
         let conn = open(&db_path).unwrap();
-        let journal_mode: String = conn
-            .pragma_query_value(None, "journal_mode", |r| r.get::<_, String>(0))
-            .unwrap();
+        let journal_mode: String =
+            conn.pragma_query_value(None, "journal_mode", |r| r.get::<_, String>(0)).unwrap();
         assert_eq!(journal_mode.to_lowercase(), "wal");
         // tempdir is cleaned up when `dir` drops
     }
@@ -72,11 +70,9 @@ mod tests {
         .unwrap();
 
         let value: String = conn
-            .query_row(
-                "SELECT value FROM config WHERE key = ?1",
-                params!["watched_folders"],
-                |r| r.get::<_, String>(0),
-            )
+            .query_row("SELECT value FROM config WHERE key = ?1", params!["watched_folders"], |r| {
+                r.get::<_, String>(0)
+            })
             .unwrap();
         assert_eq!(value, "[]");
     }
@@ -88,14 +84,12 @@ mod tests {
         migrations::run_migrations(&mut conn).unwrap();
         migrations::run_migrations(&mut conn).unwrap();
         // user_version should still be 1 after second run
-        let version: i32 = conn
-            .pragma_query_value(None, "user_version", |r| r.get::<_, i32>(0))
-            .unwrap();
+        let version: i32 =
+            conn.pragma_query_value(None, "user_version", |r| r.get::<_, i32>(0)).unwrap();
         assert_eq!(version, 1);
         // Tables should still exist (no duplicate errors)
-        let count: i32 = conn
-            .query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get::<_, i32>(0))
-            .unwrap();
+        let count: i32 =
+            conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get::<_, i32>(0)).unwrap();
         assert_eq!(count, 0);
     }
 }

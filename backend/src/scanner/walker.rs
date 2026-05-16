@@ -15,9 +15,7 @@ pub struct FileEntry {
 }
 
 /// Supported media file extensions.
-const SUPPORTED_EXTENSIONS: &[&str] = &[
-    "png", "jpg", "jpeg", "webp", "gif", "mp4", "webm",
-];
+const SUPPORTED_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif", "mp4", "webm"];
 
 /// Scan a folder recursively and return all supported media files.
 ///
@@ -60,10 +58,7 @@ pub fn scan_folder(root: &Path) -> Result<Vec<FileEntry>, WalkerError> {
             }
         };
 
-        let filename = entry
-            .file_name()
-            .to_string_lossy()
-            .into_owned();
+        let filename = entry.file_name().to_string_lossy().into_owned();
 
         let absolute_path = entry.path().to_path_buf();
 
@@ -82,10 +77,7 @@ pub fn scan_folder(root: &Path) -> Result<Vec<FileEntry>, WalkerError> {
             .map(datetime_to_iso)
             .unwrap_or_default();
 
-        let modified_at = metadata
-            .modified()
-            .map(datetime_to_iso)
-            .unwrap_or_default();
+        let modified_at = metadata.modified().map(datetime_to_iso).unwrap_or_default();
 
         entries.push(FileEntry {
             filename,
@@ -110,21 +102,15 @@ fn is_supported_media(path: &Path) -> bool {
 
 /// Check if a directory entry is hidden (name starts with `.`).
 fn is_hidden(entry: &walkdir::DirEntry) -> bool {
-    entry
-        .file_name()
-        .to_str()
-        .is_some_and(|s| s.starts_with('.'))
+    entry.file_name().to_str().is_some_and(|s| s.starts_with('.'))
 }
 
 /// Convert a SystemTime to ISO 8601 string with sub-second precision.
 fn datetime_to_iso(time: SystemTime) -> String {
-    let duration = time
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
+    let duration = time.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
     let secs = duration.as_secs() as i64;
     let nsecs = duration.subsec_nanos();
-    let naive = chrono::DateTime::from_timestamp(secs, nsecs)
-        .unwrap_or_default();
+    let naive = chrono::DateTime::from_timestamp(secs, nsecs).unwrap_or_default();
     naive.to_rfc3339()
 }
 

@@ -25,16 +25,7 @@ async fn test_empty_config_returns_empty_stats() {
 
     let stats = full_index(&db, &config, &progress).await.unwrap();
 
-    assert_eq!(
-        stats,
-        IndexStats {
-            created: 0,
-            updated: 0,
-            skipped: 0,
-            deleted: 0,
-            errors: 0,
-        }
-    );
+    assert_eq!(stats, IndexStats { created: 0, updated: 0, skipped: 0, deleted: 0, errors: 0 });
 }
 
 #[tokio::test]
@@ -68,8 +59,7 @@ async fn test_full_index_creates_entries_for_new_files() {
     // Verify entry in DB
     let count: i32 = {
         let conn = db.lock().await;
-        conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0))
-            .unwrap()
+        conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).unwrap()
     };
     assert_eq!(count, 1, "Only one media item in DB");
 }
@@ -90,15 +80,11 @@ async fn test_incremental_index_skips_unchanged_files() {
     };
 
     // First index — should create
-    let stats1 = full_index(&db, &config, &setup_progress())
-        .await
-        .unwrap();
+    let stats1 = full_index(&db, &config, &setup_progress()).await.unwrap();
     assert_eq!(stats1.created, 1);
 
     // Second index with no changes — should skip
-    let stats2 = full_index(&db, &config, &setup_progress())
-        .await
-        .unwrap();
+    let stats2 = full_index(&db, &config, &setup_progress()).await.unwrap();
     assert_eq!(stats2.created, 0);
     assert_eq!(stats2.skipped, 1);
 }
@@ -119,9 +105,7 @@ async fn test_incremental_index_updates_modified_files() {
     };
 
     // First index
-    full_index(&db, &config, &setup_progress())
-        .await
-        .unwrap();
+    full_index(&db, &config, &setup_progress()).await.unwrap();
 
     // Modify file (change a byte)
     let mut data = std::fs::read(&png_path).unwrap();
@@ -131,9 +115,7 @@ async fn test_incremental_index_updates_modified_files() {
     std::fs::write(&png_path, &data).unwrap();
 
     // Second index — should update
-    let stats = full_index(&db, &config, &setup_progress())
-        .await
-        .unwrap();
+    let stats = full_index(&db, &config, &setup_progress()).await.unwrap();
     assert_eq!(stats.updated, 1);
     assert_eq!(stats.created, 0);
     assert_eq!(stats.skipped, 0);
@@ -155,24 +137,19 @@ async fn test_remove_deleted_files_cleans_up_db() {
     };
 
     // Index the file
-    full_index(&db, &config, &setup_progress())
-        .await
-        .unwrap();
+    full_index(&db, &config, &setup_progress()).await.unwrap();
 
     // Delete the file from disk
     std::fs::remove_file(&png_path).unwrap();
 
     // Re-index — should detect deletion
-    let stats = full_index(&db, &config, &setup_progress())
-        .await
-        .unwrap();
+    let stats = full_index(&db, &config, &setup_progress()).await.unwrap();
     assert_eq!(stats.deleted, 1);
 
     // DB should be empty
     let count: i32 = {
         let conn = db.lock().await;
-        conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0))
-            .unwrap()
+        conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).unwrap()
     };
     assert_eq!(count, 0);
 }
@@ -194,15 +171,12 @@ async fn test_full_index_is_idempotent() {
 
     // Index 3 times — should be idempotent (no duplicate entries)
     for _ in 0..3 {
-        full_index(&db, &config, &setup_progress())
-            .await
-            .unwrap();
+        full_index(&db, &config, &setup_progress()).await.unwrap();
     }
 
     let count: i32 = {
         let conn = db.lock().await;
-        conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0))
-            .unwrap()
+        conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).unwrap()
     };
     assert_eq!(count, 1, "Should have exactly one entry after 3 index runs");
 }
@@ -222,13 +196,24 @@ async fn test_indexed_item_has_all_required_fields() {
         }],
     };
 
-    full_index(&db, &config, &setup_progress())
-        .await
-        .unwrap();
+    full_index(&db, &config, &setup_progress()).await.unwrap();
 
     // Verify all required columns are populated
     let conn = db.lock().await;
-    let row: (String, String, String, String, Option<u32>, Option<u32>, i64, String, String, String, Option<String>, Option<String>) = conn
+    let row: (
+        String,
+        String,
+        String,
+        String,
+        Option<u32>,
+        Option<u32>,
+        i64,
+        String,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+    ) = conn
         .query_row(
             "SELECT id, filename, relative_path, mime_type, width, height, file_size,
                     file_created_at, file_modified_at, indexed_at, metadata_json, checksum
@@ -273,15 +258,72 @@ async fn test_indexed_item_has_all_required_fields() {
 /// Uses the `png` crate to encode a 2×2 RGB image. This produces a real PNG
 /// with valid header, IHDR, IDAT, and IEND chunks that passes detection.
 fn create_minimal_png(path: &std::path::Path) {
+    create_png_with_text_chunks(path, &[])
+}
+
+/// Create a minimal PNG with embedded tEXt metadata chunks.
+///
+/// Each entry in `chunks` is a `(keyword, value)` pair that becomes a tEXt
+/// chunk in the PNG file, simulating ComfyUI-style embedded metadata.
+fn create_png_with_text_chunks(path: &std::path::Path, chunks: &[(&str, &str)]) {
     let file = std::fs::File::create(path).unwrap();
     let w = std::io::BufWriter::new(file);
 
     let mut encoder = png::Encoder::new(w, 2, 2);
     encoder.set_color(png::ColorType::Rgb);
     encoder.set_depth(png::BitDepth::Eight);
+
+    for (keyword, value) in chunks {
+        encoder
+            .add_text_chunk(keyword.to_string(), value.to_string())
+            .expect("Failed to add text chunk to PNG");
+    }
+
     let mut writer = encoder.write_header().unwrap();
 
     // 2×2 RGB pixels: red, green, blue, white
     let data: Vec<u8> = vec![255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255];
     writer.write_image_data(&data).unwrap();
+}
+
+#[tokio::test]
+async fn test_index_extracts_png_metadata_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let png_path = dir.path().join("with_metadata.png");
+
+    // Create a PNG with ComfyUI-style prompt + workflow metadata
+    let prompt_json = r#"{"3":{"inputs":{"seed":12345,"steps":20}}}"#;
+    let workflow_json = r#"{"nodes":[{"id":3,"type":"KSampler"}]}"#;
+    create_png_with_text_chunks(&png_path, &[("prompt", prompt_json), ("workflow", workflow_json)]);
+
+    let conn = setup_db();
+    let db = Mutex::new(conn);
+    let config = AppConfig {
+        watched_folders: vec![WatchedFolder {
+            path: dir.path().to_string_lossy().to_string(),
+            label: None,
+        }],
+    };
+
+    full_index(&db, &config, &setup_progress()).await.unwrap();
+
+    // Verify metadata_json was populated correctly
+    let conn = db.lock().await;
+    let row: (Option<String>,) = conn
+        .query_row(
+            "SELECT metadata_json FROM media_items WHERE filename = 'with_metadata.png'",
+            [],
+            |r| Ok((r.get(0)?,)),
+        )
+        .unwrap();
+
+    let metadata_str = row.0.expect("metadata_json should be Some for a PNG with prompt+workflow");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&metadata_str).expect("metadata_json should be valid JSON");
+
+    // Verify the parsed metadata contains expected fields
+    assert_eq!(parsed["prompt"]["3"]["inputs"]["seed"], 12345);
+    assert_eq!(parsed["prompt"]["3"]["inputs"]["steps"], 20);
+    assert_eq!(parsed["workflow"]["nodes"][0]["type"], "KSampler");
+    drop(conn);
 }

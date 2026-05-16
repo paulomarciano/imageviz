@@ -1,11 +1,5 @@
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::Json,
-    routing::get,
-    Router,
-};
-use serde_json::{json, Value};
+use axum::{Router, extract::State, http::StatusCode, response::Json, routing::get};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -20,8 +14,7 @@ pub struct ConfigState {
 }
 
 pub fn routes() -> Router<Arc<ConfigState>> {
-    Router::new()
-        .route("/config", get(get_config).put(update_config))
+    Router::new().route("/config", get(get_config).put(update_config))
 }
 
 /// GET /api/v1/config — return the current watched-folder configuration.
@@ -31,10 +24,7 @@ async fn get_config(
     let db = state.db.lock().await;
     let config = crate::config::load_config(&db).map_err(|e| {
         tracing::error!(error = %e, "Failed to load config from database");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": "Failed to load configuration"})),
-        )
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Failed to load configuration"})))
     })?;
     Ok(Json(config))
 }
@@ -60,10 +50,7 @@ async fn update_config(
     let db = state.db.lock().await;
     crate::config::save_config(&db, &config).map_err(|e| {
         tracing::error!(error = %e, "Failed to save config to database");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": "Failed to save configuration"})),
-        )
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Failed to save configuration"})))
     })?;
     Ok(Json(config))
 }
@@ -82,13 +69,9 @@ mod tests {
     fn test_state() -> Arc<ConfigState> {
         let conn =
             rusqlite::Connection::open_in_memory().expect("Failed to create in-memory database");
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT);",
-        )
-        .expect("Failed to create config table");
-        Arc::new(ConfigState {
-            db: Mutex::new(conn),
-        })
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT);")
+            .expect("Failed to create config table");
+        Arc::new(ConfigState { db: Mutex::new(conn) })
     }
 
     #[tokio::test]
@@ -96,23 +79,13 @@ mod tests {
         let app = routes().with_state(test_state());
 
         let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/config")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/config").body(Body::empty()).unwrap())
             .await
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
 
-        let body_bytes = response
-            .into_body()
-            .collect()
-            .await
-            .unwrap()
-            .to_bytes();
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
         let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         let folders = body["watched_folders"].as_array().unwrap();
         assert!(folders.is_empty());
@@ -148,23 +121,13 @@ mod tests {
 
         // GET from the same app instance (shared state via Arc)
         let get_response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/config")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/config").body(Body::empty()).unwrap())
             .await
             .unwrap();
 
         assert_eq!(get_response.status(), StatusCode::OK);
 
-        let body_bytes = get_response
-            .into_body()
-            .collect()
-            .await
-            .unwrap()
-            .to_bytes();
+        let body_bytes = get_response.into_body().collect().await.unwrap().to_bytes();
         let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         let folders = body["watched_folders"].as_array().unwrap();
         assert_eq!(folders.len(), 2);
@@ -198,12 +161,7 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-        let body_bytes = response
-            .into_body()
-            .collect()
-            .await
-            .unwrap()
-            .to_bytes();
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
         let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         assert!(body["error"].as_str().unwrap().contains("empty"));
     }

@@ -18,14 +18,10 @@ impl Settings {
                     .unwrap_or_else(|_| data_dir.join("imageviz.db").to_string_lossy().to_string()),
             ),
             thumbnail_cache_dir: PathBuf::from(
-                std::env::var("IMAGEVIZ_CACHE_DIR").unwrap_or_else(|_| {
-                    data_dir.join("thumbnails").to_string_lossy().to_string()
-                }),
+                std::env::var("IMAGEVIZ_CACHE_DIR")
+                    .unwrap_or_else(|_| data_dir.join("thumbnails").to_string_lossy().to_string()),
             ),
-            port: std::env::var("PORT")
-                .ok()
-                .and_then(|p| p.parse().ok())
-                .unwrap_or(3001),
+            port: std::env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(3001),
         }
     }
 }
@@ -40,26 +36,17 @@ impl Settings {
 fn dirs_data_dir() -> Option<PathBuf> {
     #[cfg(target_os = "linux")]
     {
-        std::env::var("XDG_DATA_HOME")
-            .ok()
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var("HOME").ok().map(|h| {
-                    PathBuf::from(h)
-                        .join(".local")
-                        .join("share")
-                        .join("imageviz")
-                })
-            })
+        std::env::var("XDG_DATA_HOME").ok().map(PathBuf::from).or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| PathBuf::from(h).join(".local").join("share").join("imageviz"))
+        })
     }
     #[cfg(target_os = "macos")]
     {
-        std::env::var("HOME").ok().map(|h| {
-            PathBuf::from(h)
-                .join("Library")
-                .join("Application Support")
-                .join("imageviz")
-        })
+        std::env::var("HOME")
+            .ok()
+            .map(|h| PathBuf::from(h).join("Library").join("Application Support").join("imageviz"))
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {

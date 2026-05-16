@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use crate::metadata::png::*;
     use crate::metadata::png::PngParseError;
+    use crate::metadata::png::*;
     use std::io::Write;
     use std::path::Path;
     use tempfile::TempDir;
@@ -20,7 +20,8 @@ mod tests {
             0x90, 0x77, 0x53, 0xDE, // IHDR CRC
             0x00, 0x00, 0x00, 0x0C, // IDAT chunk length
             0x49, 0x44, 0x41, 0x54, // IDAT chunk type
-            0x78, 0x01, 0x63, 0x60, 0x60, 0x60, 0x00, 0x00, 0x00, 0x04, 0x00, 0x01, // compressed data
+            0x78, 0x01, 0x63, 0x60, 0x60, 0x60, 0x00, 0x00, 0x00, 0x04, 0x00,
+            0x01, // compressed data
             0x52, 0x4A, 0xDE, 0x7D, // IDAT CRC
             0x00, 0x00, 0x00, 0x00, // IEND chunk length
             0x49, 0x45, 0x4E, 0x44, // IEND chunk type
@@ -36,9 +37,7 @@ mod tests {
         let mut png_data: Vec<u8> = Vec::new();
 
         // PNG signature
-        png_data.extend_from_slice(&[
-            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
-        ]);
+        png_data.extend_from_slice(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
 
         // IHDR chunk (1x1 RGB)
         png_data.extend_from_slice(&[
@@ -101,10 +100,7 @@ mod tests {
         // Assert
         assert!(metadata.prompt.is_none(), "no prompt expected");
         assert!(metadata.workflow.is_none(), "no workflow expected");
-        assert!(
-            metadata.raw_text_entries.is_empty(),
-            "no text entries expected"
-        );
+        assert!(metadata.raw_text_entries.is_empty(), "no text entries expected");
     }
 
     #[test]
@@ -152,10 +148,7 @@ mod tests {
         let metadata = parse_png_metadata(&path).unwrap();
 
         // Assert
-        assert_eq!(
-            metadata.raw_text_entries.get("mykey"),
-            Some(&"myvalue".to_string())
-        );
+        assert_eq!(metadata.raw_text_entries.get("mykey"), Some(&"myvalue".to_string()));
         assert!(metadata.prompt.is_none());
         assert!(metadata.workflow.is_none());
     }
@@ -265,10 +258,7 @@ mod tests {
         let metadata = Metadata {
             prompt: Some(serde_json::json!({"text": "test"})),
             workflow: None,
-            raw_text_entries: [("key".to_string(), "val".to_string())]
-                .iter()
-                .cloned()
-                .collect(),
+            raw_text_entries: [("key".to_string(), "val".to_string())].iter().cloned().collect(),
         };
 
         // Act
@@ -277,9 +267,6 @@ mod tests {
 
         // Assert
         assert_eq!(deserialized.prompt.unwrap()["text"], "test");
-        assert_eq!(
-            deserialized.raw_text_entries.get("key"),
-            Some(&"val".to_string())
-        );
+        assert_eq!(deserialized.raw_text_entries.get("key"), Some(&"val".to_string()));
     }
 }

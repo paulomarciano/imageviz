@@ -1,4 +1,4 @@
-use crate::metadata::png::{parse_png_metadata, Metadata};
+use crate::metadata::png::{Metadata, parse_png_metadata};
 use crate::metadata::video::parse_video_metadata;
 use serde::Serialize;
 use std::path::Path;
@@ -17,11 +17,7 @@ pub struct MediaInfo {
 /// For images, dimensions are read via the `image` crate (header-only, fast).
 /// For videos, dimensions are read via ffprobe (async).
 pub async fn detect_media(path: &Path) -> Result<MediaInfo, DetectionError> {
-    let extension = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
+    let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
 
     let mime_type = match extension.as_str() {
         "png" => "image/png",
@@ -34,9 +30,7 @@ pub async fn detect_media(path: &Path) -> Result<MediaInfo, DetectionError> {
     }
     .to_string();
 
-    let file_size = std::fs::metadata(path)
-        .map_err(DetectionError::Io)?
-        .len();
+    let file_size = std::fs::metadata(path).map_err(DetectionError::Io)?.len();
 
     let (width, height) = if mime_type.starts_with("image/") {
         detect_image_dimensions(path)?
@@ -51,12 +45,7 @@ pub async fn detect_media(path: &Path) -> Result<MediaInfo, DetectionError> {
         }
     };
 
-    Ok(MediaInfo {
-        mime_type,
-        width,
-        height,
-        file_size,
-    })
+    Ok(MediaInfo { mime_type, width, height, file_size })
 }
 
 /// Extract dimensions from an image file (header-only, fast).

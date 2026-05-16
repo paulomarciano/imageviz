@@ -86,4 +86,43 @@ mod tests {
         assert_eq!(info.width, Some(100));
         assert_eq!(info.height, Some(100));
     }
+
+    #[tokio::test]
+    async fn test_detect_webm_video() {
+        let path = fixture_path("sample_video.webm");
+        if !path.exists() {
+            eprintln!("Skipping test: fixture not found: {}", path.display());
+            return;
+        }
+
+        let info = detect_media(&path).await.unwrap();
+        assert_eq!(info.mime_type, "video/webm");
+        assert!(info.width.is_some_and(|w| w > 0), "webm should have width > 0");
+        assert!(info.height.is_some_and(|h| h > 0), "webm should have height > 0");
+        assert!(info.file_size > 0);
+    }
+
+    #[tokio::test]
+    async fn test_detect_mp4_video() {
+        let path = fixture_path("sample_video.mp4");
+        if !path.exists() {
+            eprintln!("Skipping test: fixture not found: {}", path.display());
+            return;
+        }
+
+        let info = detect_media(&path).await.unwrap();
+        assert_eq!(info.mime_type, "video/mp4");
+        assert!(info.width.is_some_and(|w| w > 0), "mp4 should have width > 0");
+        assert!(info.height.is_some_and(|h| h > 0), "mp4 should have height > 0");
+        assert!(info.file_size > 0);
+    }
+
+    /// Return the absolute path to a file in test-fixtures/.
+    fn fixture_path(name: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("CARGO_MANIFEST_DIR should have a parent")
+            .join("test-fixtures")
+            .join(name)
+    }
 }

@@ -10,12 +10,12 @@
 //! in transactions of [`BATCH_SIZE`] files for write throughput.
 
 use crate::config::AppConfig;
-use crate::metadata::detect::{detect_media, MediaInfo};
+use crate::metadata::detect::{MediaInfo, detect_media};
 use crate::metadata::png::parse_png_metadata;
 use crate::scanner::hasher::compute_file_hash;
-use crate::scanner::walker::{scan_folder, FileEntry};
-use rusqlite::{params, Connection};
+use crate::scanner::walker::{FileEntry, scan_folder};
 use rusqlite::OptionalExtension;
+use rusqlite::{Connection, params};
 use std::path::Path;
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -145,25 +145,18 @@ async fn process_file_metadata(file: &FileEntry) -> Result<ProcessedFile<'_>, In
 
     // Extract PNG metadata (ComfyUI prompt/workflow) if applicable
     let metadata_json = if media_info.mime_type == "image/png" {
-        parse_png_metadata(abs_path)
-            .ok()
-            .and_then(|meta| {
-                if meta.prompt.is_some() || meta.workflow.is_some() {
-                    serde_json::to_string(&meta).ok()
-                } else {
-                    None
-                }
-            })
+        parse_png_metadata(abs_path).ok().and_then(|meta| {
+            if meta.prompt.is_some() || meta.workflow.is_some() {
+                serde_json::to_string(&meta).ok()
+            } else {
+                None
+            }
+        })
     } else {
         None
     };
 
-    Ok(ProcessedFile {
-        file,
-        new_hash,
-        media_info,
-        metadata_json,
-    })
+    Ok(ProcessedFile { file, new_hash, media_info, metadata_json })
 }
 
 /// Phase 2: Store a processed file's data in the database.
@@ -186,10 +179,10 @@ fn store_file(conn: &Connection, processed: &ProcessedFile<'_>) -> Result<IndexC
         )
         .optional()?;
 
-    if let Some((_, Some(ref existing_hash))) = existing {
-        if existing_hash == &processed.new_hash {
-            return Ok(IndexChange::Skipped);
-        }
+    if let Some((_, Some(ref existing_hash))) = existing
+        && existing_hash == &processed.new_hash
+    {
+        return Ok(IndexChange::Skipped);
     }
 
     // Determine change type and reuse existing UUID or generate new one
@@ -205,7 +198,7 @@ fn store_file(conn: &Connection, processed: &ProcessedFile<'_>) -> Result<IndexC
             (id, filename, relative_path, mime_type, width, height, file_size,
              file_created_at, file_modified_at, indexed_at, metadata_json, checksum)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-         params![
+        params![
             id,
             processed.file.filename,
             processed.file.relative_path,
@@ -242,10 +235,7 @@ fn scan_all_folders(config: &AppConfig) -> Result<Vec<FileEntry>, IndexError> {
 /// are removed to keep the database in sync with the filesystem.
 fn remove_deleted_items(conn: &Connection, config: &AppConfig) -> Result<usize, IndexError> {
     let mut stmt = conn.prepare("SELECT relative_path FROM media_items")?;
-    let db_paths: Vec<String> = stmt
-        .query_map([], |r| r.get(0))?
-        .filter_map(|r| r.ok())
-        .collect();
+    let db_paths: Vec<String> = stmt.query_map([], |r| r.get(0))?.filter_map(|r| r.ok()).collect();
 
     let mut removed = 0;
     for db_path in &db_paths {
@@ -255,10 +245,7 @@ fn remove_deleted_items(conn: &Connection, config: &AppConfig) -> Result<usize, 
         });
 
         if !exists {
-            conn.execute(
-                "DELETE FROM media_items WHERE relative_path = ?1",
-                params![db_path],
-            )?;
+            conn.execute("DELETE FROM media_items WHERE relative_path = ?1", params![db_path])?;
             removed += 1;
         }
     }

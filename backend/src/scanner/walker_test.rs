@@ -1,5 +1,5 @@
-use crate::scanner::walker::*;
 use crate::scanner::walker::WalkerError;
+use crate::scanner::walker::*;
 use std::io::Write;
 use tempfile::TempDir;
 

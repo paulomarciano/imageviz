@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use crate::scanner::hasher::*;
     use crate::scanner::hasher::HashError;
+    use crate::scanner::hasher::*;
     use std::io::Write;
     use tempfile::TempDir;
 
@@ -59,10 +59,7 @@ mod tests {
 
         // Assert
         // SHA-256 of "abc"
-        assert_eq!(
-            hash,
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        );
+        assert_eq!(hash, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     }
 
     #[tokio::test]
