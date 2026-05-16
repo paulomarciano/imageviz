@@ -120,7 +120,7 @@ mod tests {
         // Assert
         assert!(result.is_err(), "corrupt file should error");
         match result.unwrap_err() {
-            PngParseError::Png(_) | PngParseError::InvalidPng => {}
+            PngParseError::Png(_) => {}
             other => panic!("expected Png error, got: {:?}", other),
         }
     }
@@ -232,16 +232,12 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_png_with_multiple_text_chunks() {
-        // Arrange
+    fn test_parse_duplicate_key_takes_first_value() {
+        // Arrange: when the same key appears twice, the first value wins
         let dir = TempDir::new().unwrap();
-        let path = dir.path().join("multi_text.png");
+        let path = dir.path().join("prompt_only.png");
         let prompt_json = r#"{"text":"hi"}"#;
-        #[allow(unused_variables)]
-        let workflow_json = r#"{"version":1}"#;
-
-        // To avoid the complexity of multiple tEXt chunks, we test sequentially:
-        // Create file with prompt, parse, then create with both
+        let _workflow_json = r#"{"version":1}"#;
         create_png_with_text_chunk(&path, "prompt", prompt_json);
 
         // Act

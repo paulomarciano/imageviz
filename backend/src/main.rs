@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use axum::Router;
 use tokio::sync::Mutex;
 use tower_http::cors::CorsLayer;
 
@@ -26,11 +25,8 @@ async fn main() {
     });
 
     // Build application router
-    // Config routes require Arc<ConfigState>; health routes require no state.
-    // We apply .with_state() to config routes before nesting them into the
-    // top-level Router<()>.
-    let app = Router::new()
-        .nest("/api/v1", imageviz_backend::routes::health::routes())
+    // Start with base router from app factory, then add stateful config routes.
+    let app = imageviz_backend::app()
         .nest(
             "/api/v1",
             imageviz_backend::routes::config::routes().with_state(config_state),

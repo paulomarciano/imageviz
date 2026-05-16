@@ -1,10 +1,8 @@
 # Dependencies
 node_modules/
-backend/target/
 
 # Build output
 frontend/dist/
-backend/target/
 
 # IDE / Editors
 .idea/
@@ -38,13 +36,12 @@ coverage-*.json
 # Logs
 *.log
 
-# Thumbnail cache (generated at runtime)
-thumbnails/
-.cache/
-*.webp
+# Thumbnail cache (generated at runtime — content-addressed WebP files)
+data/thumbnails/
 
 # Runtime data
 data/
+!data/.gitkeep
 
 # ComfyUI test data (do not commit actual dataset)
 ~/ComfyUI/

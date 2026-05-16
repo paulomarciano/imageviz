@@ -49,10 +49,10 @@ impl ProgressTracker {
 
     /// Set the current indexing status.
     pub fn set_status(&self, status: IndexStatus) {
-        let _ = self.status_tx.send(status);
         if let Ok(mut inner) = self.inner.lock() {
             inner.status = status;
         }
+        let _ = self.status_tx.send(status);
     }
 
     /// Set the total number of files to process.
@@ -63,15 +63,19 @@ impl ProgressTracker {
     }
 
     /// Increment the processed file count.
-    pub fn increment_processed(&self, _path: &str) {
+    pub fn increment_processed(&self) {
         if let Ok(mut inner) = self.inner.lock() {
             inner.processed += 1;
         }
     }
 
     /// Record an error message encountered during indexing.
+    /// Capped at 1000 errors to prevent unbounded memory growth.
     pub fn add_error(&self, msg: String) {
         if let Ok(mut inner) = self.inner.lock() {
+            if inner.errors.len() >= 1000 {
+                return;
+            }
             inner.errors.push(msg);
         }
     }

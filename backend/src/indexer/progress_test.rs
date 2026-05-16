@@ -31,12 +31,12 @@ fn test_progress_tracker_totals() {
     tracker.set_total(100);
     assert_eq!(tracker.snapshot().total, 100);
 
-    for i in 0..50 {
-        tracker.increment_processed(&format!("file_{}", i));
+    for _ in 0..50 {
+        tracker.increment_processed();
     }
     assert_eq!(tracker.snapshot().processed, 50);
 
-    tracker.increment_processed("last_file");
+    tracker.increment_processed();
     assert_eq!(tracker.snapshot().processed, 51);
 }
 

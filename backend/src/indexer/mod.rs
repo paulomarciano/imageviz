@@ -66,7 +66,7 @@ pub async fn full_index(
         // Phase 1: Async I/O — compute hashes and metadata without DB lock
         let mut batch_results: Vec<ProcessedFile> = Vec::with_capacity(chunk.len());
         for file in chunk {
-            progress.increment_processed(&file.relative_path);
+            progress.increment_processed();
             match process_file_metadata(file).await {
                 Ok(processed) => batch_results.push(processed),
                 Err(e) => {
@@ -170,6 +170,12 @@ async fn process_file_metadata(file: &FileEntry) -> Result<ProcessedFile<'_>, In
 ///
 /// Synchronous — must be called while holding the database lock.
 /// Uses `INSERT OR REPLACE` for idempotent upserts.
+///
+/// ## Known limitation
+/// `relative_path` is computed relative to each watched folder root. If two
+/// watched folders contain a file with the same relative path, the second
+/// `INSERT OR REPLACE` overwrites the first. A `folder_id` column will resolve
+/// this in a future wave.
 fn store_file(conn: &Connection, processed: &ProcessedFile<'_>) -> Result<IndexChange, IndexError> {
     // Check if file already indexed with same hash (skip if unchanged)
     let existing: Option<(String, Option<String>)> = conn
@@ -193,12 +199,13 @@ fn store_file(conn: &Connection, processed: &ProcessedFile<'_>) -> Result<IndexC
     };
 
     // Upsert into DB — INSERT OR REPLACE is idempotent
+    let indexed_at = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "INSERT OR REPLACE INTO media_items
             (id, filename, relative_path, mime_type, width, height, file_size,
              file_created_at, file_modified_at, indexed_at, metadata_json, checksum)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'), ?10, ?11)",
-        params![
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+         params![
             id,
             processed.file.filename,
             processed.file.relative_path,
@@ -208,6 +215,7 @@ fn store_file(conn: &Connection, processed: &ProcessedFile<'_>) -> Result<IndexC
             processed.media_info.file_size,
             processed.file.created_at,
             processed.file.modified_at,
+            indexed_at,
             processed.metadata_json,
             processed.new_hash,
         ],

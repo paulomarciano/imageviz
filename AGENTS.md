@@ -89,7 +89,7 @@ Tests must pass before a ticket is marked done.
 - **After every commit**, spawn a `CodeReviewer` subagent (new invocation, not a resumed session)
   to review the change. Pass the session context path so the reviewer applies the same standards
   used during implementation. The reviewer reports findings back to the main agent; address any
-  critical issues before making additional commits or marking the task complete.
+  critical or warning-level issues before making additional commits or marking the task complete.
   This catches regressions early, before they compound.
 
 ## Reference: Context System

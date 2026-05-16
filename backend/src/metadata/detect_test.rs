@@ -75,33 +75,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_mime_types() {
-        // Arrange
-        let cases = [
-            ("test.png", "image/png"),
-            ("test.jpg", "image/jpeg"),
-            ("test.jpeg", "image/jpeg"),
-            ("test.webp", "image/webp"),
-            ("test.gif", "image/gif"),
-            ("test.mp4", "video/mp4"),
-            ("test.webm", "video/webm"),
-        ];
+    async fn test_detect_webp() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.webp");
+        let img = image::DynamicImage::new_rgba8(100, 100);
+        img.save(&path).unwrap();
 
-        // Act & Assert
-        for (filename, expected_mime) in &cases {
-            let path = std::path::Path::new(filename);
-            let ext = path.extension().unwrap().to_str().unwrap();
-            // Just check extension-based mapping without creating files
-            let mime = match ext {
-                "png" => "image/png",
-                "jpg" | "jpeg" => "image/jpeg",
-                "webp" => "image/webp",
-                "gif" => "image/gif",
-                "mp4" => "video/mp4",
-                "webm" => "video/webm",
-                _ => continue,
-            };
-            assert_eq!(mime, *expected_mime, "MIME mismatch for {}", filename);
-        }
+        let info = detect_media(&path).await.unwrap();
+        assert_eq!(info.mime_type, "image/webp");
+        assert_eq!(info.width, Some(100));
+        assert_eq!(info.height, Some(100));
     }
 }

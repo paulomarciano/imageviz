@@ -18,7 +18,6 @@ pub struct Metadata {
 pub enum PngParseError {
     Io(std::io::Error),
     Png(png::DecodingError),
-    InvalidPng,
 }
 
 impl std::fmt::Display for PngParseError {
@@ -26,7 +25,6 @@ impl std::fmt::Display for PngParseError {
         match self {
             PngParseError::Io(e) => write!(f, "IO error: {}", e),
             PngParseError::Png(e) => write!(f, "PNG decoding error: {}", e),
-            PngParseError::InvalidPng => write!(f, "Not a valid PNG file"),
         }
     }
 }
