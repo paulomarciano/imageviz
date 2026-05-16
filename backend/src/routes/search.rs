@@ -277,24 +277,10 @@ mod tests {
     fn test_state() -> (tempfile::TempDir, Arc<SearchState>) {
         let dir = tempfile::tempdir().expect("tempdir");
 
-        let conn = rusqlite::Connection::open_in_memory()
+        let mut conn = crate::db::open_in_memory()
             .expect("Failed to create in-memory database");
-        conn.execute_batch(
-            "CREATE TABLE media_items (
-                id TEXT PRIMARY KEY NOT NULL,
-                filename TEXT NOT NULL,
-                relative_path TEXT NOT NULL UNIQUE,
-                mime_type TEXT NOT NULL,
-                width INTEGER,
-                height INTEGER,
-                file_size INTEGER NOT NULL DEFAULT 0,
-                file_created_at TEXT NOT NULL DEFAULT '',
-                file_modified_at TEXT NOT NULL DEFAULT '',
-                metadata_json TEXT,
-                checksum TEXT
-            );",
-        )
-        .expect("Failed to create media_items table");
+        crate::db::migrations::run_migrations(&mut conn)
+            .expect("Failed to run migrations");
 
         let index_manager =
             IndexManager::open_or_create(&dir.path().join("tantivy")).expect("IndexManager");

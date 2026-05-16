@@ -68,21 +68,19 @@ mod tests {
     use tower::ServiceExt;
 
     fn test_state() -> Arc<ConfigState> {
-        let conn =
-            rusqlite::Connection::open_in_memory().expect("Failed to create in-memory database");
-        conn.execute_batch("CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT);")
-            .expect("Failed to create config table");
+        let mut conn =
+            crate::db::open_in_memory().expect("Failed to create in-memory database");
+        crate::db::migrations::run_migrations(&mut conn)
+            .expect("Failed to run migrations");
         Arc::new(ConfigState { db: Arc::new(Mutex::new(conn)) })
     }
 
-    /// Create a state with a database that has no `config` table.
+    /// Create a state with a database that has no tables at all.
     ///
     /// Any query against the config table will fail with "no such table",
-    /// triggering the 500 error path in route handlers.
-    ///
-    /// **Warning**: If `test_state()` is updated to include migration calls,
-    /// verify that this function still lacks the config table so the 500
-    /// error paths remain exercised.
+    /// triggering the 500 error path in route handlers. Kept as a raw
+    /// in-memory connection (no migrations) so the MISSING-TABLE error
+    /// path remains exercised.
     fn bad_state() -> Arc<ConfigState> {
         let conn =
             rusqlite::Connection::open_in_memory().expect("Failed to create in-memory database");

@@ -26,25 +26,10 @@ use imageviz_backend::routes::media::{MediaState, routes};
 /// The database contains only the schema — no seeded data. Callers must
 /// call `seed_config` and `seed_media_item` to populate test data.
 fn create_media_test_app() -> (Router, Arc<MediaState>, tempfile::TempDir) {
-    let conn = rusqlite::Connection::open_in_memory()
+    let mut conn = imageviz_backend::db::open_in_memory()
         .expect("Failed to create in-memory database");
-    conn.execute_batch(
-        "CREATE TABLE media_items (
-            id TEXT PRIMARY KEY NOT NULL,
-            filename TEXT NOT NULL,
-            relative_path TEXT NOT NULL UNIQUE,
-            mime_type TEXT NOT NULL,
-            file_size INTEGER NOT NULL DEFAULT 0,
-            file_created_at TEXT NOT NULL DEFAULT '',
-            file_modified_at TEXT NOT NULL DEFAULT '',
-            checksum TEXT
-        );
-        CREATE TABLE config (
-            key TEXT PRIMARY KEY NOT NULL,
-            value TEXT NOT NULL
-        );",
-    )
-    .expect("Failed to create test tables");
+    imageviz_backend::db::migrations::run_migrations(&mut conn)
+        .expect("Failed to run migrations");
 
     let cache_dir = tempfile::tempdir().expect("Failed to create cache directory");
     let db = Arc::new(Mutex::new(conn));

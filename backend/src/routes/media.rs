@@ -703,31 +703,13 @@ mod tests {
 
     /// Build a test `MediaState` with an in-memory SQLite database and a
     /// temporary cache directory (kept alive until the test finishes).
-    /// The database is pre-populated with the minimum schema needed to
-    /// exercise routes.
+    /// The database is created via the real migration path so the schema
+    /// matches production.
     fn test_state() -> (Arc<MediaState>, tempfile::TempDir) {
-        let conn = rusqlite::Connection::open_in_memory()
+        let mut conn = crate::db::open_in_memory()
             .expect("Failed to create in-memory database");
-        conn.execute_batch(
-        "CREATE TABLE media_items (
-            id TEXT PRIMARY KEY NOT NULL,
-            filename TEXT NOT NULL,
-            relative_path TEXT NOT NULL UNIQUE,
-            mime_type TEXT NOT NULL,
-            width INTEGER,
-            height INTEGER,
-            file_size INTEGER NOT NULL DEFAULT 0,
-            file_created_at TEXT NOT NULL DEFAULT '',
-            file_modified_at TEXT NOT NULL DEFAULT '',
-            metadata_json TEXT,
-            checksum TEXT
-        );
-        CREATE TABLE config (
-            key TEXT PRIMARY KEY NOT NULL,
-            value TEXT NOT NULL
-        );",
-        )
-        .expect("Failed to create test tables");
+        crate::db::migrations::run_migrations(&mut conn)
+            .expect("Failed to run migrations");
         let cache_dir = tempfile::tempdir().expect("tempdir");
         let state = Arc::new(MediaState {
             db: Arc::new(Mutex::new(conn)),
