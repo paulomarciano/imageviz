@@ -153,7 +153,7 @@ export function DetailView({
       <div className="flex-1 relative flex items-center justify-center">
         {loadingDetail ? (
           <div className="flex items-center justify-center">
-            <div className="animate-spin h-8 w-8 border-2 border-blue-500 border-t-transparent rounded-full" />
+            <div aria-label="Loading media details" className="animate-spin h-8 w-8 border-2 border-blue-500 border-t-transparent rounded-full" />
           </div>
         ) : detailItem ? (
           isVideo ? (

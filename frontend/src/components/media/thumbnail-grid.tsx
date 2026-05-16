@@ -30,7 +30,12 @@ const ItemContainer = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement>>
 
 function SkeletonGrid() {
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 p-3">
+    <div
+      className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 p-3"
+      role="grid"
+      aria-label="Loading media"
+      aria-busy="true"
+    >
       {Array.from({ length: 20 }, (_, i) => (
         <div key={i} className="aspect-[3/4] bg-gray-800 rounded-lg animate-pulse" />
       ))}
@@ -138,7 +143,14 @@ export function ThumbnailGrid({ onItemClick }: ThumbnailGridProps) {
   }
 
   return (
-    <div className="h-full relative" ref={containerRef} onKeyDown={handleKeyDown}>
+    <div
+      className="h-full relative"
+      ref={containerRef}
+      onKeyDown={handleKeyDown}
+      role="grid"
+      aria-label="Media gallery"
+      aria-busy={isFetchingNextPage}
+    >
       {/* Search results count */}
       {viewMode === 'search' && (
         <div className="px-3 pt-2 pb-1 text-sm text-gray-400">
@@ -147,6 +159,13 @@ export function ThumbnailGrid({ onItemClick }: ThumbnailGridProps) {
             : `Searching...`}
         </div>
       )}
+
+      {/* Screen reader live region */}
+      <div aria-live="polite" aria-atomic="true" className="sr-only">
+        {viewMode === 'search'
+          ? `${searchTotal} result${searchTotal !== 1 ? 's' : ''} for "${searchQuery}"`
+          : `Showing ${items.length} of ${browseData.totalCount} media items`}
+      </div>
 
       <VirtuosoGrid
         style={{ height: '100%' }}

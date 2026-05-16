@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { get } from '../../api/client.ts';
 import type { AppConfig, WatchedFolder, IndexStats } from '../../types/api.ts';
@@ -37,11 +37,42 @@ interface ConfigPanelProps {
 
 export function ConfigPanel({ onClose }: ConfigPanelProps) {
   const queryClient = useQueryClient();
+  const panelRef = useRef<HTMLDivElement>(null);
   const [localFolders, setLocalFolders] = useState<WatchedFolder[]>([]);
   const [newPath, setNewPath] = useState('');
   const [newLabel, setNewLabel] = useState('');
   const [initialized, setInitialized] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Focus trap — cycle Tab among focusable elements inside the panel
+  useEffect(() => {
+    const el = panelRef.current;
+    if (!el) return;
+
+    const focusableSelector =
+      'button, input, select, textarea, [tabindex]:not([tabindex="-1"])';
+
+    const handleTabKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Tab') return;
+      const focusable = el.querySelectorAll<HTMLElement>(focusableSelector);
+      if (focusable.length === 0) return;
+      const first = focusable[0]!;
+      const last = focusable[focusable.length - 1]!;
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+
+    el.addEventListener('keydown', handleTabKey);
+    // Focus the first focusable element when panel opens
+    const firstFocusable = el.querySelector<HTMLElement>(focusableSelector);
+    firstFocusable?.focus();
+    return () => el.removeEventListener('keydown', handleTabKey);
+  }, []);
 
   // Fetch current config
   const configQuery = useQuery<AppConfig, Error>({
@@ -97,6 +128,7 @@ export function ConfigPanel({ onClose }: ConfigPanelProps) {
 
   return (
     <div
+      ref={panelRef}
       className="fixed inset-y-0 right-0 w-96 bg-gray-900 border-l border-gray-700 shadow-2xl z-40 flex flex-col"
       role="dialog"
       aria-modal="true"

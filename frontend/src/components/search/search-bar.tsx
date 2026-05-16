@@ -51,6 +51,7 @@ export function SearchBar() {
         ref={inputRef}
         type="search"
         aria-label="Search media"
+        autoComplete="off"
         placeholder="Search media..."
         value={localQuery}
         onChange={(e) => setLocalQuery(e.target.value)}
