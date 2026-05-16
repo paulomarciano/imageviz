@@ -74,6 +74,15 @@ mod tests {
         Arc::new(ConfigState { db: Mutex::new(conn) })
     }
 
+    /// Create a state with a database that has no `config` table.
+    /// Any query against the config table will fail with "no such table",
+    /// triggering the 500 error path in route handlers.
+    fn bad_state() -> Arc<ConfigState> {
+        let conn =
+            rusqlite::Connection::open_in_memory().expect("Failed to create in-memory database");
+        Arc::new(ConfigState { db: Mutex::new(conn) })
+    }
+
     #[tokio::test]
     async fn test_get_config_empty() {
         let app = routes().with_state(test_state());
@@ -164,5 +173,38 @@ mod tests {
         let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
         let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         assert!(body["error"].as_str().unwrap().contains("empty"));
+    }
+
+    #[tokio::test]
+    async fn test_get_config_without_table_returns_500() {
+        let app = routes().with_state(bad_state());
+
+        let response = app
+            .oneshot(Request::builder().uri("/config").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn test_put_config_without_table_returns_500() {
+        let app = routes().with_state(bad_state());
+
+        let input = json!({"watched_folders": [{"path": "/tmp/test"}]});
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(http::Method::PUT)
+                    .uri("/config")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&input).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 }

@@ -113,4 +113,67 @@ mod tests {
         assert!(info.height.is_some_and(|h| h > 0), "mp4 should have height > 0");
         assert!(info.file_size > 0);
     }
+
+    #[tokio::test]
+    async fn test_detect_video_dimensions_error_on_bad_file() {
+        // A file with video extension but invalid content hits the ffprobe
+        // error branch in detect_media, returning (None, None) for dimensions.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("bad.mp4");
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(b"this is not a real mp4 file").unwrap();
+        drop(f);
+
+        let info = detect_media(&path).await.unwrap();
+        assert_eq!(info.mime_type, "video/mp4");
+        // ffprobe fails on invalid content → dimensions are None
+        assert!(info.width.is_none(), "width should be None when ffprobe fails");
+        assert!(info.height.is_none(), "height should be None when ffprobe fails");
+        assert!(info.file_size > 0);
+    }
+
+    #[tokio::test]
+    async fn test_extract_png_metadata_from_file_with_text_chunks() {
+        use crate::metadata::png::Metadata;
+        use std::io::BufWriter;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("with_text.png");
+
+        // Create a PNG with known tEXt chunks using the png encoder
+        let file = std::fs::File::create(&path).unwrap();
+        let w = BufWriter::new(file);
+        let mut encoder = png::Encoder::new(w, 2, 2);
+        encoder.set_color(png::ColorType::Rgb);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.add_text_chunk("prompt".to_string(), r#"{"text":"a test"}"#.to_string()).unwrap();
+        let mut writer = encoder.write_header().unwrap();
+        let data: Vec<u8> = vec![255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255];
+        writer.write_image_data(&data).unwrap();
+        drop(writer);
+
+        // This wrapper function lives in the detect module
+        let metadata: Metadata = extract_png_metadata(&path).unwrap();
+        assert!(metadata.prompt.is_some(), "prompt metadata should be extracted");
+        assert_eq!(metadata.prompt.unwrap()["text"], "a test");
+    }
+
+    #[tokio::test]
+    async fn test_extract_png_metadata_from_file_no_text() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("clean.png");
+        create_test_png(&path, 4, 4);
+
+        // Clean PNG without text chunks should return default empty metadata
+        let metadata = extract_png_metadata(&path).unwrap();
+        assert!(metadata.prompt.is_none(), "no prompt expected for clean PNG");
+        assert!(metadata.workflow.is_none(), "no workflow expected for clean PNG");
+        assert!(metadata.raw_text_entries.is_empty(), "no text entries expected");
+    }
+
+    #[tokio::test]
+    async fn test_extract_png_metadata_nonexistent_file() {
+        let result = extract_png_metadata(std::path::Path::new("/nonexistent/file.png"));
+        assert!(result.is_err(), "nonexistent file should return error");
+    }
 }

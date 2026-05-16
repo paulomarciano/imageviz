@@ -29,6 +29,30 @@ async fn test_empty_config_returns_empty_stats() {
 }
 
 #[tokio::test]
+async fn test_incremental_index_delegates_to_full_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let png_path = dir.path().join("test.png");
+    create_minimal_png(&png_path);
+
+    let conn = setup_db();
+    let db = Mutex::new(conn);
+    let config = AppConfig {
+        watched_folders: vec![WatchedFolder {
+            path: dir.path().to_string_lossy().to_string(),
+            label: None,
+        }],
+    };
+
+    // incremental_index delegates to full_index internally
+    let stats = incremental_index(&db, &config, &setup_progress()).await.unwrap();
+    assert_eq!(stats.created, 1, "incremental_index should create entries for new files");
+
+    // Second call should skip unchanged files
+    let stats = incremental_index(&db, &config, &setup_progress()).await.unwrap();
+    assert_eq!(stats.skipped, 1, "incremental_index should skip unchanged files");
+}
+
+#[tokio::test]
 async fn test_full_index_creates_entries_for_new_files() {
     let dir = tempfile::tempdir().unwrap();
 
