@@ -4,6 +4,7 @@ pub mod indexer;
 pub mod metadata;
 pub mod routes;
 pub mod scanner;
+pub mod thumbnails;
 
 #[cfg(test)]
 pub mod test_support;
