@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
     Json, Router,
@@ -129,31 +129,63 @@ fn parse_range_header(range_header: &str, file_size: u64) -> Option<RangeInclusi
 }
 
 /// GET /api/v1/media/{id}/file — stream the original file with optional Range support.
+/// Adds caching headers (ETag, Cache-Control, Last-Modified) and supports
+/// conditional requests via If-None-Match (returns 304 Not Modified).
 async fn serve_file(
     State(state): State<Arc<MediaState>>,
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, (StatusCode, Json<Value>)> {
-    // Resolve file path
+    // Resolve file path and get caching info from DB in a single lock
     let db = state.db.lock().await;
     let (file_path, mime_type, filename) = resolve_media_path(&db, &id)?;
+    let (checksum, modified_at): (String, String) = db
+        .query_row(
+            "SELECT COALESCE(checksum, ''), COALESCE(file_modified_at, '') FROM media_items WHERE id = ?1",
+            rusqlite::params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap_or_default();
     drop(db);
 
-    // Get file metadata for size and Last-Modified
+    // Get file metadata for size
     let metadata = tokio::fs::metadata(&file_path).await.map_err(|e| {
         tracing::error!(error = %e, path = %file_path.display(), "Failed to stat file");
         (StatusCode::NOT_FOUND, Json(json!({"error": "File not found on disk"})))
     })?;
     let file_size = metadata.len();
 
+    // Check If-None-Match (only for full-file requests, not range)
+    if !checksum.is_empty() {
+        if let Some(val) = headers
+            .get(header::IF_NONE_MATCH)
+            .and_then(|v| v.to_str().ok())
+        {
+            let expected = format!("\"{}\"", checksum);
+            if val == expected {
+                let mut res = Response::new(axum::body::Body::empty());
+                *res.status_mut() = StatusCode::NOT_MODIFIED;
+                res.headers_mut()
+                    .insert(header::ETAG, HeaderValue::from_bytes(expected.as_bytes()).unwrap());
+                res.headers_mut().insert(
+                    header::CACHE_CONTROL,
+                    HeaderValue::from_static("private, max-age=3600"),
+                );
+                return Ok(res);
+            }
+        }
+    }
+
     // Check for Range header
     if let Some(range_header) = headers.get(header::RANGE) {
         if let Ok(range_str) = range_header.to_str() {
             if range_str.starts_with("bytes=") {
                 if let Some(range) = parse_range_header(range_str, file_size) {
-                    return serve_file_range(&file_path, range, file_size, &mime_type, &filename)
-                        .await
-                        .map(IntoResponse::into_response);
+                    return serve_file_range(
+                        &file_path, range, file_size, &mime_type, &filename, &checksum,
+                    )
+                    .await
+                    .map(IntoResponse::into_response);
                 } else {
                     return Err((
                         StatusCode::RANGE_NOT_SATISFIABLE,
@@ -167,18 +199,24 @@ async fn serve_file(
         }
     }
 
-    // No Range header → serve full file
-    serve_full_file(&file_path, &mime_type, &filename)
+    // No Range header → serve full file with caching headers
+    serve_full_file(&file_path, &mime_type, &filename, &checksum, &modified_at)
         .await
         .map(IntoResponse::into_response)
 }
 
-/// Serve the full file (200 OK).
+/// Serve the full file (200 OK) with caching headers.
+///
+/// Includes `ETag` (checksum), `Cache-Control: private, max-age=3600`,
+/// and `Last-Modified` (from `file_modified_at`) headers.
+/// Conditional requests (304) are handled upstream in `serve_file`.
 async fn serve_full_file(
     path: &std::path::Path,
     mime_type: &str,
     filename: &str,
-) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    checksum: &str,
+    modified_at: &str,
+) -> Result<Response, (StatusCode, Json<Value>)> {
     let file = tokio::fs::File::open(path).await.map_err(|e| {
         tracing::error!(error = %e, path = %path.display(), "Failed to open file");
         (StatusCode::NOT_FOUND, Json(json!({"error": "File not found on disk"})))
@@ -187,27 +225,46 @@ async fn serve_full_file(
     let stream = tokio_util::io::ReaderStream::new(file);
     let body = axum::body::Body::from_stream(stream);
 
-    Ok((
-        [
-            (header::CONTENT_TYPE, mime_type.to_string()),
-            (
-                header::CONTENT_DISPOSITION,
-                format!("inline; filename=\"{}\"", filename),
-            ),
-            (header::ACCEPT_RANGES, "bytes".to_string()),
-        ],
-        body,
-    ))
+    let mut res = Response::new(body);
+    res.headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_bytes(mime_type.as_bytes()).unwrap());
+    res.headers_mut().insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_bytes(format!("inline; filename=\"{}\"", filename).as_bytes()).unwrap(),
+    );
+    res.headers_mut()
+        .insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    res.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=3600"),
+    );
+    if !checksum.is_empty() {
+        res.headers_mut().insert(
+            header::ETAG,
+            HeaderValue::from_bytes(format!("\"{}\"", checksum).as_bytes()).unwrap(),
+        );
+    }
+    if !modified_at.is_empty() {
+        res.headers_mut().insert(
+            header::LAST_MODIFIED,
+            HeaderValue::from_bytes(modified_at.as_bytes()).unwrap(),
+        );
+    }
+    Ok(res)
 }
 
-/// Serve a byte range of the file (206 Partial Content).
+/// Serve a byte range of the file (206 Partial Content) with caching headers.
+///
+/// Includes `ETag` (checksum) and `Cache-Control: private, max-age=3600`.
+/// Range responses skip 304 handling since they are already partial.
 async fn serve_file_range(
     path: &std::path::Path,
     range: RangeInclusive<u64>,
     file_size: u64,
     mime_type: &str,
     filename: &str,
-) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    checksum: &str,
+) -> Result<Response, (StatusCode, Json<Value>)> {
     let start = *range.start();
     let end = *range.end();
     let length = end - start + 1;
@@ -228,23 +285,35 @@ async fn serve_file_range(
     let stream = tokio_util::io::ReaderStream::new(reader);
     let body = axum::body::Body::from_stream(stream);
 
-    Ok((
-        StatusCode::PARTIAL_CONTENT,
-        [
-            (header::CONTENT_TYPE, mime_type.to_string()),
-            (
-                header::CONTENT_DISPOSITION,
-                format!("inline; filename=\"{}\"", filename),
-            ),
-            (
-                header::CONTENT_RANGE,
-                format!("bytes {}-{}/{}", start, end, file_size),
-            ),
-            (header::CONTENT_LENGTH, length.to_string()),
-            (header::ACCEPT_RANGES, "bytes".to_string()),
-        ],
-        body,
-    ))
+    let mut res = Response::new(body);
+    *res.status_mut() = StatusCode::PARTIAL_CONTENT;
+    res.headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_bytes(mime_type.as_bytes()).unwrap());
+    res.headers_mut().insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_bytes(format!("inline; filename=\"{}\"", filename).as_bytes()).unwrap(),
+    );
+    res.headers_mut().insert(
+        header::CONTENT_RANGE,
+        HeaderValue::from_bytes(format!("bytes {}-{}/{}", start, end, file_size).as_bytes()).unwrap(),
+    );
+    res.headers_mut().insert(
+        header::CONTENT_LENGTH,
+        HeaderValue::from_bytes(length.to_string().as_bytes()).unwrap(),
+    );
+    res.headers_mut()
+        .insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    res.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=3600"),
+    );
+    if !checksum.is_empty() {
+        res.headers_mut().insert(
+            header::ETAG,
+            HeaderValue::from_bytes(format!("\"{}\"", checksum).as_bytes()).unwrap(),
+        );
+    }
+    Ok(res)
 }
 
 // ---------------------------------------------------------------------------
@@ -690,5 +759,187 @@ mod tests {
             .and_then(|v| v.to_str().ok())
             .unwrap();
         assert!(content_disposition.contains("test.png"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Caching header tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_serve_file_etag_and_cache_control() {
+        let state = test_state();
+        let watched = tempfile::tempdir().unwrap();
+        let source_path = watched.path().join("test.png");
+        create_test_png(&source_path);
+
+        seed_config(&state, watched.path()).await;
+        seed_media_item(
+            &state,
+            "00000000-0000-0000-0000-000000000005",
+            "test.png",
+            "test.png",
+            "image/png",
+            "abc123def456",
+        )
+        .await;
+
+        let app = routes().with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/media/00000000-0000-0000-0000-000000000005/file")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Verify ETag header
+        let etag = response
+            .headers()
+            .get(header::ETAG)
+            .and_then(|v| v.to_str().ok())
+            .unwrap();
+        assert_eq!(etag, "\"abc123def456\"");
+
+        // Verify Cache-Control header
+        let cache_control = response
+            .headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|v| v.to_str().ok())
+            .unwrap();
+        assert_eq!(cache_control, "private, max-age=3600");
+    }
+
+    #[tokio::test]
+    async fn test_serve_file_304_not_modified() {
+        let state = test_state();
+        let watched = tempfile::tempdir().unwrap();
+        let source_path = watched.path().join("test.png");
+        create_test_png(&source_path);
+
+        seed_config(&state, watched.path()).await;
+        seed_media_item(
+            &state,
+            "00000000-0000-0000-0000-000000000006",
+            "test.png",
+            "test.png",
+            "image/png",
+            "xyz789",
+        )
+        .await;
+
+        let app = routes().with_state(state);
+
+        // Request with matching If-None-Match
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/media/00000000-0000-0000-0000-000000000006/file")
+                    .header(header::IF_NONE_MATCH, "\"xyz789\"")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+
+        // 304 response must have an empty body
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        assert!(body_bytes.is_empty(), "304 response must have empty body");
+    }
+
+    #[tokio::test]
+    async fn test_serve_file_etag_mismatch_returns_200() {
+        let state = test_state();
+        let watched = tempfile::tempdir().unwrap();
+        let source_path = watched.path().join("test.png");
+        create_test_png(&source_path);
+
+        seed_config(&state, watched.path()).await;
+        seed_media_item(
+            &state,
+            "00000000-0000-0000-0000-000000000007",
+            "test.png",
+            "test.png",
+            "image/png",
+            "realchecksum",
+        )
+        .await;
+
+        let app = routes().with_state(state);
+
+        // Request with non-matching If-None-Match
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/media/00000000-0000-0000-0000-000000000007/file")
+                    .header(header::IF_NONE_MATCH, "\"wrongchecksum\"")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // Server should still return its own ETag
+        let etag = response
+            .headers()
+            .get(header::ETAG)
+            .and_then(|v| v.to_str().ok())
+            .unwrap();
+        assert_eq!(etag, "\"realchecksum\"");
+    }
+
+    #[tokio::test]
+    async fn test_serve_file_no_checksum_omits_etag() {
+        let state = test_state();
+        let watched = tempfile::tempdir().unwrap();
+        let source_path = watched.path().join("test.png");
+        create_test_png(&source_path);
+
+        seed_config(&state, watched.path()).await;
+        seed_media_item(
+            &state,
+            "00000000-0000-0000-0000-000000000008",
+            "test.png",
+            "test.png",
+            "image/png",
+            "", // empty checksum
+        )
+        .await;
+
+        let app = routes().with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/media/00000000-0000-0000-0000-000000000008/file")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // No ETag header when checksum is empty
+        assert!(
+            response.headers().get(header::ETAG).is_none(),
+            "ETag should be absent when checksum is empty"
+        );
+
+        // Cache-Control should still be present
+        let cache_control = response
+            .headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|v| v.to_str().ok())
+            .unwrap();
+        assert_eq!(cache_control, "private, max-age=3600");
     }
 }
