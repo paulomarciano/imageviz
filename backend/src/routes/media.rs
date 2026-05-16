@@ -459,46 +459,44 @@ async fn serve_file(
     let file_size = metadata.len();
 
     // Check If-None-Match (only for full-file requests, not range)
-    if !checksum.is_empty() {
-        if let Some(val) = headers
+    if !checksum.is_empty()
+        && let Some(val) = headers
             .get(header::IF_NONE_MATCH)
             .and_then(|v| v.to_str().ok())
-        {
-            let expected = format!("\"{}\"", checksum);
-            if val == expected {
-                let mut res = Response::new(axum::body::Body::empty());
-                *res.status_mut() = StatusCode::NOT_MODIFIED;
-                res.headers_mut()
-                    .insert(header::ETAG, HeaderValue::from_bytes(expected.as_bytes()).unwrap());
-                res.headers_mut().insert(
-                    header::CACHE_CONTROL,
-                    HeaderValue::from_static("private, max-age=3600"),
-                );
-                return Ok(res);
-            }
+    {
+        let expected = format!("\"{}\"", checksum);
+        if val == expected {
+            let mut res = Response::new(axum::body::Body::empty());
+            *res.status_mut() = StatusCode::NOT_MODIFIED;
+            res.headers_mut()
+                .insert(header::ETAG, HeaderValue::from_bytes(expected.as_bytes()).unwrap());
+            res.headers_mut().insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("private, max-age=3600"),
+            );
+            return Ok(res);
         }
     }
 
     // Check for Range header
-    if let Some(range_header) = headers.get(header::RANGE) {
-        if let Ok(range_str) = range_header.to_str() {
-            if range_str.starts_with("bytes=") {
-                if let Some(range) = parse_range_header(range_str, file_size) {
-                    return serve_file_range(
-                        &file_path, range, file_size, &mime_type, &filename, &checksum,
-                    )
-                    .await
-                    .map(IntoResponse::into_response);
-                } else {
-                    return Err((
-                        StatusCode::RANGE_NOT_SATISFIABLE,
-                        Json(json!({
-                            "error": "Range not satisfiable",
-                            "content_range": format!("bytes */{}", file_size)
-                        })),
-                    ));
-                }
-            }
+    if let Some(range_header) = headers.get(header::RANGE)
+        && let Ok(range_str) = range_header.to_str()
+        && range_str.starts_with("bytes=")
+    {
+        if let Some(range) = parse_range_header(range_str, file_size) {
+            return serve_file_range(
+                &file_path, range, file_size, &mime_type, &filename, &checksum,
+            )
+            .await
+            .map(IntoResponse::into_response);
+        } else {
+            return Err((
+                StatusCode::RANGE_NOT_SATISFIABLE,
+                Json(json!({
+                    "error": "Range not satisfiable",
+                    "content_range": format!("bytes */{}", file_size)
+                })),
+            ));
         }
     }
 
@@ -635,7 +633,7 @@ async fn serve_thumbnail(
         .and_then(|w| w.parse().ok())
         .unwrap_or(200);
 
-    if width < 100 || width > 500 {
+    if !(100..=500).contains(&width) {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(json!({"error": format!("Width must be between 100 and 500, got {}", width)})),

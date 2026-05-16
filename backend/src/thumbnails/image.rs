@@ -40,7 +40,7 @@ pub async fn generate_image_thumbnail(
     target_width: u32,
 ) -> Result<PathBuf, ThumbnailError> {
     // --- Validate width range ---
-    if target_width < MIN_WIDTH || target_width > MAX_WIDTH {
+    if !(MIN_WIDTH..=MAX_WIDTH).contains(&target_width) {
         return Err(ThumbnailError::InvalidWidth {
             width: target_width,
             min: MIN_WIDTH,

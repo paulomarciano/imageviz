@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-/// Represents a file system event relevant to ImageViz.
+/// Result type returned by [`FileWatcher::new`].
+type WatcherResult = Result<(FileWatcher, mpsc::Receiver<Vec<FileEvent>>), Box<dyn std::error::Error>>;
+
 #[derive(Debug, Clone)]
 pub enum FileEvent {
     /// A new file was created in a watched folder.
@@ -62,7 +64,7 @@ impl FileWatcher {
     /// (e.g., when a watched path does not exist).
     pub fn new(
         watched_paths: &[PathBuf],
-    ) -> Result<(Self, mpsc::Receiver<Vec<FileEvent>>), Box<dyn std::error::Error>> {
+    ) -> WatcherResult {
         let (tx, rx) = mpsc::channel(256);
         let tx_clone = tx.clone();
 
@@ -164,7 +166,7 @@ fn is_supported_media(path: &Path) -> bool {
 /// indicating a hidden file or directory.
 fn is_hidden(path: &Path) -> bool {
     path.components()
-        .any(|c| c.as_os_str().to_str().map_or(false, |s| s.starts_with('.')))
+        .any(|c| c.as_os_str().to_str().is_some_and(|s| s.starts_with('.')))
 }
 
 // ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@
 //! - `connected` — initial event confirming connection
 //! - `file_created`, `file_deleted`, `file_modified` — file system events
 //! - `indexing_complete` — when a scan/indexing pass finishes (reserved,
-//!    emitted by the indexer via the broadcast channel)
+//!   emitted by the indexer via the broadcast channel)
 //!
 //! The stream stays open indefinitely with keep-alive comments every 30s
 //! to prevent proxy timeouts. Client disconnect is handled gracefully:

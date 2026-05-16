@@ -194,15 +194,15 @@ fn spawn_background_indexing(
                 }
             };
 
-        if tantivy_ok {
-            if let Err(e) = sse_tx.send(SseEvent {
+        if tantivy_ok
+            && let Err(e) = sse_tx.send(SseEvent {
                 event_type: "indexing_complete".into(),
                 data: serde_json::json!({
                     "total": stats.created + stats.updated + stats.skipped,
                 }),
-            }) {
-                tracing::warn!(error = %e, "Failed to broadcast indexing_complete");
-            }
+            })
+        {
+            tracing::warn!(error = %e, "Failed to broadcast indexing_complete");
         }
     });
 }

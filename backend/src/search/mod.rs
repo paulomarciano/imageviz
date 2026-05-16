@@ -64,7 +64,7 @@ impl IndexManager {
     /// is called.
     pub fn add_document(&self, doc: TantivyDocument) -> Result<(), Box<dyn std::error::Error>> {
         let mut guard = self.writer.lock().map_err(|e| {
-            Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("Mutex poisoned: {}", e)))
+            Box::new(std::io::Error::other(format!("Mutex poisoned: {}", e)))
         })?;
         let writer = guard.as_mut().ok_or("IndexWriter has been consumed")?;
         writer.add_document(doc)?;
@@ -76,7 +76,7 @@ impl IndexManager {
     pub fn commit(&self) -> Result<(), Box<dyn std::error::Error>> {
         {
             let mut guard = self.writer.lock().map_err(|e| {
-                Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("Mutex poisoned: {}", e)))
+                Box::new(std::io::Error::other(format!("Mutex poisoned: {}", e)))
             })?;
             if let Some(writer) = guard.as_mut() {
                 writer.commit()?;
@@ -109,7 +109,7 @@ impl IndexManager {
     /// Remove every document from the index.
     pub fn delete_all_documents(&self) -> Result<(), Box<dyn std::error::Error>> {
         let mut guard = self.writer.lock().map_err(|e| {
-            Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("Mutex poisoned: {}", e)))
+            Box::new(std::io::Error::other(format!("Mutex poisoned: {}", e)))
         })?;
         let writer = guard.as_mut().ok_or("IndexWriter has been consumed")?;
         writer.delete_all_documents()?;
@@ -129,7 +129,7 @@ impl IndexManager {
         let field = self.schema.get_field(field_name)?;
         let term = Term::from_field_text(field, value);
         let mut guard = self.writer.lock().map_err(|e| {
-            Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("Mutex poisoned: {}", e)))
+            Box::new(std::io::Error::other(format!("Mutex poisoned: {}", e)))
         })?;
         let writer = guard.as_mut().ok_or("IndexWriter has been consumed")?;
         writer.delete_term(term);

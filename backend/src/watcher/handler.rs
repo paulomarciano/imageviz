@@ -236,13 +236,13 @@ async fn handle_file_created_or_modified(
             .map_err(|e| format!("DB query for existing file: {}", e))?;
 
         // If the file is known AND its checksum matches, skip entirely.
-        if let Some((ref existing_id, Some(ref existing_hash))) = existing {
-            if existing_hash == &h {
-                return Ok(Outcome {
-                    id: existing_id.clone(),
-                    change: ChangeType::Skipped,
-                });
-            }
+        if let Some((ref existing_id, Some(ref existing_hash))) = existing
+            && existing_hash == &h
+        {
+            return Ok(Outcome {
+                id: existing_id.clone(),
+                change: ChangeType::Skipped,
+            });
         }
 
         // Generate a new UUID for new files; reuse the existing one for updates.
