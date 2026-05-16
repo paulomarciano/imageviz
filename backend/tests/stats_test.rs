@@ -49,6 +49,10 @@ async fn test_stats_empty_database_returns_zeros() {
     assert_eq!(body["indexing"]["status"], "Idle");
     assert_eq!(body["indexing"]["total"], 0);
     assert_eq!(body["indexing"]["processed"], 0);
+    assert!(
+        body["indexing"]["errors"].as_array().unwrap().is_empty(),
+        "empty DB should have no indexing errors"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -120,5 +124,14 @@ async fn test_stats_with_seeded_data() {
         body["last_indexed_at"].is_string(),
         "last_indexed_at should be set: {:?}",
         body["last_indexed_at"]
+    );
+
+    // ProgressTracker should still report idle defaults (no indexing running)
+    assert_eq!(body["indexing"]["status"], "Idle");
+    assert_eq!(body["indexing"]["total"], 0);
+    assert_eq!(body["indexing"]["processed"], 0);
+    assert!(
+        body["indexing"]["errors"].as_array().unwrap().is_empty(),
+        "no indexing errors expected"
     );
 }
