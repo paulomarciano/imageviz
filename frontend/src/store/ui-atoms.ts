@@ -1,3 +1,4 @@
+import { atom } from 'jotai';
 import { atomWithStorage, createJSONStorage } from 'jotai/utils';
 
 /**
@@ -10,3 +11,6 @@ export const gridScrollIndexAtom = atomWithStorage<number>(
   0,
   createJSONStorage(() => sessionStorage),
 );
+
+/** Whether the keyboard shortcuts overlay is visible. */
+export const shortcutsPanelOpenAtom = atom<boolean>(false);

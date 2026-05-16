@@ -1,12 +1,14 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import { useAtom, useAtomValue } from 'jotai';
 import { DndProvider } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import { AppShell } from './components/layout/app-shell';
 import { ThumbnailGrid } from './components/media/thumbnail-grid';
 import { DetailView } from './components/viewer/detail-view';
+import { ShortcutsPanel } from './components/shared/shortcuts-panel';
 import { selectedMediaItemAtom, detailViewOpenAtom } from './store/media-atoms';
 import { searchQueryAtom, mediaViewModeAtom } from './store/search-atoms';
+import { shortcutsPanelOpenAtom } from './store/ui-atoms';
 import { useInfiniteMedia } from './hooks/use-infinite-media';
 import { useSearch } from './hooks/use-search';
 import type { MediaItem } from './types/media';
@@ -16,6 +18,32 @@ function App() {
   const viewMode = useAtomValue(mediaViewModeAtom);
   const [selectedItem, setSelectedItem] = useAtom(selectedMediaItemAtom);
   const [detailOpen, setDetailOpen] = useAtom(detailViewOpenAtom);
+  const [shortcutsOpen, setShortcutsOpen] = useAtom(shortcutsPanelOpenAtom);
+
+  // Global key handler: ? toggles shortcuts, / focuses search
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const tag = document.activeElement?.tagName;
+      const isInput =
+        tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+
+      if (e.key === '?' && !isInput) {
+        e.preventDefault();
+        setShortcutsOpen((prev) => !prev);
+      }
+
+      if (e.key === '/' && !isInput) {
+        e.preventDefault();
+        const searchInput = document.querySelector<HTMLInputElement>(
+          'input[aria-label="Search media"]',
+        );
+        searchInput?.focus();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [setShortcutsOpen]);
 
   const browseData = useInfiniteMedia();
   const searchData = useSearch(searchQuery);
@@ -62,6 +90,10 @@ function App() {
           onClose={handleClose}
         />
       )}
+      <ShortcutsPanel
+        isOpen={shortcutsOpen}
+        onClose={() => setShortcutsOpen(false)}
+      />
     </DndProvider>
   );
 }
