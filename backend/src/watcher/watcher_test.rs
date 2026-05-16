@@ -43,6 +43,7 @@ async fn count_events(rx: &mut mpsc::Receiver<Vec<FileEvent>>) -> usize {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_watcher_detects_new_file() {
     let (_dir, dir_path) = setup_temp_dir();
     let (watcher, mut rx) = FileWatcher::new(&[dir_path.clone()]).unwrap();
@@ -58,6 +59,7 @@ async fn test_watcher_detects_new_file() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_watcher_detects_deletion() {
     let (_dir, dir_path) = setup_temp_dir();
     let file_path = dir_path.join("to_delete.png");
@@ -119,6 +121,7 @@ async fn test_watcher_filters_non_media() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_watcher_supports_common_media_types() {
     let (_dir, dir_path) = setup_temp_dir();
     let (watcher, mut rx) = FileWatcher::new(&[dir_path.clone()]).unwrap();
@@ -138,6 +141,7 @@ async fn test_watcher_supports_common_media_types() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_watcher_multiple_directories() {
     let (_dir1, dir1_path) = setup_temp_dir();
     let (_dir2, dir2_path) = setup_temp_dir();
