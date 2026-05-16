@@ -80,6 +80,82 @@ async fn main() {
         .nest("/api/v1", imageviz_backend::routes::events::routes().with_state(events_state))
         .layer(CorsLayer::permissive());
 
+    // ------------------------------------------------------------------
+    // Background indexing: scan watched folders and populate search index
+    // ------------------------------------------------------------------
+    {
+        let config = {
+            let conn = db.lock().await;
+            imageviz_backend::config::load_config(&conn).unwrap_or_default()
+        };
+
+        if !config.watched_folders.is_empty() {
+            let db = Arc::clone(&db);
+            let index_manager = Arc::clone(&index_manager);
+            let progress = Arc::clone(&progress);
+            let sse_tx = sse_tx.clone();
+            let folders = config.watched_folders.iter().map(|f| f.path.clone()).collect::<Vec<_>>();
+
+            tokio::spawn(async move {
+                tracing::info!(
+                    folders = ?folders,
+                    "Starting initial file scan and indexing"
+                );
+
+                // Phase 1: scan files and populate SQLite
+                match imageviz_backend::indexer::full_index(
+                    db.as_ref(),
+                    &config,
+                    progress.as_ref(),
+                )
+                .await
+                {
+                    Ok(stats) => {
+                        tracing::info!(
+                            created = stats.created,
+                            updated = stats.updated,
+                            skipped = stats.skipped,
+                            deleted = stats.deleted,
+                            errors = stats.errors,
+                            "File scan complete"
+                        );
+
+                        // Phase 2: populate Tantivy full-text index from SQLite
+                        let conn = db.lock().await;
+                        match imageviz_backend::search::indexer::full_reindex(&conn, &index_manager) {
+                            Ok(search_stats) => {
+                                tracing::info!(
+                                    indexed = search_stats.indexed_count,
+                                    errors = search_stats.errors,
+                                    "Tantivy search index populated"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::error!(error = %e, "Failed to populate Tantivy index");
+                            }
+                        }
+                        drop(conn);
+
+                        // Broadcast indexing_complete event
+                        let _ = sse_tx.send(
+                            imageviz_backend::watcher::handler::SseEvent {
+                                event_type: "indexing_complete".into(),
+                                data: serde_json::json!({
+                                    "total": stats.created + stats.updated + stats.skipped,
+                                }),
+                            },
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "Initial indexing failed");
+                    }
+                }
+            });
+        } else {
+            tracing::info!("No watched folders configured — skipping initial index");
+        }
+    }
+
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], settings.port));
     tracing::info!("Server running on http://{}", addr);
 
