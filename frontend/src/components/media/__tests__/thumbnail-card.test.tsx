@@ -86,6 +86,25 @@ describe('ThumbnailCard', () => {
 
     // Assert
     expect(button).toHaveAttribute('aria-label', 'View test.png');
+    // Default (unfocused) uses roving tabindex
+    expect(button).toHaveAttribute('tabIndex', '-1');
+  });
+
+  it('uses tabIndex 0 when focused', () => {
+    // Act
+    render(<ThumbnailCard item={mockItem} onClick={vi.fn()} isFocused />);
+    const button = screen.getByRole('button');
+
+    // Assert
     expect(button).toHaveAttribute('tabIndex', '0');
+  });
+
+  it('renders data-grid-index attribute when index is provided', () => {
+    // Act
+    render(<ThumbnailCard item={mockItem} onClick={vi.fn()} index={5} />);
+    const button = screen.getByRole('button');
+
+    // Assert
+    expect(button).toHaveAttribute('data-grid-index', '5');
   });
 });

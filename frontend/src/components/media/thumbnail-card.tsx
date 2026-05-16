@@ -4,6 +4,8 @@ import type { MediaItem } from '../../types/media';
 interface ThumbnailCardProps {
   readonly item: MediaItem;
   readonly onClick: (item: MediaItem) => void;
+  readonly index?: number;
+  readonly isFocused?: boolean;
 }
 
 function formatFileSize(bytes: number): string {
@@ -12,7 +14,7 @@ function formatFileSize(bytes: number): string {
   return `${bytes} B`;
 }
 
-export const ThumbnailCard = memo(function ThumbnailCard({ item, onClick }: ThumbnailCardProps) {
+export const ThumbnailCard = memo(function ThumbnailCard({ item, onClick, index, isFocused = false }: ThumbnailCardProps) {
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
 
@@ -23,11 +25,12 @@ export const ThumbnailCard = memo(function ThumbnailCard({ item, onClick }: Thum
   return (
     <div
       role="button"
-      tabIndex={0}
+      tabIndex={isFocused ? 0 : -1}
       aria-label={`View ${item.filename}`}
-      className="group cursor-pointer rounded-lg overflow-hidden bg-gray-800 border border-gray-700
+      data-grid-index={index}
+      className={`group cursor-pointer rounded-lg overflow-hidden bg-gray-800 border border-gray-700
                  hover:border-gray-500 hover:scale-[1.02] transition-all duration-150 focus:outline-none
-                 focus:ring-2 focus:ring-blue-500"
+                 focus:ring-2 ${isFocused ? 'ring-2 ring-blue-500' : 'focus:ring-blue-500'}`}
       onClick={() => onClick(item)}
       onKeyDown={handleKeyDown}
     >

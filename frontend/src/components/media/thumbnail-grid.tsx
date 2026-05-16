@@ -1,8 +1,13 @@
-import { forwardRef, useCallback, type HTMLAttributes } from 'react';
+import { forwardRef, useCallback, useMemo, type HTMLAttributes } from 'react';
 import { VirtuosoGrid } from 'react-virtuoso';
+import { useAtomValue } from 'jotai';
+import { searchQueryAtom, mediaViewModeAtom } from '../../store/search-atoms';
 import { useInfiniteMedia } from '../../hooks/use-infinite-media';
+import { useSearch } from '../../hooks/use-search';
 import { useScrollRestore } from '../../hooks/use-scroll-restore';
+import { useKeyboardNav } from '../../hooks/use-keyboard-nav';
 import { ThumbnailCard } from './thumbnail-card';
+import { DragSource } from './drag-source';
 import { EmptyState } from '../shared/empty-state';
 import { ErrorState } from '../shared/error-state';
 import type { MediaItem } from '../../types/media';
@@ -34,16 +39,47 @@ function SkeletonGrid() {
 }
 
 export function ThumbnailGrid({ onItemClick }: ThumbnailGridProps) {
+  const searchQuery = useAtomValue(searchQueryAtom);
+  const viewMode = useAtomValue(mediaViewModeAtom);
+
+  const browseData = useInfiniteMedia();
+  const searchData = useSearch(searchQuery);
+
+  const activeData = viewMode === 'search' ? searchData : browseData;
+
   const {
-    allItems,
-    isLoading,
-    isError,
-    error,
-    fetchNextPage,
-    hasNextPage,
-    isFetchingNextPage,
-    refetch,
-  } = useInfiniteMedia();
+    allItems: browseItems,
+    isLoading: browseLoading,
+    isError: browseIsError,
+    error: browseError,
+    fetchNextPage: browseFetchNext,
+    hasNextPage: browseHasNext,
+    isFetchingNextPage: browseFetchingNext,
+    refetch: browseRefetch,
+    isEmpty,
+  } = browseData;
+
+  const {
+    results: searchResults,
+    totalCount: searchTotal,
+    isLoading: searchLoading,
+    isError: searchIsError,
+    error: searchError,
+    fetchNextPage: searchFetchNext,
+    hasNextPage: searchHasNext,
+    isFetchingNextPage: searchFetchingNext,
+    refetch: searchRefetch,
+    noResults,
+  } = searchData;
+
+  const items = viewMode === 'search' ? searchResults : browseItems;
+  const isLoading = viewMode === 'search' ? searchLoading : browseLoading;
+  const isError = viewMode === 'search' ? searchIsError : browseIsError;
+  const error = viewMode === 'search' ? searchError : browseError;
+  const fetchNextPage = viewMode === 'search' ? searchFetchNext : browseFetchNext;
+  const hasNextPage = viewMode === 'search' ? searchHasNext : browseHasNext;
+  const isFetchingNextPage = viewMode === 'search' ? searchFetchingNext : browseFetchingNext;
+  const refetch = viewMode === 'search' ? searchRefetch : browseRefetch;
 
   const loadMore = useCallback(() => {
     if (hasNextPage && !isFetchingNextPage) {
@@ -52,6 +88,23 @@ export function ThumbnailGrid({ onItemClick }: ThumbnailGridProps) {
   }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
 
   const { savedIndex, handleRangeChanged } = useScrollRestore();
+
+  // Determine number of columns from grid class for keyboard nav
+  const columns = useMemo(() => {
+    if (typeof window !== 'undefined') {
+      if (window.innerWidth >= 1280) return 5;
+      if (window.innerWidth >= 1024) return 4;
+      if (window.innerWidth >= 640) return 3;
+    }
+    return 2;
+  }, []);
+
+  const { focusIndex, containerRef, handleKeyDown } = useKeyboardNav({
+    itemCount: items.length,
+    columns,
+    onSelect: () => {}, // Future multi-select
+    onOpen: (index) => onItemClick(items[index]),
+  });
 
   if (isLoading) {
     return <SkeletonGrid />;
@@ -63,30 +116,57 @@ export function ThumbnailGrid({ onItemClick }: ThumbnailGridProps) {
     );
   }
 
-  if (allItems.length === 0) {
+  if (viewMode === 'search' && noResults) {
+    return (
+      <div className="p-6">
+        <p className="text-gray-400 text-sm mb-1">0 results for &ldquo;{searchQuery}&rdquo;</p>
+        <EmptyState message="No media matches your search. Try different keywords." />
+      </div>
+    );
+  }
+
+  if (items.length === 0) {
     return (
       <EmptyState message="No media found. Configure watched folders in Settings to start browsing." />
     );
   }
 
   return (
-    <div className="h-full relative">
+    <div className="h-full relative" ref={containerRef} onKeyDown={handleKeyDown}>
+      {/* Search results count */}
+      {viewMode === 'search' && (
+        <div className="px-3 pt-2 pb-1 text-sm text-gray-400">
+          {searchTotal > 0
+            ? `${searchTotal} result${searchTotal !== 1 ? 's' : ''} for "${searchQuery}"`
+            : `Searching...`}
+        </div>
+      )}
+
       <VirtuosoGrid
         style={{ height: '100%' }}
-        totalCount={allItems.length}
+        totalCount={items.length}
         components={{
           List: ListContainer,
           Item: ItemContainer,
         }}
         itemContent={(index) => {
-          const item = allItems[index];
+          const item = items[index];
           if (!item) return null;
-          return <ThumbnailCard item={item} onClick={onItemClick} />;
+          return (
+            <DragSource item={item}>
+              <ThumbnailCard
+                item={item}
+                index={index}
+                isFocused={focusIndex === index}
+                onClick={onItemClick}
+              />
+            </DragSource>
+          );
         }}
         endReached={loadMore}
         overscan={200}
         increaseViewportBy={200}
-        computeItemKey={(index) => allItems[index]?.id ?? index}
+        computeItemKey={(index) => items[index]?.id ?? index}
         initialTopMostItemIndex={savedIndex}
         rangeChanged={handleRangeChanged}
       />

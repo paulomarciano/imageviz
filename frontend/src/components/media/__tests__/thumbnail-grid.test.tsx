@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  *
  * Tests for ThumbnailGrid — verifies responsive grid classes, render states
- * (loading, error, empty, populated), and that the masonry-style responsive
+ * (loading, error, empty, populated), search wiring, and that the responsive
  * layout uses correct Tailwind breakpoints.
  */
 
@@ -16,9 +16,19 @@ import type { MediaItem } from '../../../types/media';
 /* ------------------------------------------------------------------ */
 
 const mockUseInfiniteMedia = vi.hoisted(() => vi.fn());
+const mockUseSearch = vi.hoisted(() => vi.fn());
+const mockUseKeyboardNav = vi.hoisted(() => vi.fn());
 
 vi.mock('../../../hooks/use-infinite-media', () => ({
   useInfiniteMedia: mockUseInfiniteMedia,
+}));
+
+vi.mock('../../../hooks/use-search', () => ({
+  useSearch: mockUseSearch,
+}));
+
+vi.mock('../../../hooks/use-keyboard-nav', () => ({
+  useKeyboardNav: mockUseKeyboardNav,
 }));
 
 /**
@@ -51,6 +61,43 @@ vi.mock('react-virtuoso', () => ({
     );
   },
 }));
+
+/**
+ * Mock DragSource to just render children — we don't need DnD in these tests.
+ */
+vi.mock('../drag-source', () => ({
+  DragSource: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+
+/* ------------------------------------------------------------------ */
+/*  Default mock return values                                        */
+/* ------------------------------------------------------------------ */
+
+function defaultUseSearchReturn() {
+  return {
+    results: [],
+    totalCount: 0,
+    isLoading: false,
+    isError: false,
+    error: null,
+    fetchNextPage: vi.fn(),
+    hasNextPage: false,
+    isFetchingNextPage: false,
+    refetch: vi.fn(),
+    noResults: false,
+    isDebouncing: false,
+    hasResults: false,
+  };
+}
+
+function defaultKeyboardNavReturn() {
+  return {
+    focusIndex: null,
+    containerRef: { current: null },
+    handleKeyDown: vi.fn(),
+    setFocusIndex: vi.fn(),
+  };
+}
 
 /* ------------------------------------------------------------------ */
 /*  Fixtures                                                          */
@@ -92,6 +139,8 @@ const EXPECTED_GRID_CLASSES = [
 describe('ThumbnailGrid – responsive grid layout', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockUseSearch.mockReturnValue(defaultUseSearchReturn());
+    mockUseKeyboardNav.mockReturnValue(defaultKeyboardNavReturn());
   });
 
   /* ---------- Responsive class verification ---------- */
