@@ -182,7 +182,9 @@ describe('ThumbnailGrid – responsive grid layout', () => {
     const { container } = render(<ThumbnailGrid onItemClick={vi.fn()} />);
 
     // Skeleton grid should use the exact same responsive classes
-    const skeletonGrid = container.querySelector('[class*="animate-pulse"]')?.closest('[class*="grid"]');
+    const skeletonGrid = container
+      .querySelector('[class*="animate-pulse"]')
+      ?.closest('[class*="grid"]');
     expect(skeletonGrid).not.toBeNull();
 
     const classList = skeletonGrid!.getAttribute('class')?.split(/\s+/) ?? [];

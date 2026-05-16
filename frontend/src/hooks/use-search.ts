@@ -36,9 +36,7 @@ export function useSearch(query: string, limit = 100) {
   const infiniteQuery = useInfiniteQuery<PaginatedResponse<MediaItem>, Error>({
     queryKey: ['search', debouncedQuery, { limit }],
     queryFn: ({ pageParam }) => {
-      const cursor = pageParam as
-        | { cursor?: string; cursor_id?: string }
-        | undefined;
+      const cursor = pageParam as { cursor?: string; cursor_id?: string } | undefined;
       return searchMedia({
         q: debouncedQuery,
         limit,
@@ -47,9 +45,7 @@ export function useSearch(query: string, limit = 100) {
       });
     },
     // Initial page has no cursor — backend returns the first page.
-    initialPageParam: undefined as
-      | { cursor?: string; cursor_id?: string }
-      | undefined,
+    initialPageParam: undefined as { cursor?: string; cursor_id?: string } | undefined,
     getNextPageParam: (lastPage) => {
       if (!lastPage.meta.has_more) return undefined;
       return {
@@ -65,8 +61,7 @@ export function useSearch(query: string, limit = 100) {
   });
 
   // Flatten pages into a single results array for convenience.
-  const allResults: MediaItem[] =
-    infiniteQuery.data?.pages.flatMap((page) => page.data) ?? [];
+  const allResults: MediaItem[] = infiniteQuery.data?.pages.flatMap((page) => page.data) ?? [];
   const totalCount = infiniteQuery.data?.pages[0]?.meta.total ?? 0;
 
   return {

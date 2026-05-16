@@ -47,7 +47,10 @@ export interface SearchParams {
 export type SseEvent =
   | { readonly event: 'connected'; readonly data: { readonly timestamp: string } }
   | { readonly event: 'file_created'; readonly data: MediaItem }
-  | { readonly event: 'file_deleted'; readonly data: { readonly id: string; readonly path: string } }
+  | {
+      readonly event: 'file_deleted';
+      readonly data: { readonly id: string; readonly path: string };
+    }
   | {
       readonly event: 'file_modified';
       readonly data: {

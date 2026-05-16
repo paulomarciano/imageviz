@@ -5,11 +5,7 @@
  * single path: `import type { MediaItem, PaginatedResponse } from '../types'`.
  */
 
-export type {
-  MediaItem,
-  MediaItemDetail,
-  MediaMetadata,
-} from './media.ts';
+export type { MediaItem, MediaItemDetail, MediaMetadata } from './media.ts';
 
 export type {
   PaginationMeta,

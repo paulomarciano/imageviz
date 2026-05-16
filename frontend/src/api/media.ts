@@ -16,9 +16,7 @@ import type {
 } from '../types/index.ts';
 
 /** Fetch a paginated list of media items matching the supplied filters. */
-export function fetchMediaList(
-  params?: MediaListParams,
-): Promise<PaginatedResponse<MediaItem>> {
+export function fetchMediaList(params?: MediaListParams): Promise<PaginatedResponse<MediaItem>> {
   return get('/media', params as Record<string, string | number | undefined>);
 }
 

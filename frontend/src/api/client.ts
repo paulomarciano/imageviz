@@ -49,10 +49,7 @@ export async function get<T>(
   try {
     response = await fetch(url.toString());
   } catch (error) {
-    throw new ApiError(
-      0,
-      `Network error: ${error instanceof Error ? error.message : 'Unknown'}`,
-    );
+    throw new ApiError(0, `Network error: ${error instanceof Error ? error.message : 'Unknown'}`);
   }
 
   if (!response.ok) {
@@ -60,9 +57,10 @@ export async function get<T>(
     try {
       const body: unknown = await response.json();
       if (body && typeof body === 'object') {
-        message = (body as Record<string, unknown>).error as string
-          ?? (body as Record<string, unknown>).message as string
-          ?? message;
+        message =
+          ((body as Record<string, unknown>).error as string) ??
+          ((body as Record<string, unknown>).message as string) ??
+          message;
       }
     } catch {
       // response body is not JSON; fall back to statusText
