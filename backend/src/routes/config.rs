@@ -1,5 +1,7 @@
-use axum::{Router, extract::State, http::StatusCode, response::Json, routing::get};
+use axum::{Router, extract::{Query, State}, http::StatusCode, response::Json, routing::get};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -15,7 +17,9 @@ pub struct ConfigState {
 }
 
 pub fn routes() -> Router<Arc<ConfigState>> {
-    Router::new().route("/config", get(get_config).put(update_config))
+    Router::new()
+        .route("/config", get(get_config).put(update_config))
+        .route("/config/suggest", get(suggest_folders))
 }
 
 /// GET /api/v1/config — return the current watched-folder configuration.
@@ -54,6 +58,95 @@ async fn update_config(
         (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Failed to save configuration"})))
     })?;
     Ok(Json(config))
+}
+
+/// Query parameters for `GET /config/suggest`.
+#[derive(Deserialize)]
+struct SuggestParams {
+    path: String,
+}
+
+/// A single path suggestion returned by the suggest endpoint.
+#[derive(Serialize)]
+struct PathSuggestion {
+    path: String,
+    name: String,
+    is_directory: bool,
+}
+
+/// Response body for `GET /config/suggest`.
+#[derive(Serialize)]
+struct SuggestResponse {
+    suggestions: Vec<PathSuggestion>,
+}
+
+/// Expand a leading `~` to the user's home directory.
+fn resolve_path(path: &str) -> String {
+    if path == "~" {
+        return std::env::var("HOME").unwrap_or_else(|_| "~".to_string());
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            let mut resolved = home;
+            resolved.push('/');
+            resolved.push_str(rest);
+            return resolved;
+        }
+    }
+    path.to_string()
+}
+
+/// GET /config/suggest — return subdirectory suggestions for a path prefix.
+///
+/// Used by the frontend config panel to power a folder autocomplete.  This
+/// is a stateless filesystem operation — no database access is needed.
+async fn suggest_folders(
+    Query(params): Query<SuggestParams>,
+) -> Result<Json<SuggestResponse>, (StatusCode, Json<Value>)> {
+    let resolved = resolve_path(&params.path);
+    let path = Path::new(&resolved);
+
+    let (search_dir, prefix) = if path.exists() && path.is_dir() {
+        (path.to_path_buf(), String::new())
+    } else {
+        let parent = path.parent().unwrap_or(Path::new("/"));
+        let prefix = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        (parent.to_path_buf(), prefix)
+    };
+
+    let mut suggestions = Vec::new();
+
+    if let Ok(entries) = std::fs::read_dir(&search_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            // Skip hidden entries
+            if name.starts_with('.') {
+                continue;
+            }
+            // Filter by prefix when the path doesn't exist as a directory
+            if !prefix.is_empty() && !name.starts_with(&prefix) {
+                continue;
+            }
+            let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
+            if !is_dir {
+                continue;
+            }
+            suggestions.push(PathSuggestion {
+                path: entry.path().to_string_lossy().to_string(),
+                name,
+                is_directory: is_dir,
+            });
+        }
+    }
+
+    suggestions.sort_by(|a, b| a.name.cmp(&b.name));
+    suggestions.truncate(50);
+
+    Ok(Json(SuggestResponse { suggestions }))
 }
 
 #[cfg(test)]
@@ -210,5 +303,90 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // -----------------------------------------------------------------------
+    // suggest_folders tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_suggest_root_directories() {
+        let app = Router::new().route("/config/suggest", get(super::suggest_folders));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/config/suggest?path=/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        let suggestions = body["suggestions"].as_array().unwrap();
+
+        // On any Linux system, /tmp should exist and be a directory
+        let names: Vec<&str> =
+            suggestions.iter().map(|s| s["name"].as_str().unwrap()).collect();
+        assert!(names.contains(&"tmp"), "expected 'tmp' in root directory suggestions");
+    }
+
+    #[tokio::test]
+    async fn test_suggest_nonexistent_path_returns_empty() {
+        let app = Router::new().route("/config/suggest", get(super::suggest_folders));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/config/suggest?path=/nonexistent/xyz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        let suggestions = body["suggestions"].as_array().unwrap();
+        assert!(suggestions.is_empty(), "expected empty suggestions for nonexistent path");
+    }
+
+    #[tokio::test]
+    async fn test_suggest_excludes_hidden() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path().to_string_lossy().to_string();
+
+        // Create visible and hidden directories inside the temp dir
+        std::fs::create_dir(dir.path().join("visible")).unwrap();
+        std::fs::create_dir(dir.path().join(".hidden")).unwrap();
+
+        let app = Router::new().route("/config/suggest", get(super::suggest_folders));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/config/suggest?path={}", dir_path))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        let suggestions = body["suggestions"].as_array().unwrap();
+
+        let names: Vec<&str> =
+            suggestions.iter().map(|s| s["name"].as_str().unwrap()).collect();
+        assert!(names.contains(&"visible"), "expected 'visible' in suggestions");
+        assert!(!names.contains(&".hidden"), "did not expect '.hidden' in suggestions");
     }
 }
