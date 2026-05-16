@@ -4,6 +4,7 @@ use tokio::sync::Mutex;
 use tower_http::cors::CorsLayer;
 
 use imageviz_backend::routes::config::ConfigState;
+use imageviz_backend::routes::events::EventsState;
 use imageviz_backend::routes::media::MediaState;
 use imageviz_backend::routes::search::SearchState;
 use imageviz_backend::routes::stats::StatsState;
@@ -47,7 +48,7 @@ async fn main() {
     let progress = Arc::new(imageviz_backend::indexer::progress::ProgressTracker::new());
 
     // Create broadcast channel for SSE events
-    let (_sse_tx, _) = tokio::sync::broadcast::channel::<
+    let (sse_tx, _) = tokio::sync::broadcast::channel::<
         imageviz_backend::watcher::handler::SseEvent,
     >(256);
 
@@ -66,12 +67,17 @@ async fn main() {
         progress: Arc::clone(&progress),
     });
 
+    let events_state = Arc::new(EventsState {
+        sse_tx: sse_tx.clone(),
+    });
+
     // Build application router with all stateful routes
     let app = imageviz_backend::app()
         .nest("/api/v1", imageviz_backend::routes::config::routes().with_state(config_state))
         .nest("/api/v1", imageviz_backend::routes::media::routes().with_state(media_state))
         .nest("/api/v1", imageviz_backend::routes::search::routes().with_state(search_state))
         .nest("/api/v1", imageviz_backend::routes::stats::routes().with_state(stats_state))
+        .nest("/api/v1", imageviz_backend::routes::events::routes().with_state(events_state))
         .layer(CorsLayer::permissive());
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], settings.port));

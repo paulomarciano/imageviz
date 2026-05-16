@@ -15,7 +15,7 @@ uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tokio-stream = "0.1"
+tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = "0.7"
 futures-util = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
@@ -29,7 +29,7 @@ notify = { version = "8", features = ["macos_kqueue"] }
 notify-debouncer-mini = "0.7"
 
 [dev-dependencies]
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
 tempfile = "3"
 crc32fast = "1"
 http-body-util = "0.1"
