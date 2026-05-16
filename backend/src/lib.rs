@@ -11,11 +11,18 @@ pub mod watcher;
 #[cfg(test)]
 pub mod test_support;
 
-/// Build the base application router with stateless routes mounted under `/api/v1`.
+/// Build a minimal router with only the stateless health endpoint mounted.
 ///
-/// This is the single source of truth for route assembly, used by both
-/// the production binary (`main.rs`) and integration tests (`tests/`).
-/// Stateful routes (e.g., config) are added by callers that provide state.
-pub fn app() -> axum::Router {
+/// Used as the base for both the production server and integration tests.
+/// Stateful routes (config, media, search, events, stats) are added by
+/// callers that provide the necessary state.
+///
+/// # Why not "app()"?
+///
+/// This function does NOT return a complete application — it only mounts
+/// the health route. Naming it `health_router()` makes its limited scope
+/// explicit and avoids confusion when reading code that nests additional
+/// stateful routes on top of it.
+pub fn health_router() -> axum::Router {
     axum::Router::new().nest("/api/v1", routes::health::routes())
 }

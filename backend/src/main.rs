@@ -65,7 +65,7 @@ async fn main() {
         sse_tx: sse_tx.clone(),
     });
 
-    let app = imageviz_backend::app()
+    let app = imageviz_backend::health_router()
         .nest("/api/v1", imageviz_backend::routes::config::routes().with_state(config_state))
         .nest("/api/v1", imageviz_backend::routes::media::routes().with_state(media_state))
         .nest("/api/v1", imageviz_backend::routes::search::routes().with_state(search_state))

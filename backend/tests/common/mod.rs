@@ -28,7 +28,7 @@ pub struct TestApp {
 /// uses `create_test_app_with_search`).
 #[allow(dead_code)]
 pub fn create_test_app() -> Router {
-    imageviz_backend::app()
+    imageviz_backend::health_router()
 }
 
 /// Create a full test application with all Wave 3 state wired together:
@@ -91,7 +91,7 @@ pub fn create_test_app_with_search() -> TestApp {
     });
 
     // 6. Assemble the full router under `/api/v1`
-    let router = imageviz_backend::app()
+    let router = imageviz_backend::health_router()
         .nest(
             "/api/v1",
             imageviz_backend::routes::config::routes().with_state(config_state),

@@ -38,7 +38,7 @@ fn create_media_test_app() -> (Router, Arc<MediaState>, tempfile::TempDir) {
         thumbnail_cache_dir: cache_dir.path().to_path_buf(),
     });
 
-    let app = imageviz_backend::app()
+    let app = imageviz_backend::health_router()
         .nest("/api/v1", routes().with_state(Arc::clone(&media_state)))
         .layer(CorsLayer::permissive());
 
