@@ -1,7 +1,19 @@
-use axum::Router;
+use axum::{Json, Router, routing::get};
+use serde::Serialize;
 
-/// Returns the health-check routes.
-/// This is a stub — the full health endpoint will be filled in during Wave 0.4.
+#[derive(Serialize)]
+pub struct HealthResponse {
+    pub status: String,
+    pub version: String,
+}
+
 pub fn routes() -> Router {
-    Router::new()
+    Router::new().route("/health", get(health_check))
+}
+
+async fn health_check() -> Json<HealthResponse> {
+    Json(HealthResponse {
+        status: "ok".to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+    })
 }
