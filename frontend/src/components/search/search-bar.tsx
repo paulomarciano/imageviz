@@ -6,7 +6,7 @@ export function SearchBar() {
   const [localQuery, setLocalQuery] = useState('');
   const setSearchQuery = useSetAtom(searchQueryAtom);
   const inputRef = useRef<HTMLInputElement>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     debounceRef.current = setTimeout(() => {

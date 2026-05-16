@@ -45,8 +45,6 @@ export function ThumbnailGrid({ onItemClick }: ThumbnailGridProps) {
   const browseData = useInfiniteMedia();
   const searchData = useSearch(searchQuery);
 
-  const activeData = viewMode === 'search' ? searchData : browseData;
-
   const {
     allItems: browseItems,
     isLoading: browseLoading,
@@ -56,7 +54,6 @@ export function ThumbnailGrid({ onItemClick }: ThumbnailGridProps) {
     hasNextPage: browseHasNext,
     isFetchingNextPage: browseFetchingNext,
     refetch: browseRefetch,
-    isEmpty,
   } = browseData;
 
   const {
@@ -103,7 +100,7 @@ export function ThumbnailGrid({ onItemClick }: ThumbnailGridProps) {
     itemCount: items.length,
     columns,
     onSelect: () => {}, // Future multi-select
-    onOpen: (index) => onItemClick(items[index]),
+    onOpen: (index) => { const item = items[index]; if (item) onItemClick(item); },
   });
 
   if (isLoading) {

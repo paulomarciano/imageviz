@@ -7,7 +7,7 @@
  * `currentIndex` for arrow-based navigation.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { MediaItem, MediaItemDetail } from '../../types/media';
 import { fetchMediaItem } from '../../api/media';
 import { ImageViewer } from './image-viewer';

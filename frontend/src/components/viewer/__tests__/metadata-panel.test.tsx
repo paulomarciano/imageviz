@@ -76,14 +76,14 @@ describe('MetadataPanel', () => {
     // Toggle button for the nested object (should be collapsed by default)
     const toggleButtons = screen.getAllByRole('button', { name: 'Expand' });
     // First click should expand
-    fireEvent.click(toggleButtons[0]);
+    fireEvent.click(toggleButtons[0]!);
     expect(screen.getByText('deep')).toBeInTheDocument();
 
     // Now buttons should be 'Collapse'
     const collapseButtons = screen.getAllByRole('button', {
       name: 'Collapse',
     });
-    fireEvent.click(collapseButtons[0]);
+    fireEvent.click(collapseButtons[0]!);
     expect(screen.queryByText('deep')).not.toBeInTheDocument();
   });
 
