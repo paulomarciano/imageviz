@@ -29,7 +29,7 @@ async fn test_empty_config_returns_empty_stats() {
 }
 
 #[tokio::test]
-async fn test_incremental_index_delegates_to_full_index() {
+async fn test_incremental_index_processes_files_and_skips_unchanged() {
     let dir = tempfile::tempdir().unwrap();
     let png_path = dir.path().join("test.png");
     create_minimal_png(&png_path);

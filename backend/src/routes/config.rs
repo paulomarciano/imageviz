@@ -75,8 +75,13 @@ mod tests {
     }
 
     /// Create a state with a database that has no `config` table.
+    ///
     /// Any query against the config table will fail with "no such table",
     /// triggering the 500 error path in route handlers.
+    ///
+    /// **Warning**: If `test_state()` is updated to include migration calls,
+    /// verify that this function still lacks the config table so the 500
+    /// error paths remain exercised.
     fn bad_state() -> Arc<ConfigState> {
         let conn =
             rusqlite::Connection::open_in_memory().expect("Failed to create in-memory database");

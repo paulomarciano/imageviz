@@ -1,8 +1,9 @@
 #[cfg(test)]
 mod tests {
     use crate::metadata::detect::*;
+    use crate::metadata::png::Metadata;
     use crate::test_support::fixture_path;
-    use std::io::Write;
+    use std::io::{BufWriter, Write};
     use tempfile::TempDir;
 
     fn create_test_png(path: &std::path::Path, width: u32, height: u32) {
@@ -134,9 +135,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_extract_png_metadata_from_file_with_text_chunks() {
-        use crate::metadata::png::Metadata;
-        use std::io::BufWriter;
-
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("with_text.png");
 
@@ -154,8 +152,8 @@ mod tests {
 
         // This wrapper function lives in the detect module
         let metadata: Metadata = extract_png_metadata(&path).unwrap();
-        assert!(metadata.prompt.is_some(), "prompt metadata should be extracted");
-        assert_eq!(metadata.prompt.unwrap()["text"], "a test");
+        let prompt = metadata.prompt.expect("prompt metadata should be extracted");
+        assert_eq!(prompt["text"], "a test");
     }
 
     #[tokio::test]
