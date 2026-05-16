@@ -25,7 +25,7 @@ use imageviz_backend::routes::media::{MediaState, routes};
 ///
 /// The database contains only the schema — no seeded data. Callers must
 /// call `seed_config` and `seed_media_item` to populate test data.
-fn create_media_test_app() -> (Router, Arc<MediaState>) {
+fn create_media_test_app() -> (Router, Arc<MediaState>, tempfile::TempDir) {
     let conn = rusqlite::Connection::open_in_memory()
         .expect("Failed to create in-memory database");
     conn.execute_batch(
@@ -48,17 +48,16 @@ fn create_media_test_app() -> (Router, Arc<MediaState>) {
 
     let cache_dir = tempfile::tempdir().expect("Failed to create cache directory");
     let db = Arc::new(Mutex::new(conn));
-    #[allow(deprecated)]
     let media_state = Arc::new(MediaState {
         db: Arc::clone(&db),
-        thumbnail_cache_dir: cache_dir.into_path(),
+        thumbnail_cache_dir: cache_dir.path().to_path_buf(),
     });
 
     let app = imageviz_backend::app()
         .nest("/api/v1", routes().with_state(Arc::clone(&media_state)))
         .layer(CorsLayer::permissive());
 
-    (app, media_state)
+    (app, media_state, cache_dir)
 }
 
 /// Seed the config table with a single watched folder pointing at `folder_path`.
@@ -105,7 +104,7 @@ fn create_test_png(path: &std::path::Path) {
 
 #[tokio::test]
 async fn test_thumbnail_returns_webp_image() {
-    let (app, state) = create_media_test_app();
+    let (app, state, _cache_dir) = create_media_test_app();
     let watched = tempfile::tempdir().unwrap();
     let source_path = watched.path().join("test.png");
     create_test_png(&source_path);
@@ -151,7 +150,7 @@ async fn test_thumbnail_returns_webp_image() {
 
 #[tokio::test]
 async fn test_thumbnail_returns_404_for_invalid_id() {
-    let (app, _state) = create_media_test_app();
+    let (app, _state, _cache_dir) = create_media_test_app();
 
     let response = app
         .oneshot(
@@ -168,7 +167,7 @@ async fn test_thumbnail_returns_404_for_invalid_id() {
 
 #[tokio::test]
 async fn test_thumbnail_custom_width() {
-    let (app, state) = create_media_test_app();
+    let (app, state, _cache_dir) = create_media_test_app();
     let watched = tempfile::tempdir().unwrap();
     let source_path = watched.path().join("test.png");
     create_test_png(&source_path);
@@ -210,7 +209,7 @@ async fn test_thumbnail_custom_width() {
 
 #[tokio::test]
 async fn test_file_streams_with_correct_content_type() {
-    let (app, state) = create_media_test_app();
+    let (app, state, _cache_dir) = create_media_test_app();
     let watched = tempfile::tempdir().unwrap();
     let source_path = watched.path().join("test.png");
     create_test_png(&source_path);
@@ -248,7 +247,7 @@ async fn test_file_streams_with_correct_content_type() {
 
 #[tokio::test]
 async fn test_file_returns_404_for_invalid_id() {
-    let (app, _state) = create_media_test_app();
+    let (app, _state, _cache_dir) = create_media_test_app();
 
     let response = app
         .oneshot(
@@ -265,7 +264,7 @@ async fn test_file_returns_404_for_invalid_id() {
 
 #[tokio::test]
 async fn test_file_range_request_206() {
-    let (app, state) = create_media_test_app();
+    let (app, state, _cache_dir) = create_media_test_app();
     let watched = tempfile::tempdir().unwrap();
     let source_path = watched.path().join("test.png");
     create_test_png(&source_path);
@@ -312,7 +311,7 @@ async fn test_file_range_request_206() {
 
 #[tokio::test]
 async fn test_file_range_not_satisfiable_416() {
-    let (app, state) = create_media_test_app();
+    let (app, state, _cache_dir) = create_media_test_app();
     let watched = tempfile::tempdir().unwrap();
     let source_path = watched.path().join("test.png");
     create_test_png(&source_path);
@@ -348,7 +347,7 @@ async fn test_file_range_not_satisfiable_416() {
 
 #[tokio::test]
 async fn test_file_accept_ranges_header() {
-    let (app, state) = create_media_test_app();
+    let (app, state, _cache_dir) = create_media_test_app();
     let watched = tempfile::tempdir().unwrap();
     let source_path = watched.path().join("test.png");
     create_test_png(&source_path);
@@ -386,7 +385,7 @@ async fn test_file_accept_ranges_header() {
 
 #[tokio::test]
 async fn test_file_etag_header() {
-    let (app, state) = create_media_test_app();
+    let (app, state, _cache_dir) = create_media_test_app();
     let watched = tempfile::tempdir().unwrap();
     let source_path = watched.path().join("test.png");
     create_test_png(&source_path);
@@ -425,7 +424,7 @@ async fn test_file_etag_header() {
 
 #[tokio::test]
 async fn test_file_304_not_modified() {
-    let (app, state) = create_media_test_app();
+    let (app, state, _cache_dir) = create_media_test_app();
     let watched = tempfile::tempdir().unwrap();
     let source_path = watched.path().join("test.png");
     create_test_png(&source_path);

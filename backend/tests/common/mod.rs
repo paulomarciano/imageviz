@@ -16,6 +16,8 @@ pub struct TestApp {
     pub sse_tx: broadcast::Sender<imageviz_backend::watcher::handler::SseEvent>,
     /// Kept alive for the duration of the test — holds the Tantivy index directory.
     pub _tantivy_dir: tempfile::TempDir,
+    /// Kept alive for the duration of the test — holds the thumbnail cache directory.
+    pub _cache_dir: tempfile::TempDir,
 }
 
 /// Create a test app with all routes mounted for integration testing.
@@ -71,10 +73,10 @@ pub fn create_test_app_with_search() -> TestApp {
     let config_state = Arc::new(imageviz_backend::routes::config::ConfigState {
         db: Arc::clone(&db),
     });
-    #[allow(deprecated)]
+    let cache_dir = tempfile::tempdir().expect("tempdir for thumbnail cache");
     let media_state = Arc::new(imageviz_backend::routes::media::MediaState {
         db: Arc::clone(&db),
-        thumbnail_cache_dir: tempfile::tempdir().unwrap().into_path(),
+        thumbnail_cache_dir: cache_dir.path().to_path_buf(),
     });
     let search_state = Arc::new(imageviz_backend::routes::search::SearchState {
         index_manager: Arc::clone(&index_manager),
@@ -117,5 +119,6 @@ pub fn create_test_app_with_search() -> TestApp {
         index_manager,
         sse_tx,
         _tantivy_dir: tantivy_dir,
+        _cache_dir: cache_dir,
     }
 }

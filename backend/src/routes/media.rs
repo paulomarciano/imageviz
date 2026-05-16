@@ -702,9 +702,10 @@ mod tests {
     use tower::ServiceExt;
 
     /// Build a test `MediaState` with an in-memory SQLite database and a
-    /// temporary cache directory.  The database is pre-populated with the
-    /// minimum schema needed to exercise routes.
-    fn test_state() -> Arc<MediaState> {
+    /// temporary cache directory (kept alive until the test finishes).
+    /// The database is pre-populated with the minimum schema needed to
+    /// exercise routes.
+    fn test_state() -> (Arc<MediaState>, tempfile::TempDir) {
         let conn = rusqlite::Connection::open_in_memory()
             .expect("Failed to create in-memory database");
         conn.execute_batch(
@@ -727,11 +728,12 @@ mod tests {
         );",
         )
         .expect("Failed to create test tables");
-        Arc::new(MediaState {
+        let cache_dir = tempfile::tempdir().expect("tempdir");
+        let state = Arc::new(MediaState {
             db: Arc::new(Mutex::new(conn)),
-            #[allow(deprecated)]
-            thumbnail_cache_dir: tempfile::tempdir().unwrap().into_path(),
-        })
+            thumbnail_cache_dir: cache_dir.path().to_path_buf(),
+        });
+        (state, cache_dir)
     }
 
     /// Seed the database with a watched-folder config pointing at `folder_path`.
@@ -804,7 +806,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_thumbnail_invalid_width_below_min_returns_400() {
-        let state = test_state();
+        let (state, _cache_dir) = test_state();
         let app = routes().with_state(state);
 
         let response = app
@@ -826,7 +828,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_thumbnail_invalid_width_above_max_returns_400() {
-        let state = test_state();
+        let (state, _cache_dir) = test_state();
         let app = routes().with_state(state);
 
         let response = app
@@ -844,7 +846,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_thumbnail_media_not_found_returns_404() {
-        let state = test_state();
+        let (state, _cache_dir) = test_state();
         let app = routes().with_state(state);
 
         let response = app
@@ -866,7 +868,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_thumbnail_file_not_found_on_disk_returns_404() {
-        let state = test_state();
+        let (state, _cache_dir) = test_state();
         let watched = tempfile::tempdir().unwrap();
 
         seed_config(&state, watched.path()).await;
@@ -900,7 +902,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_thumbnail_happy_path_generates_webp() {
-        let state = test_state();
+        let (state, _cache_dir) = test_state();
         let watched = tempfile::tempdir().unwrap();
         let source_path = watched.path().join("test.png");
         create_test_png(&source_path);
@@ -974,7 +976,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_thumbnail_cache_hit_returns_200() {
-        let state = test_state();
+        let (state, _cache_dir) = test_state();
         let watched = tempfile::tempdir().unwrap();
         let source_path = watched.path().join("test.png");
         create_test_png(&source_path);
@@ -1029,7 +1031,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_serve_file_media_not_found_returns_404() {
-        let state = test_state();
+        let (state, _cache_dir) = test_state();
         let app = routes().with_state(state);
 
         let response = app
@@ -1047,7 +1049,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_serve_file_happy_path() {
-        let state = test_state();
+        let (state, _cache_dir) = test_state();
         let watched = tempfile::tempdir().unwrap();
         let source_path = watched.path().join("test.png");
         create_test_png(&source_path);
@@ -1097,7 +1099,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_serve_file_etag_and_cache_control() {
-        let state = test_state();
+        let (state, _cache_dir) = test_state();
         let watched = tempfile::tempdir().unwrap();
         let source_path = watched.path().join("test.png");
         create_test_png(&source_path);
@@ -1146,7 +1148,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_serve_file_304_not_modified() {
-        let state = test_state();
+        let (state, _cache_dir) = test_state();
         let watched = tempfile::tempdir().unwrap();
         let source_path = watched.path().join("test.png");
         create_test_png(&source_path);
@@ -1185,7 +1187,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_serve_file_etag_mismatch_returns_200() {
-        let state = test_state();
+        let (state, _cache_dir) = test_state();
         let watched = tempfile::tempdir().unwrap();
         let source_path = watched.path().join("test.png");
         create_test_png(&source_path);
@@ -1228,7 +1230,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_serve_file_no_checksum_omits_etag() {
-        let state = test_state();
+        let (state, _cache_dir) = test_state();
         let watched = tempfile::tempdir().unwrap();
         let source_path = watched.path().join("test.png");
         create_test_png(&source_path);
@@ -1310,7 +1312,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_media_list_empty_database() {
-        let state = test_state();
+        let (state, _cache_dir) = test_state();
         let app = routes().with_state(state);
 
         let response = app
@@ -1337,7 +1339,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_media_list_first_page() {
-        let state = test_state();
+        let (state, _cache_dir) = test_state();
         seed_n_items(&state, 250, "2025-06-15T12:00:00", "image/png").await;
         let app = routes().with_state(state);
 
@@ -1375,7 +1377,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_media_list_cursor_pagination() {
-        let state = test_state();
+        let (state, _cache_dir) = test_state();
         seed_n_items(&state, 250, "2025-06-15T12:00:00", "image/png").await;
         let app = routes().with_state(state);
 
@@ -1441,7 +1443,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_media_list_last_page() {
-        let state = test_state();
+        let (state, _cache_dir) = test_state();
         seed_n_items(&state, 50, "2025-06-15T12:00:00", "image/png").await;
         let app = routes().with_state(state);
 
@@ -1468,7 +1470,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_media_list_mime_type_filter() {
-        let state = test_state();
+        let (state, _cache_dir) = test_state();
         // Insert 25 images and 25 videos
         for i in 0..25 {
             let date_str = format!("2025-06-15T12:{:02}:00", 59 - i);
@@ -1538,7 +1540,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_media_list_invalid_limit() {
-        let state = test_state();
+        let (state, _cache_dir) = test_state();
         let app = routes().with_state(state);
 
         // Test limit > 500
@@ -1582,7 +1584,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_media_item_not_found_returns_404() {
-        let state = test_state();
+        let (state, _cache_dir) = test_state();
         let app = routes().with_state(state);
 
         let response = app
@@ -1600,7 +1602,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_media_item_happy_path() {
-        let state = test_state();
+        let (state, _cache_dir) = test_state();
 
         {
             let db = state.db.lock().await;
@@ -1657,7 +1659,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_media_item_no_metadata_returns_null() {
-        let state = test_state();
+        let (state, _cache_dir) = test_state();
 
         {
             let db = state.db.lock().await;
@@ -1706,7 +1708,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_media_metadata_not_found_returns_404() {
-        let state = test_state();
+        let (state, _cache_dir) = test_state();
         let app = routes().with_state(state);
 
         let response = app
@@ -1724,7 +1726,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_media_metadata_happy_path() {
-        let state = test_state();
+        let (state, _cache_dir) = test_state();
 
         {
             let db = state.db.lock().await;
@@ -1771,7 +1773,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_media_metadata_empty_when_no_metadata() {
-        let state = test_state();
+        let (state, _cache_dir) = test_state();
 
         {
             let db = state.db.lock().await;
