@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
@@ -11,6 +12,7 @@ use imageviz_backend::routes::media::MediaState;
 use imageviz_backend::routes::search::SearchState;
 use imageviz_backend::routes::stats::StatsState;
 use imageviz_backend::search::IndexManager;
+use imageviz_backend::watcher::FileWatcher;
 use imageviz_backend::watcher::handler::SseEvent;
 
 #[tokio::main]
@@ -75,6 +77,8 @@ async fn main() {
         let conn = db.lock().await;
         imageviz_backend::config::load_config(&conn).unwrap_or_default()
     };
+
+    let config_clone = config.clone();
     spawn_background_indexing(
         Arc::clone(&db),
         Arc::clone(&index_manager),
@@ -82,6 +86,16 @@ async fn main() {
         sse_tx.clone(),
         config,
         &settings.database_path,
+    );
+
+    // Start file system watcher (kept alive for the lifetime of the server).
+    // When the user updates watched folders via PUT /config, the watcher
+    // should be re-created — this is a future enhancement (Wave 7).
+    let _watcher = start_file_watcher(
+        Arc::clone(&db),
+        Arc::clone(&index_manager),
+        sse_tx.clone(),
+        &config_clone,
     );
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], settings.port));
@@ -191,4 +205,51 @@ fn spawn_background_indexing(
             }
         }
     });
+}
+
+/// Start a file system watcher that monitors watched folders for changes.
+///
+/// File events (create / modify / delete) are debounced (500 ms) and
+/// forwarded to [`run_event_handler`], which updates SQLite, Tantivy, and
+/// broadcasts an SSE event to all connected clients.
+///
+/// Returns `Some(FileWatcher)` when folders are configured, or `None` when
+/// the config is empty. **The returned watcher must be kept alive** — dropping
+/// it stops all monitoring.  Callers typically bind the return value to
+/// `let _watcher = ...` so it lives for the duration of `main`.
+fn start_file_watcher(
+    db: Arc<Mutex<rusqlite::Connection>>,
+    index_manager: Arc<IndexManager>,
+    sse_tx: tokio::sync::broadcast::Sender<SseEvent>,
+    config: &AppConfig,
+) -> Option<FileWatcher> {
+    if config.watched_folders.is_empty() {
+        tracing::info!("No watched folders configured — file watcher not started");
+        return None;
+    }
+
+    let paths: Vec<PathBuf> = config
+        .watched_folders
+        .iter()
+        .map(|f| PathBuf::from(&f.path))
+        .collect();
+
+    let (watcher, rx) = match FileWatcher::new(&paths) {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to create file watcher");
+            return None;
+        }
+    };
+
+    tokio::spawn(imageviz_backend::watcher::handler::run_event_handler(
+        rx, db, index_manager, sse_tx,
+    ));
+
+    tracing::info!(
+        paths = %paths.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>().join(", "),
+        "File watcher started"
+    );
+
+    Some(watcher)
 }
