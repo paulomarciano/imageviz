@@ -1,12 +1,11 @@
-#[cfg(test)]
 mod tests {
     use super::super::*;
     use rusqlite::params;
 
     #[test]
     fn test_create_tables_and_insert() {
-        let conn = open_in_memory().unwrap();
-        migrations::run_migrations(&conn).unwrap();
+        let mut conn = open_in_memory().unwrap();
+        migrations::run_migrations(&mut conn).unwrap();
 
         // Verify tables exist
         let count: i32 = conn
@@ -46,8 +45,8 @@ mod tests {
 
     #[test]
     fn test_unique_relative_path() {
-        let conn = open_in_memory().unwrap();
-        migrations::run_migrations(&conn).unwrap();
+        let mut conn = open_in_memory().unwrap();
+        migrations::run_migrations(&mut conn).unwrap();
 
         conn.execute(
             "INSERT INTO media_items (id, filename, relative_path, mime_type, file_size, file_created_at, file_modified_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -63,8 +62,8 @@ mod tests {
 
     #[test]
     fn test_config_table() {
-        let conn = open_in_memory().unwrap();
-        migrations::run_migrations(&conn).unwrap();
+        let mut conn = open_in_memory().unwrap();
+        migrations::run_migrations(&mut conn).unwrap();
 
         conn.execute(
             "INSERT INTO config (key, value) VALUES (?1, ?2)",
@@ -84,11 +83,16 @@ mod tests {
 
     #[test]
     fn test_migration_idempotent() {
-        let conn = open_in_memory().unwrap();
+        let mut conn = open_in_memory().unwrap();
         // Run migrations twice
-        migrations::run_migrations(&conn).unwrap();
-        migrations::run_migrations(&conn).unwrap();
-        // Should not error — tables already exist
+        migrations::run_migrations(&mut conn).unwrap();
+        migrations::run_migrations(&mut conn).unwrap();
+        // user_version should still be 1 after second run
+        let version: i32 = conn
+            .pragma_query_value(None, "user_version", |r| r.get::<_, i32>(0))
+            .unwrap();
+        assert_eq!(version, 1);
+        // Tables should still exist (no duplicate errors)
         let count: i32 = conn
             .query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get::<_, i32>(0))
             .unwrap();

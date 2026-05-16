@@ -18,12 +18,13 @@ pub fn open(path: impl AsRef<Path>) -> Result<Connection, rusqlite::Error> {
     Ok(conn)
 }
 
-/// Open an in-memory SQLite database (for testing) with WAL mode and foreign keys enabled.
+/// Open an in-memory SQLite database (for testing) with foreign keys enabled.
+///
+/// Note: WAL journal mode is intentionally omitted — it has no effect on
+/// in-memory databases in SQLite. The file-based [`open()`] function
+/// enables WAL, which is the production path.
 pub fn open_in_memory() -> Result<Connection, rusqlite::Error> {
     let conn = Connection::open_in_memory()?;
-    conn.execute_batch(
-        "PRAGMA journal_mode=WAL;
-         PRAGMA foreign_keys=ON;",
-    )?;
+    conn.execute_batch("PRAGMA foreign_keys=ON;")?;
     Ok(conn)
 }
