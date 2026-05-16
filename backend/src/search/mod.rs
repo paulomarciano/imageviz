@@ -1,9 +1,12 @@
 mod schema;
+pub mod indexer;
+
+pub use indexer::ReindexStats;
 pub use schema::build_schema;
 
 use std::path::Path;
 use std::sync::Mutex;
-use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument};
+use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term};
 use tantivy::schema::Schema;
 
 // ---------------------------------------------------------------------------
@@ -104,6 +107,24 @@ impl IndexManager {
         let mut guard = self.writer.lock().unwrap();
         let writer = guard.as_mut().ok_or("IndexWriter has been consumed")?;
         writer.delete_all_documents()?;
+        Ok(())
+    }
+
+    /// Delete the document identified by a text field value.
+    ///
+    /// Used primarily by [`indexer::incremental_index`] to remove stale documents
+    /// for re-indexed rows.  The field should be `STRING`-indexed for this to work
+    /// predictably — in practice the `id` field is always used.
+    pub fn delete_document_by_field(
+        &self,
+        field_name: &str,
+        value: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let field = self.schema.get_field(field_name)?;
+        let term = Term::from_field_text(field, value);
+        let mut guard = self.writer.lock().unwrap();
+        let writer = guard.as_mut().ok_or("IndexWriter has been consumed")?;
+        writer.delete_term(term);
         Ok(())
     }
 }
