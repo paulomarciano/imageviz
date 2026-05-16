@@ -36,6 +36,9 @@ export interface SearchParams {
   readonly cursor?: string;
   readonly cursor_id?: string;
   readonly limit?: number;
+  readonly mime_type?: string;
+  /** Sort order — `"recency"` (newest first) or `"score"` (BM25 relevance). */
+  readonly sort?: string;
 }
 
 /**

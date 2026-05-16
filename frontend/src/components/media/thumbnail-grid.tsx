@@ -1,7 +1,13 @@
 import { forwardRef, useCallback, useState, useEffect, type HTMLAttributes } from 'react';
 import { VirtuosoGrid } from 'react-virtuoso';
 import { useAtomValue } from 'jotai';
-import { searchQueryAtom, mediaViewModeAtom } from '../../store/search-atoms';
+import {
+  searchQueryAtom,
+  mediaViewModeAtom,
+  mediaTypeFilterAtom,
+  searchSortAtom,
+  mimeTypePattern,
+} from '../../store/search-atoms';
 import { useInfiniteMedia } from '../../hooks/use-infinite-media';
 import { useSearch } from '../../hooks/use-search';
 import { useScrollRestore } from '../../hooks/use-scroll-restore';
@@ -46,9 +52,12 @@ function SkeletonGrid() {
 export function ThumbnailGrid({ onItemClick }: ThumbnailGridProps) {
   const searchQuery = useAtomValue(searchQueryAtom);
   const viewMode = useAtomValue(mediaViewModeAtom);
+  const mediaTypeFilter = useAtomValue(mediaTypeFilterAtom);
+  const mimeType = mimeTypePattern(mediaTypeFilter);
+  const sort = useAtomValue(searchSortAtom);
 
-  const browseData = useInfiniteMedia();
-  const searchData = useSearch(searchQuery);
+  const browseData = useInfiniteMedia(100, mimeType);
+  const searchData = useSearch(searchQuery, 100, mimeType, sort);
 
   const {
     allItems: browseItems,
@@ -114,7 +123,10 @@ export function ThumbnailGrid({ onItemClick }: ThumbnailGridProps) {
     itemCount: items.length,
     columns,
     onSelect: () => {}, // Future multi-select
-    onOpen: (index) => { const item = items[index]; if (item) onItemClick(item); },
+    onOpen: (index) => {
+      const item = items[index];
+      if (item) onItemClick(item);
+    },
   });
 
   if (isLoading) {

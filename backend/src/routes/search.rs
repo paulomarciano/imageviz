@@ -57,6 +57,15 @@ struct SearchParams {
     cursor: Option<String>,
     /// Tiebreaker cursor: UUID of the last item.
     cursor_id: Option<String>,
+    /// MIME type filter (e.g. `image/%`, `video/%`) — SQL LIKE pattern.
+    mime_type: Option<String>,
+    /// Sort order — `"recency"` (newest first, default) or `"score"` (BM25 relevance).
+    #[serde(default = "default_sort")]
+    sort: String,
+}
+
+fn default_sort() -> String {
+    "recency".to_string()
 }
 
 fn default_limit() -> u32 {
@@ -165,13 +174,22 @@ async fn search_handler(
         }
 
         let db = state.db.lock().await;
-        match get_media_item_by_id(&db, item_id) {
+        match get_media_item_by_id(&db, item_id, params.mime_type.as_deref()) {
             Ok(Some(item)) => media_items.push(item),
             Ok(None) => { /* item deleted between Tantivy search and DB lookup */ }
             Err(e) => {
                 tracing::warn!(error = %e, id = %item_id, "DB lookup failed for search hit");
             }
         }
+    }
+
+    // ---- Sort results ----
+    if params.sort == "recency" {
+        media_items.sort_by(|a, b| {
+            b.created_at
+                .cmp(&a.created_at)
+                .then_with(|| b.id.cmp(&a.id))
+        });
     }
 
     let (next_cursor, next_cursor_id) = if has_more {
@@ -229,14 +247,24 @@ struct MediaItemSummary {
 fn get_media_item_by_id(
     db: &rusqlite::Connection,
     id: &str,
+    mime_type: Option<&str>,
 ) -> Result<Option<MediaItemSummary>, rusqlite::Error> {
-    let mut stmt = db.prepare(
+    const BASE_SQL: &str =
         "SELECT id, filename, relative_path, mime_type, width, height, file_size, \
-                file_created_at, file_modified_at
-         FROM media_items WHERE id = ?1",
-    )?;
+                file_created_at, file_modified_at \
+         FROM media_items WHERE id = ?1";
 
-    let mut rows = stmt.query_map(rusqlite::params![id], |row| {
+    let sql = if mime_type.is_some() {
+        "SELECT id, filename, relative_path, mime_type, width, height, file_size, \
+                file_created_at, file_modified_at \
+         FROM media_items WHERE id = ?1 AND mime_type LIKE ?2"
+    } else {
+        BASE_SQL
+    };
+
+    let mut stmt = db.prepare(sql)?;
+
+    let mapper = |row: &rusqlite::Row| -> Result<MediaItemSummary, rusqlite::Error> {
         Ok(MediaItemSummary {
             id: row.get(0)?,
             filename: row.get(1)?,
@@ -249,7 +277,13 @@ fn get_media_item_by_id(
             modified_at: row.get(8)?,
             thumbnail_url: format!("/api/v1/media/{}/thumbnail", row.get::<_, String>(0)?),
         })
-    })?;
+    };
+
+    let mut rows = if let Some(mime) = mime_type {
+        stmt.query_map(rusqlite::params![id, mime], mapper)?
+    } else {
+        stmt.query_map(rusqlite::params![id], mapper)?
+    };
 
     match rows.next() {
         Some(Ok(item)) => Ok(Some(item)),
@@ -820,4 +854,417 @@ mod tests {
             "malformed query should return either 200 or 400, never 500"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // MIME type filter
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_search_filter_by_image_mime_type() {
+        let (_dir, state) = test_state();
+
+        seed_item(
+            &state,
+            "img-0001",
+            "dragon.png",
+            "dragon.png",
+            "image/png",
+            r#"{"tag":"creature"}"#,
+            Some(1024),
+            Some(768),
+            20480,
+            "2026-03-01T10:00:00Z",
+        )
+        .await;
+
+        seed_item(
+            &state,
+            "vid-0001",
+            "video.mp4",
+            "video.mp4",
+            "video/mp4",
+            r#"{"tag":"creature"}"#,
+            None,
+            None,
+            51200,
+            "2026-03-02T10:00:00Z",
+        )
+        .await;
+
+        let app = routes().with_state(state);
+
+        // Search for "creature" filtered to images only
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/search?q=creature&mime_type=image/%")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+        let data = body["data"].as_array().unwrap();
+        assert_eq!(data.len(), 1, "should return only the image item");
+        assert_eq!(data[0]["id"], "img-0001");
+        assert_eq!(data[0]["mime_type"], "image/png");
+    }
+
+    #[tokio::test]
+    async fn test_search_filter_by_video_mime_type() {
+        let (_dir, state) = test_state();
+
+        seed_item(
+            &state,
+            "img-0002",
+            "castle.png",
+            "castle.png",
+            "image/png",
+            r#"{"tag":"building"}"#,
+            Some(800),
+            Some(600),
+            15360,
+            "2026-03-01T10:00:00Z",
+        )
+        .await;
+
+        seed_item(
+            &state,
+            "vid-0002",
+            "movie.webm",
+            "movie.webm",
+            "video/webm",
+            r#"{"tag":"building"}"#,
+            None,
+            None,
+            102400,
+            "2026-03-02T10:00:00Z",
+        )
+        .await;
+
+        let app = routes().with_state(state);
+
+        // Search for "building" filtered to videos only
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/search?q=building&mime_type=video/%")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+        let data = body["data"].as_array().unwrap();
+        assert_eq!(data.len(), 1, "should return only the video item");
+        assert_eq!(data[0]["id"], "vid-0002");
+        assert_eq!(data[0]["mime_type"], "video/webm");
+    }
+
+    #[tokio::test]
+    async fn test_search_mime_type_filter_no_match() {
+        let (_dir, state) = test_state();
+
+        seed_item(
+            &state,
+            "img-0003",
+            "forest.png",
+            "forest.png",
+            "image/png",
+            r#"{"tag":"nature"}"#,
+            Some(1920),
+            Some(1080),
+            30720,
+            "2026-03-01T10:00:00Z",
+        )
+        .await;
+
+        let app = routes().with_state(state);
+
+        // Search tagged "nature" but filter to videos — no results expected
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/search?q=nature&mime_type=video/%")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+        let data = body["data"].as_array().unwrap();
+        assert_eq!(data.len(), 0, "no videos match the 'nature' tag");
+    }
+
+    #[tokio::test]
+    async fn test_search_mime_type_filter_all_types() {
+        let (_dir, state) = test_state();
+
+        seed_item(
+            &state,
+            "img-0004",
+            "lake.png",
+            "lake.png",
+            "image/png",
+            r#"{"tag":"water"}"#,
+            Some(640),
+            Some(480),
+            8192,
+            "2026-03-01T10:00:00Z",
+        )
+        .await;
+
+        seed_item(
+            &state,
+            "vid-0004",
+            "river.mp4",
+            "river.mp4",
+            "video/mp4",
+            r#"{"tag":"water"}"#,
+            None,
+            None,
+            20480,
+            "2026-03-02T10:00:00Z",
+        )
+        .await;
+
+        let app = routes().with_state(state);
+
+        // No mime_type filter = both results returned
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/search?q=water")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+        let data = body["data"].as_array().unwrap();
+        assert_eq!(data.len(), 2, "no filter should return both image and video");
+    }
+
+    // -----------------------------------------------------------------------
+    // Sort order
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_search_default_sort_is_recency() {
+        let (_dir, state) = test_state();
+
+        // Item A: older, higher BM25 score (many "dragon" occurrences)
+        seed_item(
+            &state,
+            "uuid-old",
+            "old.png",
+            "old.png",
+            "image/png",
+            r#"{"prompt":"dragon dragon dragon dragon"}"#,
+            Some(100),
+            Some(100),
+            1024,
+            "2026-01-01T10:00:00Z",
+        )
+        .await;
+
+        // Item B: newer, lower BM25 score (single "dragon" occurrence)
+        seed_item(
+            &state,
+            "uuid-new",
+            "new.png",
+            "new.png",
+            "image/png",
+            r#"{"prompt":"dragon"}"#,
+            Some(200),
+            Some(200),
+            2048,
+            "2026-03-01T10:00:00Z",
+        )
+        .await;
+
+        let app = routes().with_state(state);
+
+        // Default sort (no sort param) = recency — newest first
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/search?q=dragon")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+        let data = body["data"].as_array().unwrap();
+
+        assert_eq!(data.len(), 2, "both items should match");
+        assert_eq!(
+            data[0]["id"], "uuid-new",
+            "recency sort should put newer item first"
+        );
+        assert_eq!(
+            data[1]["id"], "uuid-old",
+            "recency sort should put older item second"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_sort_explicit_recency() {
+        let (_dir, state) = test_state();
+
+        seed_item(
+            &state,
+            "uuid-first",
+            "first.png",
+            "first.png",
+            "image/png",
+            r#"{"tag":"explicit"}"#,
+            None,
+            None,
+            512,
+            "2026-02-01T10:00:00Z",
+        )
+        .await;
+
+        seed_item(
+            &state,
+            "uuid-second",
+            "second.png",
+            "second.png",
+            "image/png",
+            r#"{"tag":"explicit"}"#,
+            None,
+            None,
+            1024,
+            "2026-05-01T10:00:00Z",
+        )
+        .await;
+
+        seed_item(
+            &state,
+            "uuid-third",
+            "third.png",
+            "third.png",
+            "image/png",
+            r#"{"tag":"explicit"}"#,
+            None,
+            None,
+            2048,
+            "2027-01-01T10:00:00Z",
+        )
+        .await;
+
+        let app = routes().with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/search?q=explicit&sort=recency")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+        let data = body["data"].as_array().unwrap();
+
+        assert_eq!(data.len(), 3);
+        assert_eq!(data[0]["id"], "uuid-third", "newest first");
+        assert_eq!(data[1]["id"], "uuid-second", "middle");
+        assert_eq!(data[2]["id"], "uuid-first", "oldest last");
+    }
+
+    #[tokio::test]
+    async fn test_search_sort_by_score_preserves_bm25_order() {
+        let (_dir, state) = test_state();
+
+        // Item with higher relevance (more term occurrences) but older date
+        seed_item(
+            &state,
+            "uuid-high-score",
+            "high_score.png",
+            "high_score.png",
+            "image/png",
+            r#"{"prompt":"dragon dragon dragon dragon"}"#,
+            Some(100),
+            Some(100),
+            1024,
+            "2026-01-01T10:00:00Z",
+        )
+        .await;
+
+        // Item with lower relevance but newer date
+        seed_item(
+            &state,
+            "uuid-low-score",
+            "low_score.png",
+            "low_score.png",
+            "image/png",
+            r#"{"prompt":"dragon"}"#,
+            Some(200),
+            Some(200),
+            2048,
+            "2026-03-01T10:00:00Z",
+        )
+        .await;
+
+        let app = routes().with_state(state);
+
+        // sort=score should keep BM25 order: high-score first (more matches)
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/search?q=dragon&sort=score")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+        let data = body["data"].as_array().unwrap();
+
+        assert_eq!(data.len(), 2);
+        assert_eq!(
+            data[0]["id"], "uuid-high-score",
+            "score sort should put higher BM25 score first"
+        );
+        assert_eq!(
+            data[1]["id"], "uuid-low-score",
+            "score sort puts lower score second"
+        );
+    }
+
 }

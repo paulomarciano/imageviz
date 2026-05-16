@@ -1,6 +1,7 @@
 import { useInfiniteQuery } from '@tanstack/react-query';
 import { searchMedia } from '../api/search.ts';
 import type { MediaItem, PaginatedResponse } from '../types';
+import type { SearchSort } from '../store/search-atoms.ts';
 
 /**
  * Custom hook for full-text search with cursor-based pagination.
@@ -16,13 +17,20 @@ import type { MediaItem, PaginatedResponse } from '../types';
  *
  * @param query - The search query to send to the backend (already debounced upstream).
  * @param limit - Max items per page (default 100).
+ * @param mimeType - Optional MIME type filter (e.g. `image/%`, `video/%`).
+ * @param sort - Sort order — `"recency"` (newest first) or `"score"` (BM25 relevance).
  */
-export function useSearch(query: string, limit = 100) {
+export function useSearch(
+  query: string,
+  limit = 100,
+  mimeType?: string,
+  sort: SearchSort = 'recency',
+) {
   // Disable search when the query is empty.
   const enabled = query.trim().length > 0;
 
   const infiniteQuery = useInfiniteQuery<PaginatedResponse<MediaItem>, Error>({
-    queryKey: ['search', query, { limit }],
+    queryKey: ['search', query, { limit, mimeType: mimeType ?? 'all', sort }],
     queryFn: ({ pageParam }) => {
       const cursor = pageParam as { cursor?: string; cursor_id?: string } | undefined;
       return searchMedia({
@@ -30,6 +38,8 @@ export function useSearch(query: string, limit = 100) {
         limit,
         cursor: cursor?.cursor,
         cursor_id: cursor?.cursor_id,
+        mime_type: mimeType,
+        sort,
       });
     },
     // Initial page has no cursor — backend returns the first page.

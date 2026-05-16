@@ -2,15 +2,16 @@ import { useInfiniteQuery } from '@tanstack/react-query';
 import { fetchMediaList } from '../api/media';
 import type { MediaItem, PaginatedResponse } from '../types';
 
-export function useInfiniteMedia(limit = 100) {
+export function useInfiniteMedia(limit = 100, mimeType?: string) {
   const query = useInfiniteQuery<PaginatedResponse<MediaItem>, Error>({
-    queryKey: ['media', 'list', { limit }],
+    queryKey: ['media', 'list', { limit, mimeType: mimeType ?? 'all' }],
     queryFn: ({ pageParam }) => {
       const cursor = pageParam as { cursor?: string; cursor_id?: string } | undefined;
       return fetchMediaList({
         limit,
         cursor: cursor?.cursor,
         cursor_id: cursor?.cursor_id,
+        mime_type: mimeType,
       });
     },
     initialPageParam: undefined as { cursor?: string; cursor_id?: string } | undefined,

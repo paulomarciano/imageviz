@@ -17,5 +17,7 @@ export function searchMedia(params: SearchParams): Promise<PaginatedResponse<Med
     cursor: params.cursor,
     cursor_id: params.cursor_id,
     limit: params.limit,
+    mime_type: params.mime_type,
+    sort: params.sort,
   });
 }
