@@ -1,8 +1,8 @@
 # ImageViz — Development Plan
 
-> **Version**: 1.0  
-> **Date**: 2026-05-15  
-> **Status**: Draft  
+> **Version**: 2.0  
+> **Date**: 2026-05-17  
+> **Status**: Active  
 > **Author**: AI-assisted planning
 
 ---
@@ -138,6 +138,7 @@ http://localhost:3001/api/v1
 |--------|------|-------------|
 | `GET` | `/config` | Get current configuration (watched folders) |
 | `PUT` | `/config` | Update watched folders (triggers re-index) |
+| `GET` | `/config/suggest` | Suggest subdirectory paths for folder picker |
 | `GET` | `/stats` | Index statistics (total files, last indexed, etc.) |
 
 #### Real-time
@@ -261,7 +262,14 @@ CREATE TABLE media_items (
     file_modified_at TEXT NOT NULL,        -- ISO 8601 (file system modification time)
     indexed_at TEXT NOT NULL DEFAULT (datetime('now')), -- When this record was indexed
     metadata_json TEXT,                    -- Raw metadata JSON blob (for API responses)
-    checksum TEXT                          -- SHA-256 of file (for change detection)
+    checksum TEXT,                         -- SHA-256 of file (for change detection)
+    folder_id TEXT                         -- UUID of the watched folder (for watcher delete)
+);
+
+CREATE TABLE watched_folders (
+    id   TEXT PRIMARY KEY NOT NULL,        -- UUID
+    path TEXT NOT NULL UNIQUE,             -- Absolute folder path
+    label TEXT                             -- Optional user-friendly label
 );
 
 -- Index for cursor-based pagination (sorted by date DESC, then id)
@@ -459,6 +467,8 @@ schema_builder.add_u64_field("height", STORED);
 | 7.8 | Create production build scripts (backend release, frontend bundle) | `scripts/build.sh`, `scripts/dev.sh` | 1h | — | Single command to build both; single command to run dev |
 | 7.9 | Add graceful degradation for missing thumbnails | `frontend/src/components/media/thumbnail-card.tsx` | 30m | — | Broken thumbnail shows placeholder, not error |
 | 7.10 | Write project README | `README.md` | 2h | — | Setup, run, configure, contribute, architecture overview |
+| 7.11 | Replace Mutex<Connection> with r2d2 connection pool | `backend/src/db/pool.rs` | 2h | 1.1 | Pool handles concurrent access; Mutex is no longer used |
+| 7.12 | Add folder_id column for watcher delete isolation | `backend/src/db/schema.rs`, `backend/src/config/mod.rs` | 1.5h | 7.11 | Watcher deletes by folder_id + relative_path instead of full path |
 
 ---
 
@@ -530,13 +540,15 @@ backend/
 │   │   ├── hasher.rs
 │   │   └── hasher_test.rs
 │   └── ...
-└── tests/
-    ├── common/mod.rs          # Test helpers (temp dirs, DB fixtures)
-    ├── health_test.rs
-    ├── indexer_test.rs
-    ├── media_test.rs
-    ├── search_test.rs
-    └── events_test.rs
+    └── tests/
+        ├── common/
+        │   └── mod.rs                  # TestApp + create_test_app_with_search()
+        ├── health_test.rs
+        ├── config_test.rs
+        ├── media_test.rs
+        ├── search_test.rs
+        ├── stats_test.rs
+        └── events_test.rs
 ```
 
 ### 7.3 Frontend Testing
@@ -614,8 +626,9 @@ frontend/src/
 
 **Backend**:
 - Thumbnail generation: `spawn_blocking` for CPU-bound image work (avoids blocking async runtime)
-- Database connections: `r2d2` connection pool with max 10 connections
+- Database connections: `r2d2` connection pool with max 10 connections (WAL-compatible)
 - Tantivy: Single writer, multiple readers; commit every N seconds
+- Tantivy reindex runs on a **separate read-only SQLite connection** (WAL allows concurrent readers) via `spawn_blocking` to avoid starving the async runtime
 
 **Frontend**:
 - TanStack Query `maxPages: 10` — only keep last 10 pages (1000 items) in memory
@@ -686,18 +699,29 @@ frontend/src/
 ```
 imageviz/
 ├── README.md
+├── ARCHITECTURE.md                      # System architecture doc
+├── AGENTS.md                            # Agent instructions
+├── CHANGELOG.md
+├── CONTRIBUTING.md
+├── SECURITY.md
 ├── .gitignore
 ├── .github/
 │   └── workflows/
 │       └── ci.yml
 ├── documents/
-│   └── plans/
-│       └── development-plan.md          # ← This file
+│   ├── plans/
+│   │   └── development-plan.md          # ← This file
+│   └── tickets/                         # Per-task tracking files
 ├── test-fixtures/
-│   ├── sample_comfyui.png               # Real ComfyUI PNG with metadata
+│   ├── .gitkeep                         # Only .gitkeep committed
+│   ├── sample_comfyui.png               # Real ComfyUI PNG with metadata (gitignored)
 │   ├── sample_no_metadata.png           # Clean PNG (no tEXt chunks)
 │   ├── sample_video.webm                # Short test video
 │   └── sample_video.mp4                 # Short test video
+├── scripts/
+│   ├── build.sh                         # Production build
+│   ├── dev.sh                           # Start backend + frontend dev servers
+│   └── generate-fixtures.sh             # Generate test fixture files
 ├── backend/
 │   ├── Cargo.toml
 │   ├── rustfmt.toml
@@ -705,15 +729,17 @@ imageviz/
 │   │   └── config.toml
 │   ├── src/
 │   │   ├── main.rs                      # Server entry point
-│   │   ├── app.rs                       # Router assembly + state
+│   │   ├── lib.rs                       # Module declarations + health_router()
+│   │   ├── media_types.rs               # Supported extensions & MIME prefixes
+│   │   ├── test_support.rs              # #[cfg(test)] fixture_path helper
 │   │   ├── config/
 │   │   │   ├── mod.rs
 │   │   │   └── settings.rs             # Env-based configuration
 │   │   ├── db/
 │   │   │   ├── mod.rs
+│   │   │   ├── pool.rs                 # r2d2 connection pool manager
 │   │   │   ├── schema.rs               # SQL table definitions
-│   │   │   ├── migrations.rs           # Schema migrations
-│   │   │   └── queries.rs              # Prepared query functions
+│   │   │   └── migrations.rs           # Schema migrations
 │   │   ├── scanner/
 │   │   │   ├── mod.rs
 │   │   │   ├── walker.rs               # Directory tree walker
@@ -737,21 +763,34 @@ imageviz/
 │   │   │   ├── schema.rs              # Tantivy schema
 │   │   │   └── indexer.rs             # Tantivy writer + reader
 │   │   ├── watcher/
-│   │   │   ├── mod.rs                 # notify watcher setup
-│   │   │   └── handler.rs             # Event → indexer → broadcast
+│   │   │   ├── mod.rs                 # FileWatcher struct, notify setup
+│   │   │   ├── handler.rs             # Event pipeline → stages
+│   │   │   └── stages/
+│   │   │       ├── mod.rs
+│   │   │       ├── extract.rs         # Extract metadata from changed file
+│   │   │       ├── store.rs           # Upsert into SQLite + Tantivy
+│   │   │       └── broadcast.rs       # Send SSE event to clients
 │   │   ├── routes/
 │   │   │   ├── mod.rs
 │   │   │   ├── health.rs
-│   │   │   ├── media.rs               # GET /media, /media/:id, /media/:id/thumbnail, /media/:id/file
+│   │   │   ├── media/
+│   │   │   │   ├── mod.rs             # GET /media
+│   │   │   │   ├── list.rs            #   cursor-based pagination
+│   │   │   │   ├── detail.rs          #   GET /media/:id
+│   │   │   │   ├── file.rs            #   GET /media/:id/file (streaming + Range)
+│   │   │   │   └── thumbnail.rs       #   GET /media/:id/thumbnail
 │   │   │   ├── search.rs              # GET /search
 │   │   │   ├── config.rs              # GET/PUT /config
+│   │   │   ├── config/
+│   │   │   │   └── suggest.rs         # GET /config/suggest
 │   │   │   ├── events.rs              # GET /events (SSE)
 │   │   │   └── stats.rs               # GET /stats
-│   │   └── middleware/
-│   │       ├── mod.rs
-│   │       ├── logging.rs
-│   │       ├── security.rs
-│   │       └── timeout.rs
+│   │   ├── middleware/
+│   │   │   ├── mod.rs
+│   │   │   ├── logging.rs
+│   │   │   ├── security.rs
+│   │   │   ├── timeout.rs
+│   │   │   └── validation.rs          # Input validation helpers
 │   └── tests/
 │       ├── common/
 │       │   └── mod.rs                  # Test helpers
@@ -851,16 +890,28 @@ notify-debouncer-mini = "0.7"
 image = "0.25"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
-mime_guess = "2"
+hex = "0.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tokio-stream = "0.1"
+tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-util = "0.7"
 futures-util = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
+walkdir = "2"
+image = { version = "0.25", features = ["webp"] }
+png = "0.18"
+tantivy = "0.26"
+notify = { version = "8", features = ["macos_kqueue"] }
+notify-debouncer-mini = "0.7"
+r2d2 = "0.8"
+dashmap = "6"
+fs2 = "0.4"
 
 [dev-dependencies]
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
 tempfile = "3"
+crc32fast = "1"
+http-body-util = "0.1"
 ```
 
 ### Frontend (package.json — key deps)
