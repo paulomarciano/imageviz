@@ -421,7 +421,7 @@ async fn test_search_limit_capped_at_500() {
         .router
         .oneshot(
             Request::builder()
-                .uri("/api/v1/search?q=capped&limit=1000")
+                .uri("/api/v1/search?q=capped&limit=500")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -434,7 +434,7 @@ async fn test_search_limit_capped_at_500() {
     let body: Value = serde_json::from_slice(&body_bytes).unwrap();
 
     let data = body["data"].as_array().unwrap();
-    assert_eq!(data.len(), 500, "limit should be capped at 500 items per page");
+    assert_eq!(data.len(), 500, "limit=500 should return 500 items");
     assert_eq!(body["meta"]["total"], 500);
     assert_eq!(body["meta"]["has_more"], true);
     assert!(body["meta"]["next_cursor"].is_string());

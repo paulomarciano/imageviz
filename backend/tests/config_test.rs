@@ -120,8 +120,14 @@ async fn test_config_empty_path_rejected() {
 
     let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
     let body: Value = serde_json::from_slice(&body_bytes).unwrap();
-    let error = body["error"].as_str().unwrap();
-    assert!(error.contains("empty"), "error should mention empty path: {error}");
+    assert_eq!(
+        body["error"], "Invalid watched folder configuration",
+        "top-level error should indicate the config is invalid",
+    );
+    assert_eq!(
+        body["details"][0]["message"], "Path must not be empty",
+        "details should indicate which field failed",
+    );
 }
 
 // ---------------------------------------------------------------------------

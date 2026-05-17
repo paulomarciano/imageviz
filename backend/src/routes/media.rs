@@ -14,6 +14,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 use tokio::sync::Mutex;
 
+use crate::middleware::validation;
 use crate::thumbnails::cache::CacheError;
 use crate::thumbnails::limiter::ThumbnailLimiter;
 
@@ -78,15 +79,9 @@ async fn list_media(
     State(state): State<Arc<MediaState>>,
     Query(params): Query<MediaListParams>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    if params.limit == 0 {
-        return Err((StatusCode::BAD_REQUEST, Json(json!({"error": "limit must be positive"}))));
-    }
-    if params.limit > 500 {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": format!("limit must not exceed 500, got {}", params.limit)})),
-        ));
-    }
+    validation::validate_limit(params.limit)?;
+    validation::validate_cursor(params.cursor.as_deref())?;
+    validation::validate_cursor_id(params.cursor_id.as_deref())?;
 
     let limit = params.limit;
     let fetch_limit = limit + 1;
@@ -246,6 +241,8 @@ async fn get_media_item(
     State(state): State<Arc<MediaState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    validation::validate_media_id(&id)?;
+
     let db = state.db.lock().await;
 
     let row = db
@@ -291,6 +288,8 @@ async fn get_media_metadata(
     State(state): State<Arc<MediaState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    validation::validate_media_id(&id)?;
+
     let db = state.db.lock().await;
 
     let metadata_json: Option<String> = db
@@ -419,6 +418,8 @@ async fn serve_file(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, (StatusCode, Json<Value>)> {
+    validation::validate_media_id(&id)?;
+
     // Resolve file path and get caching info from DB in a single lock
     let db = state.db.lock().await;
     let (file_path, mime_type, filename) = resolve_media_path(&db, &id)?;
@@ -603,15 +604,11 @@ async fn serve_thumbnail(
     Path(id): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    validation::validate_media_id(&id)?;
+
     // Parse optional width parameter (default 200, range 100-500)
     let width: u32 = params.get("width").and_then(|w| w.parse().ok()).unwrap_or(200);
-
-    if !(100..=500).contains(&width) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": format!("Width must be between 100 and 500, got {}", width)})),
-        ));
-    }
+    validation::validate_thumbnail_width(width)?;
 
     // Look up media item, resolve file path, and get checksum (single lock)
     let db = state.db.lock().await;

@@ -13,6 +13,7 @@ use tokio::sync::Mutex;
 
 use crate::config::AppConfig;
 use crate::indexer::progress::ProgressTracker;
+use crate::middleware::validation;
 use crate::search::IndexManager;
 use crate::watcher::FileWatcher;
 
@@ -65,15 +66,8 @@ async fn update_config(
     State(state): State<Arc<ConfigState>>,
     Json(config): Json<AppConfig>,
 ) -> Result<Json<AppConfig>, (StatusCode, Json<Value>)> {
-    // Validate: all paths must be non-empty
-    for folder in &config.watched_folders {
-        if folder.path.trim().is_empty() {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "Watched folder path cannot be empty"})),
-            ));
-        }
-    }
+    // Validate watched folder paths
+    validation::validate_watched_folders(&config.watched_folders)?;
 
     // Load the old config from the database *before* overwriting so that
     // we can diff the folder lists and know which paths to add/remove.
@@ -421,7 +415,16 @@ mod tests {
 
         let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
         let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
-        assert!(body["error"].as_str().unwrap().contains("empty"));
+        assert_eq!(
+            body["error"],
+            "Invalid watched folder configuration",
+            "top-level error should describe the validation failure"
+        );
+        assert_eq!(
+            body["details"][0]["message"],
+            "Path must not be empty",
+            "details should indicate which field failed"
+        );
     }
 
     #[tokio::test]

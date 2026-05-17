@@ -29,6 +29,7 @@ use tantivy::query::QueryParser;
 use tantivy::schema::Value as TantivyValue;
 use tokio::sync::Mutex;
 
+use crate::middleware::validation;
 use crate::search::IndexManager;
 
 // ---------------------------------------------------------------------------
@@ -89,17 +90,13 @@ async fn search_handler(
     State(state): State<Arc<SearchState>>,
     Query(params): Query<SearchParams>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
-    let query_str = match &params.q {
-        Some(q) if !q.trim().is_empty() => q.trim().to_string(),
-        _ => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "Query parameter 'q' is required and must not be empty"})),
-            ));
-        }
-    };
+    validation::validate_search_query(&params.q)?;
+    validation::validate_limit(params.limit)?;
+    validation::validate_cursor(params.cursor.as_deref())?;
+    validation::validate_cursor_id(params.cursor_id.as_deref())?;
 
-    let limit = (params.limit.min(500)) as usize;
+    let query_str = params.q.as_ref().unwrap().trim().to_string();
+    let limit = params.limit as usize;
 
     // ---- Search Tantivy ----
     let schema = state.index_manager.schema();
@@ -654,10 +651,10 @@ mod tests {
 
         let app = routes().with_state(state);
 
-        // Request limit=1000 — should be capped at 500+1 (for has_more check)
+        // Request limit=500 — max valid limit, exercises +1 has_more check
         let response = app
             .oneshot(
-                Request::builder().uri("/search?q=capped&limit=1000").body(Body::empty()).unwrap(),
+                Request::builder().uri("/search?q=capped&limit=500").body(Body::empty()).unwrap(),
             )
             .await
             .unwrap();
@@ -668,7 +665,7 @@ mod tests {
         let body: Value = serde_json::from_slice(&body_bytes).unwrap();
 
         let data = body["data"].as_array().unwrap();
-        assert_eq!(data.len(), 500, "limit should be capped at 500 items per page");
+        assert_eq!(data.len(), 500, "limit=500 should return 500 items");
         assert_eq!(body["meta"]["total"], 500);
         assert_eq!(body["meta"]["has_more"], true);
         assert!(body["meta"]["next_cursor"].is_string());
