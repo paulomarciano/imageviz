@@ -7,6 +7,7 @@ use tower_http::cors::CorsLayer;
 
 use imageviz_backend::config::AppConfig;
 use imageviz_backend::indexer::progress::ProgressTracker;
+use imageviz_backend::middleware::security::apply_security_headers;
 use imageviz_backend::middleware::timeout;
 use imageviz_backend::routes::config::ConfigState;
 use imageviz_backend::routes::events::EventsState;
@@ -143,6 +144,11 @@ async fn main() {
             ),
         )
         .layer(CorsLayer::permissive());
+
+    // Security headers are the outermost layer so they appear on every
+    // response, including those from inner middleware (timeout, CORS,
+    // error handlers).
+    let app = apply_security_headers(app);
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], settings.port));
     tracing::info!("Server running on http://{}", addr);
