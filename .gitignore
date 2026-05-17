@@ -8,6 +8,7 @@ frontend/dist/
 .idea/
 .vscode/
 .obsidian/
+.opencode/
 *.swp
 *.swo
 *~
