@@ -25,14 +25,14 @@ A browser-based image and video visualization tool for large datasets (100K–1M
 - **Node.js** >= 22 — Install via [nvm](https://nvm.sh/) or your package manager
 - **ffmpeg** — Required for video metadata extraction and thumbnail generation (`apt install ffmpeg` / `brew install ffmpeg`)
 
-### 1. Clone and build
+### 1. Clone and install
 
 ```bash
 git clone https://github.com/paulomarciano/imageviz.git
 cd imageviz
 
 # Build the backend
-cd backend && cargo build --release && cd ..
+cd backend && cargo build && cd ..
 
 # Install frontend dependencies
 cd frontend && npm install && cd ..
@@ -40,7 +40,13 @@ cd frontend && npm install && cd ..
 
 ### 2. Run development servers
 
-In separate terminals:
+Use the convenience script (starts both servers with one command):
+
+```bash
+./scripts/dev.sh
+```
+
+Or run them manually in separate terminals:
 
 ```bash
 # Terminal 1: Backend (Rust, port 3001)
@@ -109,8 +115,31 @@ When files are added, deleted, or modified in watched folders, the grid updates 
 | `IMAGEVIZ_CACHE_DIR` | `{data_dir}/thumbnails` | On-disk thumbnail cache |
 | `IMAGEVIZ_TANTIVY_DIR` | `{data_dir}/tantivy` | Tantivy search index directory |
 | `PORT` | `3001` | HTTP server port |
+| `REQUEST_TIMEOUT_SECS` | `60` | Default HTTP request timeout in seconds |
+| `THUMBNAIL_CONCURRENCY` | `4` | Max concurrent thumbnail generations |
+| `THUMBNAIL_CACHE_MAX_MB` | `2000` | Max thumbnail cache size in MB (0 = unlimited) |
+| `MIN_FREE_DISK_MB` | `500` | Minimum free disk space before aggressive eviction |
 
 Where `{data_dir}` = `$XDG_DATA_HOME/imageviz` (Linux), `~/Library/Application Support/imageviz` (macOS), or `./data` (fallback).
+
+## API
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/v1/health` | Health check |
+| `GET` | `/api/v1/media` | List media items (cursor-based pagination) |
+| `GET` | `/api/v1/media/{id}` | Get single media item |
+| `GET` | `/api/v1/media/{id}/file` | Get original file (Range requests, ETag/304) |
+| `GET` | `/api/v1/media/{id}/thumbnail` | Get WebP thumbnail (`?width=100..500`) |
+| `GET` | `/api/v1/media/{id}/metadata` | Get structured metadata |
+| `GET` | `/api/v1/search` | Full-text search (`?q=...&limit=..&cursor=...`) |
+| `GET` | `/api/v1/config` | Get watched folder configuration |
+| `PUT` | `/api/v1/config` | Update watched folders |
+| `GET` | `/api/v1/config/suggest` | Folder path autocomplete |
+| `GET` | `/api/v1/stats` | Index statistics |
+| `GET` | `/api/v1/events` | SSE real-time event stream |
+
+Full API contract: [documents/plans/development-plan.md§3](documents/plans/development-plan.md#3-api-contract)
 
 ## Project Structure
 
@@ -181,6 +210,16 @@ npx playwright test
 ```
 
 Requires **ffmpeg** on PATH. Generates PNGs with ComfyUI-style tEXt chunks and short video files.
+
+## Contributing
+
+1. **Read the plan** — Start with [documents/plans/development-plan.md](documents/plans/development-plan.md) for architecture, API contract, and task breakdown
+2. **TDD workflow** — Write a failing test first, implement the minimum code, refactor, verify with `cargo test` / `npm test`
+3. **Code style** — Run `cargo fmt && cargo clippy -D warnings` (backend) and `npx prettier --check . && npx eslint .` (frontend) before committing
+4. **Commits** — Use descriptive commit messages. Each task generates at least one commit
+5. **Tests** — All tests must pass before opening a PR. New features require tests
+
+See [documents/plans/development-plan.md§7](documents/plans/development-plan.md#7-testing-strategy-tdd-first) for the full testing strategy.
 
 ## Tech Stack
 
