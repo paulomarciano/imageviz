@@ -228,11 +228,12 @@ struct MediaItemSummary {
 // Database helpers
 // ---------------------------------------------------------------------------
 
-/// Fetch media items from SQLite by IDs — single batch query instead of N
-/// individual lookups.
+const SQLITE_BIND_LIMIT: usize = 999;
+
+/// Fetch media items from SQLite by IDs — batched to stay within SQLite's
+/// parameter limit of ~32K (we use a safe margin of 999 per batch).
 ///
-/// Uses a dynamic `WHERE id IN (?1, ?2, ..., ?N)` clause.  An optional MIME
-/// type filter is appended as an additional parameter.
+/// An optional MIME type filter is applied to every chunk.
 fn batch_get_media_items(
     conn: &rusqlite::Connection,
     ids: &[String],
@@ -241,21 +242,6 @@ fn batch_get_media_items(
     if ids.is_empty() {
         return Ok(Vec::new());
     }
-
-    // Build parameterised IN clause: (?1, ?2, ..., ?N)
-    let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("?{i}")).collect();
-    let mut sql = format!(
-        "SELECT id, filename, relative_path, mime_type, width, height, file_size, \
-         file_created_at, file_modified_at \
-         FROM media_items WHERE id IN ({})",
-        placeholders.join(", "),
-    );
-
-    if mime_type.is_some() {
-        sql.push_str(&format!(" AND mime_type LIKE ?{}", ids.len() + 1));
-    }
-
-    let mut stmt = conn.prepare(&sql)?;
 
     let mapper = |row: &rusqlite::Row| -> Result<MediaItemSummary, rusqlite::Error> {
         Ok(MediaItemSummary {
@@ -272,17 +258,38 @@ fn batch_get_media_items(
         })
     };
 
-    // Collect dynamic parameters as trait objects, then convert to slice refs
-    let mut values: Vec<Box<dyn rusqlite::types::ToSql>> =
-        ids.iter().map(|id| Box::new(id.clone()) as Box<dyn rusqlite::types::ToSql>).collect();
-    if let Some(mime) = mime_type {
-        values.push(Box::new(mime.to_string()) as Box<dyn rusqlite::types::ToSql>);
+    let mut results = Vec::with_capacity(ids.len());
+
+    for chunk in ids.chunks(SQLITE_BIND_LIMIT) {
+        // Build parameterised IN clause: (?1, ?2, ..., ?N)
+        let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{i}")).collect();
+        let mut sql = format!(
+            "SELECT id, filename, relative_path, mime_type, width, height, file_size, \
+             file_created_at, file_modified_at \
+             FROM media_items WHERE id IN ({})",
+            placeholders.join(", "),
+        );
+
+        if mime_type.is_some() {
+            sql.push_str(&format!(" AND mime_type LIKE ?{}", chunk.len() + 1));
+        }
+
+        let mut stmt = conn.prepare(&sql)?;
+
+        // Collect dynamic parameters as trait objects, then convert to slice refs
+        let mut values: Vec<Box<dyn rusqlite::types::ToSql>> =
+            chunk.iter().map(|id| Box::new(id.clone()) as Box<dyn rusqlite::types::ToSql>).collect();
+        if let Some(mime) = mime_type {
+            values.push(Box::new(mime.to_string()) as Box<dyn rusqlite::types::ToSql>);
+        }
+
+        let params: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(|v| v.as_ref()).collect();
+        let rows = stmt.query_map(params.as_slice(), mapper)?;
+
+        results.extend(rows.collect::<Result<Vec<_>, _>>()?);
     }
 
-    let params: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(|v| v.as_ref()).collect();
-    let rows = stmt.query_map(params.as_slice(), mapper)?;
-
-    rows.collect::<Result<Vec<_>, _>>()
+    Ok(results)
 }
 
 // ---------------------------------------------------------------------------

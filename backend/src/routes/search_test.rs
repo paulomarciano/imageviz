@@ -892,3 +892,64 @@ async fn test_search_sort_by_score_preserves_bm25_order() {
     assert_eq!(data[0]["id"], "uuid-high-score", "score sort should put higher BM25 score first");
     assert_eq!(data[1]["id"], "uuid-low-score", "score sort puts lower score second");
 }
+
+// -----------------------------------------------------------------------
+// B7: batch_get_media_items chunking
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_batch_get_media_items_chunks_above_limit() {
+    let pool = crate::db::pool::create_in_memory_pool();
+    {
+        let mut conn = pool.get().expect("conn");
+        crate::db::migrations::run_migrations(&mut conn).expect("migrations");
+    }
+    let conn = pool.get().expect("conn");
+
+    // Insert 1100 items (more than one SQLITE_BIND_LIMIT chunk of 999).
+    let item_count = 1100;
+    for i in 0..item_count {
+        conn.execute(
+            "INSERT INTO media_items (id, filename, relative_path, mime_type, file_size, \
+             file_created_at, file_modified_at) \
+             VALUES (?1, ?2, ?3, 'image/png', 1024, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')",
+            rusqlite::params![
+                format!("uuid-{i:04}"),
+                format!("file_{i}.png"),
+                format!("path/file_{i}.png"),
+            ],
+        )
+        .expect("insert");
+    }
+    drop(conn);
+
+    // Now query via batch_get_media_items with all 1100 IDs.
+    let conn = pool.get().expect("conn");
+    let ids: Vec<String> = (0..item_count).map(|i| format!("uuid-{i:04}")).collect();
+    let results = super::batch_get_media_items(&conn, &ids, None).expect("batch query");
+
+    assert_eq!(
+        results.len(),
+        item_count,
+        "Should return all {item_count} items even when chunked"
+    );
+
+    // Verify each expected ID is present.
+    let result_ids: std::collections::HashSet<String> =
+        results.into_iter().map(|r| r.id).collect();
+    for i in 0..item_count {
+        let expected = format!("uuid-{i:04}");
+        assert!(
+            result_ids.contains(&expected),
+            "Missing expected ID: {expected}"
+        );
+    }
+}
+
+#[test]
+fn test_batch_get_media_items_empty_ids() {
+    let pool = crate::db::pool::create_in_memory_pool();
+    let conn = pool.get().expect("conn");
+    let results = super::batch_get_media_items(&conn, &[], None).expect("empty batch");
+    assert!(results.is_empty(), "Empty input should produce empty results");
+}
