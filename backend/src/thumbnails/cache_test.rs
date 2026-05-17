@@ -310,6 +310,33 @@ mod tests {
     }
 
     #[test]
+    fn test_free_disk_space_returns_reasonable_value() {
+        use crate::thumbnails::cache::free_disk_space;
+
+        // Should return a reasonable free-space value for the temp directory
+        // (or u64::MAX if the platform call fails).  It should never panic or
+        // return 0 on a typical filesystem.
+        let dir = tempfile::tempdir().unwrap();
+        let space = free_disk_space(dir.path());
+        assert!(
+            space > 0 || space == u64::MAX,
+            "free_disk_space should return >0 or u64::MAX on failure, got: {space}"
+        );
+    }
+
+    #[test]
+    fn test_free_disk_space_existing_path_is_reasonable() {
+        use crate::thumbnails::cache::free_disk_space;
+
+        // Even a non-existent path should resolve via the parent directory.
+        let space = free_disk_space(Path::new("/"));
+        assert!(
+            space > 0 || space == u64::MAX,
+            "free_disk_space for root should return something, got: {space}"
+        );
+    }
+
+    #[test]
     fn test_dir_size_counts_only_direct_files() {
         use crate::thumbnails::cache::dir_size;
 

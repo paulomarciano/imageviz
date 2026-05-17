@@ -289,9 +289,17 @@ fn dir_size(path: &Path) -> std::io::Result<u64> {
 ///
 /// Uses the `fs2` crate's cross-platform `available_space()` function which
 /// calls `statvfs` on Linux and `statfs` on macOS. Falls back to `u64::MAX`
-/// (no-op) if the platform API returns an error.
+/// (no-op) if the platform API returns an error, and logs a warning so that
+/// operators can detect the silent fallback.
 fn free_disk_space(path: &Path) -> u64 {
-    fs2::available_space(path).unwrap_or(u64::MAX)
+    fs2::available_space(path).unwrap_or_else(|e| {
+        tracing::warn!(
+            error = %e,
+            path = %path.display(),
+            "Failed to query available disk space — eviction will be disabled"
+        );
+        u64::MAX
+    })
 }
 
 /// Check cache size and evict old files if the cache exceeds the limit or
