@@ -6,6 +6,9 @@
  * - Removes items on `file_deleted`
  * - Invalidates individual item queries on `file_modified`
  * - Invalidates all queries on `indexing_complete` and `lagged`
+ *
+ * Performance: cache mutations are debounced at 50ms so rapid bursts
+ * (e.g. initial file scan) are batched into a single update cycle.
  */
 
 import { useCallback, useEffect, useRef } from 'react';
@@ -21,7 +24,17 @@ const FIVE_MINUTES_MS = 5 * 60 * 1000;
 /** Max recent events kept in the atom for debugging. */
 const MAX_RECENT_EVENTS = 50;
 
+/** Accumulate SSE mutations for this many ms before flushing to the cache. */
+const BATCH_WINDOW_MS = 50;
+
 type TimedEvent = SseEvent & { _timestamp: number };
+
+/** Batched mutations accumulated between flush cycles. */
+interface PendingBatch {
+  created: MediaItem[];
+  deleted: string[];
+  modified: string[];
+}
 
 /**
  * Global SSE event → TanStack Query cache bridge hook.
@@ -32,6 +45,7 @@ type TimedEvent = SseEvent & { _timestamp: number };
  * - Invalidates individual item queries on `file_modified`
  * - Invalidates all queries on `indexing_complete` and `lagged`
  * - Prunes events older than 5 minutes from the debug store
+ * - Batches rapid mutations into single cache updates
  */
 export function useSseGridUpdates() {
   const queryClient = useQueryClient();
@@ -39,6 +53,73 @@ export function useSseGridUpdates() {
   const setRecentEvents = useSetAtom(recentSseEventsAtom);
   const setNewFileCount = useSetAtom(newFileCountAtom);
   const recentRef = useRef<TimedEvent[]>([]);
+  const batchRef = useRef<PendingBatch>({ created: [], deleted: [], modified: [] });
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ---- Flush accumulated mutations to the cache ----
+  const flushBatch = useCallback(() => {
+    const batch = batchRef.current;
+    batchRef.current = { created: [], deleted: [], modified: [] };
+    flushTimerRef.current = null;
+
+    if (batch.created.length > 0) {
+      queryClient.setQueriesData({ queryKey: ['media', 'list'] }, (oldData: unknown) => {
+        if (!oldData || typeof oldData !== 'object') return oldData;
+        const typed = oldData as {
+          pages: Array<{ data: MediaItem[]; meta: { total?: number } }>;
+        };
+        if (!typed.pages || typed.pages.length === 0) return oldData;
+
+        const firstPage = typed.pages[0]!;
+        const newPages = [
+          {
+            ...firstPage,
+            data: [...batch.created, ...firstPage.data],
+            meta: {
+              ...firstPage.meta,
+              total: (firstPage.meta?.total ?? 0) + batch.created.length,
+            },
+          },
+          ...typed.pages.slice(1),
+        ];
+        return { ...typed, pages: newPages };
+      });
+    }
+
+    if (batch.deleted.length > 0) {
+      const deletedSet = new Set(batch.deleted);
+      queryClient.setQueriesData({ queryKey: ['media', 'list'] }, (oldData: unknown) => {
+        if (!oldData || typeof oldData !== 'object') return oldData;
+        const typed = oldData as {
+          pages: Array<{ data: MediaItem[]; meta: { total?: number } }>;
+        };
+        if (!typed.pages) return oldData;
+
+        const newPages = typed.pages.map((page) => ({
+          ...page,
+          data: page.data.filter((item) => !deletedSet.has(item.id)),
+          meta: {
+            ...page.meta,
+            total: Math.max(0, (page.meta?.total ?? 0) - deletedSet.size),
+          },
+        }));
+        return { ...typed, pages: newPages };
+      });
+
+      for (const id of batch.deleted) {
+        queryClient.removeQueries({ queryKey: ['media', 'item', id] });
+      }
+    }
+
+    for (const id of batch.modified) {
+      queryClient.invalidateQueries({ queryKey: ['media', 'item', id] });
+    }
+  }, [queryClient]);
+
+  const scheduleFlush = useCallback(() => {
+    if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
+    flushTimerRef.current = setTimeout(flushBatch, BATCH_WINDOW_MS);
+  }, [flushBatch]);
 
   const onEvent = useCallback(
     (event: SseEvent) => {
@@ -53,85 +134,31 @@ export function useSseGridUpdates() {
 
       switch (event.event) {
         case 'file_created': {
-          const newItem = event.data as MediaItem;
-
-          // Prepend to cached media list pages using partial key matching
-          // (actual keys include limit param: ['media', 'list', { limit }])
-          queryClient.setQueriesData({ queryKey: ['media', 'list'] }, (oldData: unknown) => {
-            if (!oldData || typeof oldData !== 'object') return oldData;
-            const typed = oldData as {
-              pages: Array<{
-                data: MediaItem[];
-                meta: { total?: number };
-              }>;
-            };
-            if (!typed.pages || typed.pages.length === 0) return oldData;
-
-            const firstPage = typed.pages[0]!;
-            const newPages = [
-              {
-                ...firstPage,
-                data: [newItem, ...firstPage.data],
-                meta: {
-                  ...firstPage.meta,
-                  total: (firstPage.meta?.total ?? 0) + 1,
-                },
-              },
-              ...typed.pages.slice(1),
-            ];
-
-            return { ...typed, pages: newPages };
-          });
-
-          // Track new file count for "new files" indicator
+          batchRef.current.created.push(event.data as MediaItem);
+          scheduleFlush();
           setNewFileCount((prev) => prev + 1);
           break;
         }
 
         case 'file_deleted': {
-          const deletedId = event.data.id;
-
-          // Remove from cached pages (partial key matching)
-          queryClient.setQueriesData({ queryKey: ['media', 'list'] }, (oldData: unknown) => {
-            if (!oldData || typeof oldData !== 'object') return oldData;
-            const typed = oldData as {
-              pages: Array<{
-                data: MediaItem[];
-                meta: { total?: number };
-              }>;
-            };
-            if (!typed.pages) return oldData;
-
-            const newPages = typed.pages.map((page) => ({
-              ...page,
-              data: page.data.filter((item) => item.id !== deletedId),
-              meta: {
-                ...page.meta,
-                total: Math.max(0, (page.meta?.total ?? 0) - 1),
-              },
-            }));
-
-            return { ...typed, pages: newPages };
-          });
-
-          // Also remove from single-item cache
-          queryClient.removeQueries({
-            queryKey: ['media', 'item', deletedId],
-          });
+          batchRef.current.deleted.push(event.data.id);
+          scheduleFlush();
           break;
         }
 
         case 'file_modified': {
-          // Invalidate the specific item's detail query
-          queryClient.invalidateQueries({
-            queryKey: ['media', 'item', event.data.id],
-          });
+          batchRef.current.modified.push(event.data.id);
+          scheduleFlush();
           break;
         }
 
         case 'indexing_complete':
         case 'lagged': {
-          // Full re-fetch — too many changes to patch individually
+          // Flush any pending mutations first, then full invalidation
+          if (flushTimerRef.current) {
+            clearTimeout(flushTimerRef.current);
+            flushBatch();
+          }
           queryClient.invalidateQueries({ queryKey: ['media', 'list'] });
           queryClient.invalidateQueries({ queryKey: ['search'] });
           setNewFileCount(0);
@@ -139,7 +166,7 @@ export function useSseGridUpdates() {
         }
       }
     },
-    [queryClient, setRecentEvents, setNewFileCount],
+    [setRecentEvents, setNewFileCount, scheduleFlush, flushBatch],
   );
 
   const { status } = useSse({ onEvent });
@@ -148,6 +175,13 @@ export function useSseGridUpdates() {
   useEffect(() => {
     setSseStatus(status);
   }, [status, setSseStatus]);
+
+  // Cleanup flush timer on unmount
+  useEffect(() => {
+    return () => {
+      if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
+    };
+  }, []);
 
   // Expose new file reset function
   const resetNewFileCount = useCallback(() => {

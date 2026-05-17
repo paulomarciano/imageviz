@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useState, useEffect, type HTMLAttributes } from 'react';
+import { forwardRef, useCallback, useMemo, useState, useEffect, type HTMLAttributes } from 'react';
 import { VirtuosoGrid } from 'react-virtuoso';
 import { useAtomValue } from 'jotai';
 import {
@@ -71,7 +71,10 @@ export function ThumbnailGrid({ onItemClick }: ThumbnailGridProps) {
     noResults,
   } = searchData;
 
-  const items = viewMode === 'search' ? searchResults : browseItems;
+  const items = useMemo(
+    () => (viewMode === 'search' ? searchResults : browseItems),
+    [viewMode, searchResults, browseItems],
+  );
   const isLoading = viewMode === 'search' ? searchLoading : browseLoading;
   const isError = viewMode === 'search' ? searchIsError : browseIsError;
   const error = viewMode === 'search' ? searchError : browseError;
@@ -116,6 +119,24 @@ export function ThumbnailGrid({ onItemClick }: ThumbnailGridProps) {
       if (item) onItemClick(item);
     },
   });
+
+  const itemContent = useCallback(
+    (index: number) => {
+      const item = items[index];
+      if (!item) return null;
+      return (
+        <DragSource item={item}>
+          <ThumbnailCard
+            item={item}
+            index={index}
+            isFocused={focusIndex === index}
+            onClick={onItemClick}
+          />
+        </DragSource>
+      );
+    },
+    [items, focusIndex, onItemClick],
+  );
 
   if (isLoading) {
     return <SkeletonGrid />;
@@ -174,20 +195,7 @@ export function ThumbnailGrid({ onItemClick }: ThumbnailGridProps) {
           List: ListContainer,
           Item: ItemContainer,
         }}
-        itemContent={(index) => {
-          const item = items[index];
-          if (!item) return null;
-          return (
-            <DragSource item={item}>
-              <ThumbnailCard
-                item={item}
-                index={index}
-                isFocused={focusIndex === index}
-                onClick={onItemClick}
-              />
-            </DragSource>
-          );
-        }}
+        itemContent={itemContent}
         endReached={loadMore}
         overscan={200}
         increaseViewportBy={200}

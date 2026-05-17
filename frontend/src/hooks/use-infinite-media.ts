@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { useInfiniteQuery } from '@tanstack/react-query';
 import { fetchMediaList } from '../api/media';
 import type { MediaItem, PaginatedResponse } from '../types';
@@ -24,7 +25,10 @@ export function useInfiniteMedia(limit = 100, mimeType?: string, enabled = true)
     maxPages: 10,
   });
 
-  const allItems: MediaItem[] = query.data?.pages.flatMap((page) => page.data) ?? [];
+  const allItems = useMemo(
+    () => query.data?.pages.flatMap((page) => page.data) ?? [],
+    [query.data?.pages],
+  );
   const totalCount = query.data?.pages[0]?.meta.total ?? 0;
 
   return {

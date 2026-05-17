@@ -3,6 +3,9 @@ import { useAtom } from 'jotai';
 import { gridScrollIndexAtom } from '../store/ui-atoms';
 import type { ListRange } from 'react-virtuoso';
 
+/** Minimum ms between sessionStorage writes to avoid jank on rapid scroll. */
+const THROTTLE_MS = 100;
+
 export interface ScrollRestoreResult {
   /** The saved scroll index from localStorage, used to restore position. */
   savedIndex: number;
@@ -19,14 +22,22 @@ export interface ScrollRestoreResult {
  *
  * Returns a `savedIndex` to pass as `initialTopMostItemIndex` and a
  * `handleRangeChanged` callback to save the current start index as the user scrolls.
+ *
+ * Performance: `handleRangeChanged` is throttled to every 100ms so rapid scroll
+ * doesn't write to sessionStorage on every VirtuosoGrid range event.
  */
 export function useScrollRestore(): ScrollRestoreResult {
   const [savedIndex, setSavedIndex] = useAtom(gridScrollIndexAtom);
   const scrollerRef = useRef<HTMLElement | null>(null);
+  const lastWriteRef = useRef(0);
 
   const handleRangeChanged = useCallback(
     (range: ListRange) => {
-      setSavedIndex(range.startIndex);
+      const now = Date.now();
+      if (now - lastWriteRef.current >= THROTTLE_MS) {
+        lastWriteRef.current = now;
+        setSavedIndex(range.startIndex);
+      }
     },
     [setSavedIndex],
   );

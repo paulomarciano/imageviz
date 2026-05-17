@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { useInfiniteQuery } from '@tanstack/react-query';
 import { searchMedia } from '../api/search.ts';
 import type { MediaItem, PaginatedResponse } from '../types';
@@ -54,7 +55,10 @@ export function useSearch(
   });
 
   // Flatten pages into a single results array for convenience.
-  const allResults: MediaItem[] = infiniteQuery.data?.pages.flatMap((page) => page.data) ?? [];
+  const allResults = useMemo(
+    () => infiniteQuery.data?.pages.flatMap((page) => page.data) ?? [],
+    [infiniteQuery.data?.pages],
+  );
   const totalCount = infiniteQuery.data?.pages[0]?.meta.total ?? 0;
 
   return {
