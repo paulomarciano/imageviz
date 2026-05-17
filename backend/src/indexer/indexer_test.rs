@@ -1,7 +1,7 @@
 use super::*;
 use crate::config::WatchedFolder;
-use crate::db::migrations::run_migrations;
 use crate::db::SqliteConnectionManager;
+use crate::db::migrations::run_migrations;
 use r2d2::Pool;
 
 /// Create a test pool with schema applied.
@@ -84,8 +84,7 @@ async fn test_full_index_creates_entries_for_new_files() {
 
     // Verify entry in DB
     let conn = pool.get().unwrap();
-    let count: i32 =
-        conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).unwrap();
+    let count: i32 = conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).unwrap();
     assert_eq!(count, 1, "Only one media item in DB");
 }
 
@@ -173,8 +172,7 @@ async fn test_remove_deleted_files_cleans_up_db() {
 
     // DB should be empty
     let conn = pool.get().unwrap();
-    let count: i32 =
-        conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).unwrap();
+    let count: i32 = conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).unwrap();
     assert_eq!(count, 0);
 }
 
@@ -199,8 +197,7 @@ async fn test_full_index_is_idempotent() {
     }
 
     let conn = pool.get().unwrap();
-    let count: i32 =
-        conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).unwrap();
+    let count: i32 = conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).unwrap();
     assert_eq!(count, 1, "Should have exactly one entry after 3 index runs");
 }
 

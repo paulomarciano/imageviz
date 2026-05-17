@@ -273,10 +273,7 @@ mod tests {
         assert!(stats.evicted > 0, "Should evict some files when over limit");
 
         let remaining = dir_size(dir.path()).unwrap();
-        assert!(
-            remaining <= 50_000_000,
-            "Remaining size {remaining} should be under max 50 MB"
-        );
+        assert!(remaining <= 50_000_000, "Remaining size {remaining} should be under max 50 MB");
     }
 
     #[test]

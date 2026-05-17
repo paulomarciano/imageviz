@@ -18,11 +18,9 @@
 //! Tantivy `commit()` is called once per batch, not per event, to amortise write
 //! overhead. Individual file errors are logged but never crash the loop.
 
-use crate::metadata::detect::detect_media;
-use crate::metadata::png::parse_png_metadata;
-use crate::scanner::hasher::compute_file_hash;
 use crate::search::IndexManager;
 use crate::watcher::FileEvent;
+use crate::watcher::stages;
 use r2d2::Pool;
 
 use crate::db::SqliteConnectionManager;
@@ -32,8 +30,8 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
-use tantivy::doc;
 use tokio::sync::{broadcast, mpsc};
+#[cfg(test)]
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
@@ -57,14 +55,15 @@ pub struct SseEvent {
 
 /// Whether a file was created, updated, or unchanged during event processing.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum ChangeType {
+pub enum ChangeType {
     Created,
     Updated,
     Skipped,
 }
 
 /// Result of processing a single file event in the blocking phase.
-struct Outcome {
+#[allow(dead_code)]
+pub(crate) struct Outcome {
     id: String,
     change: ChangeType,
 }
@@ -142,222 +141,40 @@ async fn handle_single_event(
 
 /// Handle a file that was created or modified on disk.
 ///
-/// # Pipeline
-///
-/// 1. Compute SHA-256 hash (async, via `spawn_blocking` internally).
-/// 2. Detect media type, dimensions, file size (async).
-/// 3. Extract PNG metadata if applicable.
-/// 4. Resolve relative path against configured watched folders.
-/// 5. `spawn_blocking`: lock DB, compare hash, upsert SQLite + Tantivy.
-/// 6. Broadcast `"file_created"` or `"file_modified"` event.
+/// Delegates to the three-stage pipeline:
+/// 1. [`stages::extract::extract_file_data`] — async disk I/O.
+/// 2. [`stages::store::store_media`] — blocking DB + Tantivy operations.
+/// 3. [`stages::broadcast::broadcast_change`] — SSE notification.
 async fn handle_file_created_or_modified(
     path: &Path,
     pool: &Pool<SqliteConnectionManager>,
     index_manager: &Arc<IndexManager>,
     sse_tx: &broadcast::Sender<SseEvent>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
-    // -- Phase 1: Async I/O (no DB lock held) ------------------------------
+    // Phase 1: Extract file data from disk (async I/O, no DB lock held).
+    let extracted = stages::extract::extract_file_data(path).await?;
 
-    let hash = compute_file_hash(path).await?;
-    let media_info = detect_media(path).await?;
-
-    // Extract ComfyUI metadata for PNG files.
-    let metadata_json = if media_info.mime_type == "image/png" {
-        parse_png_metadata(path).ok().and_then(|meta| {
-            if meta.prompt.is_some() || meta.workflow.is_some() {
-                serde_json::to_string(&meta).ok()
-            } else {
-                None
-            }
-        })
-    } else {
-        None
-    };
-
-    // Read file timestamps from the filesystem.
-    let disk_metadata = tokio::fs::metadata(path).await?;
-    let created_at_iso = disk_metadata
-        .created()
-        .or_else(|_| disk_metadata.modified())
-        .map(system_time_to_iso)
-        .unwrap_or_else(|_| chrono::Utc::now().to_rfc3339());
-    let modified_at_iso = disk_metadata
-        .modified()
-        .map(system_time_to_iso)
-        .unwrap_or_else(|_| chrono::Utc::now().to_rfc3339());
-
-    let filename = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-
-    // Resolve relative path and folder_id by stripping the watched folder prefix.
-    let (relative_path, folder_id) = {
-        let conn = pool.get()?;
-        let watched = load_watched_folders(&conn)?;
-        resolve_relative_path(path, &watched).ok_or_else(|| {
-            format!("File {} is not inside any configured watched folder", path.display())
-        })?
-    };
-
-    // Extract Copy values from media_info before the move closure, since the
-    // struct itself must remain available for broadcast after spawn_blocking.
-    let img_width = media_info.width;
-    let img_height = media_info.height;
-    let img_file_size = media_info.file_size;
-
-    // Clone values needed inside the blocking closure.
+    // Phase 2: Store in SQLite + Tantivy (blocking, spawned on a dedicated thread).
     let pool_clone = pool.clone();
     let im_clone = Arc::clone(index_manager);
-    let path_rel = relative_path.clone();
-    let fid = folder_id.clone();
-    let fname = filename.clone();
-    let mime = media_info.mime_type.clone();
-    let h = hash.clone();
-    let meta = metadata_json.clone();
-    let created = created_at_iso.clone();
-    let modified = modified_at_iso.clone();
+    let path_buf = path.to_path_buf();
+    let extracted_for_blocking = extracted.clone();
 
-    // -- Phase 2: Blocking DB + Tantivy operations -------------------------
-
-    let outcome = tokio::task::spawn_blocking(move || -> Result<Outcome, String> {
-        let conn = pool_clone.get().map_err(|e| format!("Pool error: {}", e))?;
-
-        // Check whether this file is already tracked in SQLite (by folder + path).
-        let existing: Option<(String, Option<String>)> = conn
-            .query_row(
-                "SELECT id, checksum FROM media_items WHERE folder_id = ?1 AND relative_path = ?2",
-                params![fid, path_rel],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()
-            .map_err(|e| format!("DB query for existing file: {}", e))?;
-
-        // If the file is known AND its checksum matches, skip entirely.
-        if let Some((ref existing_id, Some(ref existing_hash))) = existing
-            && existing_hash == &h
-        {
-            return Ok(Outcome { id: existing_id.clone(), change: ChangeType::Skipped });
-        }
-
-        // Generate a new UUID for new files; reuse the existing one for updates.
-        let (id, change) = match existing {
-            Some((existing_id, _)) => (existing_id, ChangeType::Updated),
-            None => (Uuid::new_v4().to_string(), ChangeType::Created),
-        };
-
-        let indexed_at = chrono::Utc::now().to_rfc3339();
-
-        // Upsert the media item into SQLite (INSERT OR REPLACE is idempotent).
-        conn.execute(
-            "INSERT OR REPLACE INTO media_items
-                (id, filename, relative_path, mime_type, width, height, file_size,
-                 file_created_at, file_modified_at, indexed_at, metadata_json, checksum,
-                 folder_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-            params![
-                id,
-                fname,
-                path_rel,
-                mime,
-                img_width,
-                img_height,
-                img_file_size as i64,
-                created,
-                modified,
-                indexed_at,
-                meta,
-                h,
-                fid,
-            ],
-        )
-        .map_err(|e| format!("DB insert/update: {}", e))?;
-
-        // Update the Tantivy search index:
-        //   1. Delete the previous document for this file (if any).
-        //   2. Add a new document with the latest data.
-        im_clone
-            .delete_document_by_field("id", &id)
-            .map_err(|e| format!("Tantivy delete: {}", e))?;
-
-        let schema = im_clone.schema();
-        let id_field = schema.get_field("id").map_err(|e| format!("Schema field id: {}", e))?;
-        let filename_field =
-            schema.get_field("filename").map_err(|e| format!("Schema field filename: {}", e))?;
-        let mime_type_field =
-            schema.get_field("mime_type").map_err(|e| format!("Schema field mime_type: {}", e))?;
-        let metadata_json_field = schema
-            .get_field("metadata_json")
-            .map_err(|e| format!("Schema field metadata_json: {}", e))?;
-        let created_at_field = schema
-            .get_field("created_at")
-            .map_err(|e| format!("Schema field created_at: {}", e))?;
-        let file_size_field =
-            schema.get_field("file_size").map_err(|e| format!("Schema field file_size: {}", e))?;
-        let width_field =
-            schema.get_field("width").map_err(|e| format!("Schema field width: {}", e))?;
-        let height_field =
-            schema.get_field("height").map_err(|e| format!("Schema field height: {}", e))?;
-
-        // Parse created_at to Tantivy DateTime for the date field.
-        let created_ts = created
-            .parse::<chrono::DateTime<chrono::Utc>>()
-            .map(|dt| tantivy::DateTime::from_timestamp_secs(dt.timestamp()))
-            .unwrap_or_else(|_| {
-                tantivy::DateTime::from_timestamp_secs(chrono::Utc::now().timestamp())
-            });
-
-        let doc = tantivy::doc!(
-            id_field => id.as_str(),
-            filename_field => fname.as_str(),
-            mime_type_field => mime.as_str(),
-            metadata_json_field => meta.unwrap_or_default().as_str(),
-            created_at_field => created_ts,
-            file_size_field => img_file_size,
-            width_field => img_width.unwrap_or(0) as u64,
-            height_field => img_height.unwrap_or(0) as u64,
-        );
-
-        im_clone.add_document(doc).map_err(|e| format!("Tantivy add_document: {}", e))?;
-
-        Ok(Outcome { id, change })
+    let outcome = tokio::task::spawn_blocking(move || {
+        stages::store::store_media(&pool_clone, &im_clone, &extracted_for_blocking, &path_buf)
     })
     .await
     .map_err(|e| format!("Blocking task join error: {}", e))?
     .map_err(|e| format!("Handler error: {}", e))?;
 
-    // -- Phase 3: Broadcast SSE notification --------------------------------
-    // media_info is still available here (not moved into the closure).
-
-    match outcome.change {
-        ChangeType::Created => {
-            let event = SseEvent {
-                event_type: "file_created".into(),
-                data: json!({
-                    "id": outcome.id,
-                    "filename": filename,
-                    "path": relative_path,
-                    "mime_type": media_info.mime_type,
-                    "thumbnail_url": format!("/api/v1/media/{}/thumbnail", outcome.id),
-                    "width": media_info.width,
-                    "height": media_info.height,
-                }),
-            };
-            let _ = sse_tx.send(event);
-            tracing::debug!("Broadcasted file_created for {} (id={})", relative_path, outcome.id);
-        }
-        ChangeType::Updated => {
-            let event = SseEvent {
-                event_type: "file_modified".into(),
-                data: json!({
-                    "id": outcome.id,
-                    "filename": filename,
-                }),
-            };
-            let _ = sse_tx.send(event);
-            tracing::debug!("Broadcasted file_modified for {} (id={})", relative_path, outcome.id);
-        }
-        ChangeType::Skipped => {
-            tracing::debug!("File {} unchanged (same hash) — skipping broadcast", path.display());
-        }
-    }
+    // Phase 3: Broadcast SSE notification to connected clients.
+    stages::broadcast::broadcast_change(
+        sse_tx,
+        &outcome,
+        &extracted.media_info,
+        &extracted.filename,
+        &outcome.relative_path,
+    );
 
     Ok(())
 }
@@ -451,7 +268,7 @@ async fn handle_file_deleted(
 
 /// Convert a `SystemTime` to an RFC 3339 / ISO 8601 string with sub-second
 /// precision, matching the format used by the scanner walker.
-fn system_time_to_iso(time: SystemTime) -> String {
+pub(crate) fn system_time_to_iso(time: SystemTime) -> String {
     let duration = time.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
     let secs = duration.as_secs() as i64;
     let nsecs = duration.subsec_nanos();
@@ -462,16 +279,14 @@ fn system_time_to_iso(time: SystemTime) -> String {
 ///
 /// Reads the `watched_folders` JSON blob and returns a list of absolute paths.
 /// Returns an empty list when no config entry exists.
-fn load_watched_folders(
+pub(crate) fn load_watched_folders(
     conn: &Connection,
 ) -> Result<Vec<(PathBuf, String)>, Box<dyn std::error::Error + Send + Sync + 'static>> {
     let config = crate::config::load_config(conn)?;
     Ok(config
         .watched_folders
         .iter()
-        .filter_map(|f| {
-            f.id.as_ref().map(|id| (PathBuf::from(&f.path), id.clone()))
-        })
+        .filter_map(|f| f.id.as_ref().map(|id| (PathBuf::from(&f.path), id.clone())))
         .collect())
 }
 
@@ -480,17 +295,16 @@ fn load_watched_folders(
 ///
 /// Returns `(relative_path, folder_id)` if the absolute path resides inside
 /// a configured watched folder, or `None` otherwise.
-fn resolve_relative_path(
+pub(crate) fn resolve_relative_path(
     absolute_path: &Path,
     watched_folders: &[(PathBuf, String)],
 ) -> Option<(String, String)> {
-    watched_folders
-        .iter()
-        .find_map(|(folder_path, folder_id)| {
-            absolute_path.strip_prefix(folder_path).ok().map(|rel| {
-                (rel.to_string_lossy().into_owned(), folder_id.clone())
-            })
-        })
+    watched_folders.iter().find_map(|(folder_path, folder_id)| {
+        absolute_path
+            .strip_prefix(folder_path)
+            .ok()
+            .map(|rel| (rel.to_string_lossy().into_owned(), folder_id.clone()))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -549,7 +363,7 @@ mod tests {
         }
 
         let tantivy_dir = tempfile::tempdir().expect("tempdir");
-        let im = IndexManager::open_or_create(&tantivy_dir.path().join("tantivy"))
+        let im = IndexManager::open_or_create(&tantivy_dir.path().join("tantivy"), 50_000_000)
             .expect("IndexManager");
 
         let (sse_tx, sse_rx) = broadcast::channel(256);
@@ -579,14 +393,10 @@ mod tests {
         db::migrations::run_migrations(&mut conn).expect("migrations");
 
         // Seed watched_folders entries.
-        conn.execute(
-            "INSERT INTO watched_folders (id, path) VALUES ('fid1', '/tmp/a')",
-            [],
-        ).expect("seed watched_folders");
-        conn.execute(
-            "INSERT INTO watched_folders (id, path) VALUES ('fid2', '/tmp/b')",
-            [],
-        ).expect("seed watched_folders");
+        conn.execute("INSERT INTO watched_folders (id, path) VALUES ('fid1', '/tmp/a')", [])
+            .expect("seed watched_folders");
+        conn.execute("INSERT INTO watched_folders (id, path) VALUES ('fid2', '/tmp/b')", [])
+            .expect("seed watched_folders");
 
         let config = json!({
             "watched_folders": [

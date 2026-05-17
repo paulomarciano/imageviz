@@ -1,4 +1,6 @@
 use super::*;
+use crate::media_types::is_supported_extension;
+use std::path::Path;
 use std::time::Duration;
 use tempfile::TempDir;
 
@@ -169,41 +171,41 @@ async fn test_watcher_multiple_directories() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_is_supported_media_png() {
-    assert!(is_supported_media(Path::new("image.png")));
+fn test_is_supported_extension_png() {
+    assert!(is_supported_extension(Path::new("image.png")));
 }
 
 #[test]
-fn test_is_supported_media_jpg() {
-    assert!(is_supported_media(Path::new("photo.jpg")));
-    assert!(is_supported_media(Path::new("photo.jpeg")));
+fn test_is_supported_extension_jpg() {
+    assert!(is_supported_extension(Path::new("photo.jpg")));
+    assert!(is_supported_extension(Path::new("photo.jpeg")));
 }
 
 #[test]
-fn test_is_supported_media_webp() {
-    assert!(is_supported_media(Path::new("anim.webp")));
+fn test_is_supported_extension_webp() {
+    assert!(is_supported_extension(Path::new("anim.webp")));
 }
 
 #[test]
-fn test_is_supported_media_gif() {
-    assert!(is_supported_media(Path::new("anim.gif")));
+fn test_is_supported_extension_gif() {
+    assert!(is_supported_extension(Path::new("anim.gif")));
 }
 
 #[test]
-fn test_is_supported_media_video() {
-    assert!(is_supported_media(Path::new("clip.mp4")));
-    assert!(is_supported_media(Path::new("clip.webm")));
-    assert!(is_supported_media(Path::new("clip.mov")));
+fn test_is_supported_extension_video() {
+    assert!(is_supported_extension(Path::new("clip.mp4")));
+    assert!(is_supported_extension(Path::new("clip.webm")));
+    assert!(is_supported_extension(Path::new("clip.mov")));
 }
 
 #[test]
-fn test_is_supported_media_rejects_txt() {
-    assert!(!is_supported_media(Path::new("readme.txt")));
+fn test_is_supported_extension_rejects_txt() {
+    assert!(!is_supported_extension(Path::new("readme.txt")));
 }
 
 #[test]
-fn test_is_supported_media_rejects_no_extension() {
-    assert!(!is_supported_media(Path::new("Makefile")));
+fn test_is_supported_extension_rejects_no_extension() {
+    assert!(!is_supported_extension(Path::new("Makefile")));
 }
 
 #[test]

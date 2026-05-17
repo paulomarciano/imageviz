@@ -14,8 +14,7 @@ pub struct FileEntry {
     pub modified_at: String,
 }
 
-/// Supported media file extensions.
-const SUPPORTED_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif", "mp4", "webm"];
+use crate::media_types::is_supported_extension;
 
 /// Scan a folder recursively and return all supported media files.
 ///
@@ -46,7 +45,7 @@ pub fn scan_folder(root: &Path) -> Result<Vec<FileEntry>, WalkerError> {
             continue;
         }
 
-        if !is_supported_media(entry.path()) {
+        if !is_supported_extension(entry.path()) {
             continue;
         }
 
@@ -90,14 +89,6 @@ pub fn scan_folder(root: &Path) -> Result<Vec<FileEntry>, WalkerError> {
     }
 
     Ok(entries)
-}
-
-/// Check if a file has a supported media extension.
-fn is_supported_media(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_lowercase())
-        .is_some_and(|e| SUPPORTED_EXTENSIONS.contains(&e.as_str()))
 }
 
 /// Check if a directory entry is hidden (name starts with `.`).

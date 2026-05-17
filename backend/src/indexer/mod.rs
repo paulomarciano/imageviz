@@ -164,15 +164,9 @@ fn resolve_folder_file_pairs<'a>(
     let mut result = Vec::with_capacity(files.len());
     for file in files {
         let abs_path = Path::new(&file.absolute_path);
-        if let Some(folder_id) = fid_map
-            .iter()
-            .find_map(|(folder_path, fid)| {
-                abs_path
-                    .strip_prefix(Path::new(folder_path))
-                    .ok()
-                    .map(|_| fid.clone())
-            })
-        {
+        if let Some(folder_id) = fid_map.iter().find_map(|(folder_path, fid)| {
+            abs_path.strip_prefix(Path::new(folder_path)).ok().map(|_| fid.clone())
+        }) {
             result.push(FolderFileEntry { folder_id, file });
         }
     }
@@ -206,7 +200,13 @@ async fn process_file_metadata<'a>(
         None
     };
 
-    Ok(ProcessedFile { file, new_hash, media_info, metadata_json, folder_id: folder_id.to_string() })
+    Ok(ProcessedFile {
+        file,
+        new_hash,
+        media_info,
+        metadata_json,
+        folder_id: folder_id.to_string(),
+    })
 }
 
 /// Phase 2: Store a processed file's data in the database.
@@ -281,28 +281,28 @@ fn scan_all_folders(config: &AppConfig) -> Result<Vec<FileEntry>, IndexError> {
 /// checks whether the corresponding file still exists in its watched folder.
 /// Deleted items are removed to keep the database in sync with the filesystem.
 fn remove_deleted_items(conn: &Connection, config: &AppConfig) -> Result<usize, IndexError> {
-    let mut stmt =
-        conn.prepare("SELECT folder_id, relative_path FROM media_items")?;
-    let db_items: Vec<(Option<String>, String)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .filter_map(|r| r.ok())
-        .collect();
+    let mut stmt = conn.prepare("SELECT folder_id, relative_path FROM media_items")?;
+    let db_items: Vec<(Option<String>, String)> =
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.filter_map(|r| r.ok()).collect();
 
     let fid_map = folder_id_map(config);
 
     let mut removed = 0;
     for (db_folder_id, db_path) in &db_items {
         // Check if this item's watched folder still has the file on disk
-        let exists = db_folder_id.as_ref().and_then(|fid| {
-            fid_map.iter().find_map(|(folder_path, folder_id)| {
-                if folder_id == fid {
-                    let full_path = Path::new(folder_path).join(db_path);
-                    if full_path.exists() { Some(true) } else { None }
-                } else {
-                    None
-                }
+        let exists = db_folder_id
+            .as_ref()
+            .and_then(|fid| {
+                fid_map.iter().find_map(|(folder_path, folder_id)| {
+                    if folder_id == fid {
+                        let full_path = Path::new(folder_path).join(db_path);
+                        if full_path.exists() { Some(true) } else { None }
+                    } else {
+                        None
+                    }
+                })
             })
-        }).unwrap_or(false);
+            .unwrap_or(false);
 
         if !exists {
             if let Some(fid) = db_folder_id {
@@ -311,10 +311,7 @@ fn remove_deleted_items(conn: &Connection, config: &AppConfig) -> Result<usize, 
                     params![fid.as_str(), db_path],
                 )?;
             } else {
-                conn.execute(
-                    "DELETE FROM media_items WHERE relative_path = ?1",
-                    params![db_path],
-                )?;
+                conn.execute("DELETE FROM media_items WHERE relative_path = ?1", params![db_path])?;
             }
             removed += 1;
         }

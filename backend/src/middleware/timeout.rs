@@ -15,10 +15,7 @@ use tower_http::timeout::TimeoutLayer;
 /// Get the default request timeout in seconds from the `REQUEST_TIMEOUT_SECS`
 /// environment variable, falling back to 60 if unset or invalid.
 pub fn default_timeout_secs() -> u64 {
-    std::env::var("REQUEST_TIMEOUT_SECS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(60)
+    std::env::var("REQUEST_TIMEOUT_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(60)
 }
 
 /// Apply a timeout middleware to a router.
@@ -116,7 +113,9 @@ mod tests {
         assert_eq!(default_timeout_secs(), 60, "should default to 60");
         // Restore the previous value.
         if let Some(ref val) = previous {
-            unsafe { std::env::set_var("REQUEST_TIMEOUT_SECS", val); }
+            unsafe {
+                std::env::set_var("REQUEST_TIMEOUT_SECS", val);
+            }
         }
     }
 }

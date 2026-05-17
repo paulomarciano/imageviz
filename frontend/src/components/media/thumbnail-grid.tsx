@@ -16,6 +16,7 @@ import { ThumbnailCard } from './thumbnail-card';
 import { DragSource } from './drag-source';
 import { EmptyState } from '../shared/empty-state';
 import { ErrorState } from '../shared/error-state';
+import { SkeletonGrid } from './skeleton-grid';
 import type { MediaItem } from '../../types/media';
 
 interface ThumbnailGridProps {
@@ -33,21 +34,6 @@ const ListContainer = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement>>
 const ItemContainer = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement>>((props, ref) => (
   <div ref={ref} {...props} className="w-full" />
 ));
-
-function SkeletonGrid() {
-  return (
-    <div
-      className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 p-3"
-      role="grid"
-      aria-label="Loading media"
-      aria-busy="true"
-    >
-      {Array.from({ length: 20 }, (_, i) => (
-        <div key={i} className="aspect-[3/4] bg-gray-800 rounded-lg animate-pulse" />
-      ))}
-    </div>
-  );
-}
 
 export function ThumbnailGrid({ onItemClick }: ThumbnailGridProps) {
   const searchQuery = useAtomValue(searchQueryAtom);

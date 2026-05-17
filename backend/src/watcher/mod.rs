@@ -1,4 +1,5 @@
 pub mod handler;
+pub mod stages;
 
 pub use handler::SseEvent;
 
@@ -75,7 +76,7 @@ impl FileWatcher {
                             .iter()
                             .filter_map(|de| {
                                 // Skip non-media and hidden files
-                                if !is_supported_media(&de.path) {
+                                if !is_supported_extension(&de.path) {
                                     return None;
                                 }
                                 if is_hidden(&de.path) {
@@ -145,15 +146,7 @@ impl std::fmt::Debug for FileWatcher {
 // Helper functions
 // ---------------------------------------------------------------------------
 
-/// Return `true` if the path has a file extension that ImageViz supports.
-///
-/// Supported media types: PNG, JPG, JPEG, WebP, GIF, MP4, WebM, MOV.
-fn is_supported_media(path: &Path) -> bool {
-    matches!(
-        path.extension().and_then(|e| e.to_str()).unwrap_or(""),
-        "png" | "jpg" | "jpeg" | "webp" | "gif" | "mp4" | "webm" | "mov"
-    )
-}
+use crate::media_types::is_supported_extension;
 
 /// Return `true` if any component of the path starts with a dot (`.`),
 /// indicating a hidden file or directory.

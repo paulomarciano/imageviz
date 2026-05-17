@@ -19,8 +19,8 @@ use imageviz_backend::routes::events::EventsState;
 use imageviz_backend::routes::media::MediaState;
 use imageviz_backend::routes::search::SearchState;
 use imageviz_backend::routes::stats::StatsState;
-use imageviz_backend::thumbnails::limiter::ThumbnailLimiter;
 use imageviz_backend::search::IndexManager;
+use imageviz_backend::thumbnails::limiter::ThumbnailLimiter;
 use imageviz_backend::watcher::FileWatcher;
 use imageviz_backend::watcher::handler::SseEvent;
 
@@ -55,7 +55,7 @@ async fn main() {
     }
 
     let index_manager = Arc::new(
-        IndexManager::open_or_create(&settings.tantivy_index_dir)
+        IndexManager::open_or_create(&settings.tantivy_index_dir, 200_000_000)
             .expect("Failed to open Tantivy index"),
     );
 
@@ -64,6 +64,12 @@ async fn main() {
     ));
 
     let progress = Arc::new(ProgressTracker::new());
+
+    // Spawn a background timer that periodically evicts old thumbnails
+    // from the content-addressed cache (every 5 minutes).  This keeps the
+    // cache size within the configured limit without adding latency to
+    // thumbnail request paths.
+    spawn_cache_eviction_timer(settings.thumbnail_cache_dir.clone());
 
     let (sse_tx, _) = tokio::sync::broadcast::channel::<SseEvent>(256);
 
@@ -167,18 +173,13 @@ async fn main() {
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .unwrap();
+    axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()).await.unwrap();
 
     tracing::info!("Shutting down gracefully...");
 
-    let cleanup_timeout = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        cleanup_resources(&index_manager),
-    )
-    .await;
+    let cleanup_timeout =
+        tokio::time::timeout(std::time::Duration::from_secs(30), cleanup_resources(&index_manager))
+            .await;
 
     if cleanup_timeout.is_err() {
         tracing::warn!("Cleanup timed out after 30s, forcing exit");
@@ -263,9 +264,7 @@ fn spawn_background_indexing(
 
         // Phase 1: scan files and populate SQLite
         let stats =
-            match imageviz_backend::indexer::full_index(&pool, &config, progress.as_ref())
-                .await
-            {
+            match imageviz_backend::indexer::full_index(&pool, &config, progress.as_ref()).await {
                 Ok(s) => s,
                 Err(e) => {
                     tracing::error!(error = %e, "Initial file scan failed");
@@ -320,6 +319,28 @@ fn spawn_background_indexing(
             })
         {
             tracing::warn!(error = %e, "Failed to broadcast indexing_complete");
+        }
+    });
+}
+
+/// Spawn a background task that periodically evicts old thumbnails.
+///
+/// Runs every 5 minutes and calls [`evict_if_needed`] with the configured
+/// cache size and free-disk-space limits.  This is the primary eviction
+/// mechanism; the inline fire-and-forget spawn in `get_or_generate_thumbnail`
+/// is an additional safety net for cache bursts.
+fn spawn_cache_eviction_timer(cache_dir: PathBuf) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+        loop {
+            interval.tick().await;
+            if let Err(e) = imageviz_backend::thumbnails::cache::evict_if_needed(
+                &cache_dir,
+                imageviz_backend::thumbnails::cache::max_cache_size(),
+                imageviz_backend::thumbnails::cache::min_free_disk_space(),
+            ) {
+                tracing::warn!(error = %e, "Background cache eviction failed");
+            }
         }
     });
 }

@@ -342,8 +342,8 @@ mod tests {
     /// Create a temporary Tantivy index managed by an `IndexManager`.
     fn setup_tantivy() -> (tempfile::TempDir, IndexManager) {
         let dir = tempfile::tempdir().expect("tempdir");
-        let manager =
-            IndexManager::open_or_create(&dir.path().join("tantivy")).expect("IndexManager");
+        let manager = IndexManager::open_or_create(&dir.path().join("tantivy"), 50_000_000)
+            .expect("IndexManager");
         (dir, manager)
     }
 

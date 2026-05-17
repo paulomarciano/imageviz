@@ -72,10 +72,8 @@ mod tests {
     async fn test_security_headers_present() {
         let app = apply_security_headers(Router::new().route("/", get(dummy_handler)));
 
-        let response = app
-            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
+        let response =
+            app.oneshot(Request::builder().uri("/").body(Body::empty()).unwrap()).await.unwrap();
 
         let headers = response.headers();
 
@@ -87,10 +85,7 @@ mod tests {
             headers.get("x-frame-options").and_then(|v| v.to_str().ok()),
             Some("SAMEORIGIN"),
         );
-        assert_eq!(
-            headers.get("x-xss-protection").and_then(|v| v.to_str().ok()),
-            Some("0"),
-        );
+        assert_eq!(headers.get("x-xss-protection").and_then(|v| v.to_str().ok()), Some("0"),);
         assert_eq!(
             headers.get("referrer-policy").and_then(|v| v.to_str().ok()),
             Some("strict-origin-when-cross-origin"),

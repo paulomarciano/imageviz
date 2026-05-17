@@ -78,7 +78,8 @@ fn test_index_manager_open_or_create() {
     let dir = tempfile::tempdir().expect("tempdir should succeed");
     let index_path = dir.path().join("tantivy");
 
-    let manager = IndexManager::open_or_create(&index_path).expect("open_or_create should succeed");
+    let manager = IndexManager::open_or_create(&index_path, 50_000_000)
+        .expect("open_or_create should succeed");
     let schema = manager.schema().clone();
 
     let id = schema.get_field("id").unwrap();
@@ -122,8 +123,8 @@ fn test_index_manager_reopen() {
 
     // --- First session: create and add a document ---
     {
-        let manager =
-            IndexManager::open_or_create(&index_path).expect("first open_or_create should succeed");
+        let manager = IndexManager::open_or_create(&index_path, 50_000_000)
+            .expect("first open_or_create should succeed");
         let schema = manager.schema().clone();
 
         let doc = tantivy::doc!(
@@ -143,7 +144,7 @@ fn test_index_manager_reopen() {
 
     // --- Second session: reopen and verify persistence ---
     {
-        let manager = IndexManager::open_or_create(&index_path)
+        let manager = IndexManager::open_or_create(&index_path, 50_000_000)
             .expect("second open_or_create should succeed");
         let schema = manager.schema().clone();
         let filename = schema.get_field("filename").unwrap();

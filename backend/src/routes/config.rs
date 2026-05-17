@@ -1,16 +1,9 @@
-use axum::{
-    Router,
-    extract::{Query, State},
-    http::StatusCode,
-    response::Json,
-    routing::get,
-};
+use axum::{Router, extract::State, http::StatusCode, response::Json, routing::get};
 use r2d2::Pool;
 
 use crate::db::SqliteConnectionManager;
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -19,6 +12,9 @@ use crate::indexer::progress::ProgressTracker;
 use crate::middleware::validation;
 use crate::search::IndexManager;
 use crate::watcher::FileWatcher;
+
+pub mod suggest;
+use self::suggest::suggest_folders;
 
 /// Shared application state for config endpoints.
 ///
@@ -197,91 +193,6 @@ async fn update_config(
     Ok(Json(config))
 }
 
-/// Query parameters for `GET /config/suggest`.
-#[derive(Deserialize)]
-struct SuggestParams {
-    path: String,
-}
-
-/// A single path suggestion returned by the suggest endpoint.
-#[derive(Serialize)]
-struct PathSuggestion {
-    path: String,
-    name: String,
-    is_directory: bool,
-}
-
-/// Response body for `GET /config/suggest`.
-#[derive(Serialize)]
-struct SuggestResponse {
-    suggestions: Vec<PathSuggestion>,
-}
-
-/// Expand a leading `~` to the user's home directory.
-fn resolve_path(path: &str) -> String {
-    if path == "~" {
-        return std::env::var("HOME").unwrap_or_else(|_| "~".to_string());
-    }
-    if let Some(rest) = path.strip_prefix("~/")
-        && let Ok(home) = std::env::var("HOME")
-    {
-        let mut resolved = home;
-        resolved.push('/');
-        resolved.push_str(rest);
-        return resolved;
-    }
-    path.to_string()
-}
-
-/// GET /config/suggest — return subdirectory suggestions for a path prefix.
-///
-/// Used by the frontend config panel to power a folder autocomplete.  This
-/// is a stateless filesystem operation — no database access is needed.
-async fn suggest_folders(
-    Query(params): Query<SuggestParams>,
-) -> Result<Json<SuggestResponse>, (StatusCode, Json<Value>)> {
-    let resolved = resolve_path(&params.path);
-    let path = Path::new(&resolved);
-
-    let (search_dir, prefix) = if path.exists() && path.is_dir() {
-        (path.to_path_buf(), String::new())
-    } else {
-        let parent = path.parent().unwrap_or(Path::new("/"));
-        let prefix = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
-        (parent.to_path_buf(), prefix)
-    };
-
-    let mut suggestions = Vec::new();
-
-    if let Ok(entries) = std::fs::read_dir(&search_dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            // Skip hidden entries
-            if name.starts_with('.') {
-                continue;
-            }
-            // Filter by prefix when the path doesn't exist as a directory
-            if !prefix.is_empty() && !name.starts_with(&prefix) {
-                continue;
-            }
-            let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
-            if !is_dir {
-                continue;
-            }
-            suggestions.push(PathSuggestion {
-                path: entry.path().to_string_lossy().to_string(),
-                name,
-                is_directory: is_dir,
-            });
-        }
-    }
-
-    suggestions.sort_by(|a, b| a.name.cmp(&b.name));
-    suggestions.truncate(50);
-
-    Ok(Json(SuggestResponse { suggestions }))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,20 +204,20 @@ mod tests {
     use serde_json::json;
     use tower::ServiceExt;
 
-    /// Build a full ConfigState for tests.  The caller **must** retain the
-    /// returned `TempDir` for the lifetime of the test so that the Tantivy
-    /// index directory is not removed while `IndexManager` holds open handles.
-    fn test_state() -> (Arc<ConfigState>, tempfile::TempDir) {
+    /// Build a ConfigState without running migrations (so the `config` table
+    /// does not exist). Used to test error handling when the DB schema is
+    /// incomplete.
+    fn bad_state() -> (Arc<ConfigState>, tempfile::TempDir) {
         let tantivy_dir = tempfile::tempdir().expect("tempdir");
         let pool = crate::db::pool::create_in_memory_pool();
-        {
-            let mut conn = pool.get().expect("Failed to get connection for migrations");
-            crate::db::migrations::run_migrations(&mut conn).expect("Failed to run migrations");
-        }
+        // No migrations run — config table doesn't exist.
 
         let index_manager = Arc::new(
-            crate::search::IndexManager::open_or_create(&tantivy_dir.path().join("tantivy"))
-                .expect("IndexManager"),
+            crate::search::IndexManager::open_or_create(
+                &tantivy_dir.path().join("tantivy"),
+                50_000_000,
+            )
+            .expect("IndexManager"),
         );
 
         let (watcher, _rx) = crate::watcher::FileWatcher::new(&[]).expect("FileWatcher");
@@ -322,23 +233,23 @@ mod tests {
         (state, tantivy_dir)
     }
 
-    /// Create a state with a database that has no tables at all.
-    ///
-    /// Any query against the config table will fail with "no such table",
-    /// triggering the 500 error path in route handlers. Kept as a raw
-    /// in-memory connection (no migrations) so the MISSING-TABLE error
-    /// path remains exercised.  The watcher and index manager fields are
-    /// populated with valid but quiescent instances — they are never
-    /// reached in the error path.
-    fn bad_state() -> (Arc<ConfigState>, tempfile::TempDir) {
+    /// Build a full ConfigState for tests.  The caller **must** retain the
+    /// returned `TempDir` for the lifetime of the test so that the Tantivy
+    /// index directory is not removed while `IndexManager` holds open handles.
+    fn test_state() -> (Arc<ConfigState>, tempfile::TempDir) {
         let tantivy_dir = tempfile::tempdir().expect("tempdir");
-        // Use an in-memory pool but do NOT run migrations so that
-        // queries fail with "no such table".
         let pool = crate::db::pool::create_in_memory_pool();
+        {
+            let mut conn = pool.get().expect("Failed to get connection for migrations");
+            crate::db::migrations::run_migrations(&mut conn).expect("Failed to run migrations");
+        }
 
         let index_manager = Arc::new(
-            crate::search::IndexManager::open_or_create(&tantivy_dir.path().join("tantivy"))
-                .expect("IndexManager"),
+            crate::search::IndexManager::open_or_create(
+                &tantivy_dir.path().join("tantivy"),
+                50_000_000,
+            )
+            .expect("IndexManager"),
         );
 
         let (watcher, _rx) = crate::watcher::FileWatcher::new(&[]).expect("FileWatcher");
@@ -447,13 +358,11 @@ mod tests {
         let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
         let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         assert_eq!(
-            body["error"],
-            "Invalid watched folder configuration",
+            body["error"], "Invalid watched folder configuration",
             "top-level error should describe the validation failure"
         );
         assert_eq!(
-            body["details"][0]["message"],
-            "Path must not be empty",
+            body["details"][0]["message"], "Path must not be empty",
             "details should indicate which field failed"
         );
     }

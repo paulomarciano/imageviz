@@ -31,7 +31,15 @@ impl IndexManager {
     /// If the directory does not exist it is created.  If a valid Tantivy index
     /// is already present (detected by `meta.json`) it is opened; otherwise a
     /// fresh index is initialised.
-    pub fn open_or_create(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+    ///
+    /// `writer_memory` controls the Tantivy writer memory budget in bytes.
+    /// Use larger values (e.g. 200 MB) during full reindex for fewer segments
+    /// and faster indexing, and smaller values (e.g. 50 MB) during incremental
+    /// operation for lower memory footprint.
+    pub fn open_or_create(
+        path: &Path,
+        writer_memory: usize,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let schema = build_schema();
 
         // Ensure the directory exists before opening the index.
@@ -46,7 +54,7 @@ impl IndexManager {
         let reader =
             index.reader_builder().reload_policy(ReloadPolicy::OnCommitWithDelay).try_into()?;
 
-        let writer = Some(index.writer(50_000_000)?);
+        let writer = Some(index.writer(writer_memory)?);
 
         Ok(Self { index, schema, reader, writer: Mutex::new(writer) })
     }

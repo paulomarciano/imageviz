@@ -142,12 +142,20 @@ mod tests {
         conn.execute_batch("CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT);").unwrap();
 
         let first = AppConfig {
-            watched_folders: vec![WatchedFolder { path: "/first".to_string(), label: None, id: None }],
+            watched_folders: vec![WatchedFolder {
+                path: "/first".to_string(),
+                label: None,
+                id: None,
+            }],
         };
         save_config(&conn, &first).unwrap();
 
         let second = AppConfig {
-            watched_folders: vec![WatchedFolder { path: "/second".to_string(), label: None, id: None }],
+            watched_folders: vec![WatchedFolder {
+                path: "/second".to_string(),
+                label: None,
+                id: None,
+            }],
         };
         save_config(&conn, &second).unwrap();
 

@@ -1,8 +1,9 @@
 pub mod config;
 pub mod db;
-pub mod middleware;
 pub mod indexer;
+pub mod media_types;
 pub mod metadata;
+pub mod middleware;
 pub mod routes;
 pub mod scanner;
 pub mod search;

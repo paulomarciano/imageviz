@@ -60,8 +60,11 @@ pub fn create_test_app_with_search() -> TestApp {
     // 2. Temporary Tantivy index
     let tantivy_dir = tempfile::tempdir().expect("tempdir for tantivy");
     let index_manager = Arc::new(
-        imageviz_backend::search::IndexManager::open_or_create(&tantivy_dir.path().join("index"))
-            .expect("IndexManager"),
+        imageviz_backend::search::IndexManager::open_or_create(
+            &tantivy_dir.path().join("index"),
+            50_000_000,
+        )
+        .expect("IndexManager"),
     );
 
     // 3. Broadcast channel for SSE
@@ -86,9 +89,9 @@ pub fn create_test_app_with_search() -> TestApp {
     let media_state = Arc::new(imageviz_backend::routes::media::MediaState {
         db: pool.clone(),
         thumbnail_cache_dir: cache_dir.path().to_path_buf(),
-        thumbnail_limiter: Arc::new(
-            imageviz_backend::thumbnails::limiter::ThumbnailLimiter::new(16),
-        ),
+        thumbnail_limiter: Arc::new(imageviz_backend::thumbnails::limiter::ThumbnailLimiter::new(
+            16,
+        )),
     });
     let search_state = Arc::new(imageviz_backend::routes::search::SearchState {
         index_manager: Arc::clone(&index_manager),
@@ -109,5 +112,12 @@ pub fn create_test_app_with_search() -> TestApp {
         .nest("/api/v1", imageviz_backend::routes::events::routes().with_state(events_state))
         .nest("/api/v1", imageviz_backend::routes::stats::routes().with_state(stats_state));
 
-    TestApp { router, pool, index_manager, sse_tx, _tantivy_dir: tantivy_dir, _cache_dir: cache_dir }
+    TestApp {
+        router,
+        pool,
+        index_manager,
+        sse_tx,
+        _tantivy_dir: tantivy_dir,
+        _cache_dir: cache_dir,
+    }
 }

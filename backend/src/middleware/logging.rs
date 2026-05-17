@@ -116,14 +116,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_logging_layer_applied() {
-        let app = Router::new()
-            .route("/", get(dummy_handler))
-            .layer(logging_layer());
+        let app = Router::new().route("/", get(dummy_handler)).layer(logging_layer());
 
-        let response = app
-            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
+        let response =
+            app.oneshot(Request::builder().uri("/").body(Body::empty()).unwrap()).await.unwrap();
 
         assert_eq!(response.status(), 200);
     }

@@ -11,9 +11,10 @@
 //! is only performed once.
 
 use crate::thumbnails::image;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock};
+
+use dashmap::DashMap;
 use std::time::SystemTime;
 
 /// Errors that can occur during cache operations.
@@ -126,31 +127,22 @@ fn cache_file_path(cache_dir: &Path, checksum: &str, target_width: u32) -> PathB
 // Per-key lock map
 // ---------------------------------------------------------------------------
 
-type LockMap = Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>;
-
-static LOCKS: LazyLock<LockMap> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static LOCKS: LazyLock<DashMap<String, Arc<tokio::sync::Mutex<()>>>> = LazyLock::new(DashMap::new);
 
 /// Acquire or create a per-key mutex for the given cache key.
+///
+/// Uses a global `DashMap` keyed by cache key — sharded lock design means
+/// lookups and insertions are concurrent-safe without a global mutex.
 ///
 /// The first caller to acquire the lock for a given key proceeds to generate
 /// the thumbnail; subsequent callers block and then find the cached file after
 /// the lock is released.
-///
-/// # Panics
-/// Only panics if the global lock map cannot be locked — this is a fatal state
-/// that indicates a corrupted process. Individual per-key mutex poisoning is
-/// recovered from gracefully.
 fn acquire_lock(key: &str) -> Arc<tokio::sync::Mutex<()>> {
-    let mut map = match LOCKS.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => {
-            // Recover from a poisoned lock by consuming the error and
-            // extracting the inner value, rather than panicking.
-            tracing::warn!("cache lock map was poisoned, recovering");
-            poisoned.into_inner()
-        }
-    };
-    map.entry(key.to_string()).or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))).clone()
+    LOCKS
+        .entry(key.to_string())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .value()
+        .clone()
 }
 
 // ---------------------------------------------------------------------------
@@ -261,10 +253,18 @@ pub async fn get_or_generate_thumbnail(
     tokio::fs::copy(&generated_path, &tmp_path).await?;
     tokio::fs::rename(&tmp_path, &cache_path).await?;
 
-    // Check cache size and evict old files if needed (best-effort).
-    if let Err(e) = evict_if_needed(cache_dir, max_cache_size(), min_free_disk_space()) {
-        tracing::warn!(error = %e, "Cache eviction check failed");
-    }
+    // Check cache size and evict old files if needed (best-effort, fire-and-forget).
+    // The primary eviction is handled by a background timer (see
+    // `spawn_cache_eviction_timer` in main.rs).  This inline spawn is an
+    // extra safety net for unusually large cache bursts.
+    let cache_dir = cache_dir.to_path_buf();
+    // Fire-and-forget: the background timer in main.rs is the primary eviction
+    // mechanism. This spawn is an extra safety net for large caches.
+    std::mem::drop(tokio::spawn(async move {
+        if let Err(e) = evict_if_needed(&cache_dir, max_cache_size(), min_free_disk_space()) {
+            tracing::warn!(error = %e, "Cache eviction check failed");
+        }
+    }));
 
     Ok(cache_path)
 }
@@ -287,12 +287,11 @@ fn dir_size(path: &Path) -> std::io::Result<u64> {
 
 /// Estimate free disk space for the filesystem containing `path`.
 ///
-/// Returns a large sentinel value so eviction is driven by the cache size
-/// limit under normal conditions. This avoids adding a platform-specific
-/// dependency like `libc` for querying `statvfs`/`statfs`.
-fn free_disk_space(_path: &Path) -> u64 {
-    let _ = _path; // suppress unused variable warning
-    u64::MAX
+/// Uses the `fs2` crate's cross-platform `available_space()` function which
+/// calls `statvfs` on Linux and `statfs` on macOS. Falls back to `u64::MAX`
+/// (no-op) if the platform API returns an error.
+fn free_disk_space(path: &Path) -> u64 {
+    fs2::available_space(path).unwrap_or(u64::MAX)
 }
 
 /// Check cache size and evict old files if the cache exceeds the limit or

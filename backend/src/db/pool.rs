@@ -44,9 +44,9 @@ impl ManageConnection for SqliteConnectionManager {
         } else if let Some(ref path) = self.db_path {
             Connection::open(path)?
         } else {
-            return Err(rusqlite::Error::InvalidPath(
-                std::path::PathBuf::from("no path configured"),
-            ));
+            return Err(rusqlite::Error::InvalidPath(std::path::PathBuf::from(
+                "no path configured",
+            )));
         };
 
         if self.in_memory {
@@ -96,8 +96,5 @@ pub fn create_pool(path: &Path) -> Result<Pool<SqliteConnectionManager>, r2d2::E
 pub fn create_in_memory_pool() -> Pool<SqliteConnectionManager> {
     let manager = SqliteConnectionManager::memory();
 
-    Pool::builder()
-        .max_size(3)
-        .build(manager)
-        .expect("in-memory pool")
+    Pool::builder().max_size(3).build(manager).expect("in-memory pool")
 }

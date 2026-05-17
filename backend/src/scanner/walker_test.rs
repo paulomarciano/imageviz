@@ -53,7 +53,7 @@ fn test_empty_directory() {
 #[test]
 fn test_supported_extensions() {
     let dir = TempDir::new().unwrap();
-    let extensions = ["png", "jpg", "jpeg", "webp", "gif", "mp4", "webm"];
+    let extensions = ["png", "jpg", "jpeg", "webp", "gif", "mp4", "webm", "mov"];
     for ext in &extensions {
         create_test_file(dir.path(), &format!("file.{}", ext), b"data");
     }

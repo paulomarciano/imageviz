@@ -141,7 +141,9 @@ mod tests {
         unsafe { std::env::remove_var("THUMBNAIL_CONCURRENCY") };
         assert_eq!(max_thumbnail_concurrency(), 4);
         if let Some(ref val) = prev {
-            unsafe { std::env::set_var("THUMBNAIL_CONCURRENCY", val); }
+            unsafe {
+                std::env::set_var("THUMBNAIL_CONCURRENCY", val);
+            }
         }
     }
 
@@ -151,9 +153,13 @@ mod tests {
         unsafe { std::env::set_var("THUMBNAIL_CONCURRENCY", "8") };
         assert_eq!(max_thumbnail_concurrency(), 8);
         if let Some(ref val) = prev {
-            unsafe { std::env::set_var("THUMBNAIL_CONCURRENCY", val); }
+            unsafe {
+                std::env::set_var("THUMBNAIL_CONCURRENCY", val);
+            }
         } else {
-            unsafe { std::env::remove_var("THUMBNAIL_CONCURRENCY"); }
+            unsafe {
+                std::env::remove_var("THUMBNAIL_CONCURRENCY");
+            }
         }
     }
 }

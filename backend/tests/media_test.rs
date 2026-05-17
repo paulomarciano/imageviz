@@ -28,20 +28,20 @@ use imageviz_backend::routes::media::{MediaState, routes};
 /// The database contains only the schema — no seeded data. Callers must
 /// call `seed_config` and `seed_media_item` to populate test data.
 fn create_media_test_app() -> (Router, Arc<MediaState>, tempfile::TempDir) {
-    let pool: Pool<SqliteConnectionManager> =
-        imageviz_backend::db::pool::create_in_memory_pool();
+    let pool: Pool<SqliteConnectionManager> = imageviz_backend::db::pool::create_in_memory_pool();
     {
         let mut conn = pool.get().expect("Failed to get connection for migrations");
-        imageviz_backend::db::migrations::run_migrations(&mut conn).expect("Failed to run migrations");
+        imageviz_backend::db::migrations::run_migrations(&mut conn)
+            .expect("Failed to run migrations");
     }
 
     let cache_dir = tempfile::tempdir().expect("Failed to create cache directory");
     let media_state = Arc::new(MediaState {
         db: pool,
         thumbnail_cache_dir: cache_dir.path().to_path_buf(),
-        thumbnail_limiter: Arc::new(
-            imageviz_backend::thumbnails::limiter::ThumbnailLimiter::new(16),
-        ),
+        thumbnail_limiter: Arc::new(imageviz_backend::thumbnails::limiter::ThumbnailLimiter::new(
+            16,
+        )),
     });
 
     let app = imageviz_backend::health_router()
