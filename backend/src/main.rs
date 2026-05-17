@@ -7,6 +7,7 @@ use tower_http::cors::CorsLayer;
 
 use imageviz_backend::config::AppConfig;
 use imageviz_backend::indexer::progress::ProgressTracker;
+use imageviz_backend::middleware::logging::logging_layer;
 use imageviz_backend::middleware::security::apply_security_headers;
 use imageviz_backend::middleware::timeout;
 use imageviz_backend::routes::config::ConfigState;
@@ -21,7 +22,13 @@ use imageviz_backend::watcher::handler::SseEvent;
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "imageviz_backend=info,tower_http=info".into()),
+        )
+        .compact()
+        .init();
 
     let settings = imageviz_backend::config::settings::Settings::from_env();
 
@@ -143,6 +150,7 @@ async fn main() {
                 3600,
             ),
         )
+        .layer(logging_layer())
         .layer(CorsLayer::permissive());
 
     // Security headers are the outermost layer so they appear on every
