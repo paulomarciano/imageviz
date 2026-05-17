@@ -70,6 +70,19 @@ pub(super) async fn serve_thumbnail(
         }
     })?;
 
+    // Populate thumbnail_path in the database so the column is no longer
+    // dead — it records the on-disk cache path after first generation.
+    // This is best-effort: a failure to update is logged but does not
+    // prevent the thumbnail from being served.
+    if let Ok(conn) = state.db.get() {
+        if let Err(e) = conn.execute(
+            "UPDATE media_items SET thumbnail_path = ?1 WHERE id = ?2",
+            rusqlite::params![thumbnail.to_str(), id],
+        ) {
+            tracing::warn!(error = %e, id = %id, "Failed to persist thumbnail_path");
+        }
+    }
+
     // Read the thumbnail file into memory
     let data = tokio::fs::read(&thumbnail).await.map_err(|e| {
         tracing::error!(error = %e, "Failed to read thumbnail file");

@@ -264,6 +264,64 @@ async fn test_thumbnail_happy_path_generates_webp() {
 }
 
 #[tokio::test]
+async fn test_thumbnail_populates_thumbnail_path() {
+    let (state, _cache_dir) = test_state();
+    let watched = tempfile::tempdir().unwrap();
+    let source_path = watched.path().join("test.png");
+    create_test_png(&source_path);
+
+    seed_config(&state, watched.path()).await;
+    seed_media_item(
+        &state,
+        "00000000-0000-0000-0000-000000000010",
+        "test.png",
+        "test.png",
+        "image/png",
+        "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+    )
+    .await;
+
+    let app = routes().with_state(state.clone());
+
+    // Request thumbnail generation
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/media/00000000-0000-0000-0000-000000000010/thumbnail")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Verify thumbnail_path was populated in the database
+    let conn = state.db.get().unwrap();
+    let thumb_path: Option<String> = conn
+        .query_row(
+            "SELECT thumbnail_path FROM media_items WHERE id = '00000000-0000-0000-0000-000000000010'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    assert!(
+        thumb_path.is_some(),
+        "thumbnail_path should be populated after generation"
+    );
+    let path = thumb_path.unwrap();
+    assert!(
+        !path.is_empty(),
+        "thumbnail_path should be a non-empty string"
+    );
+    assert!(
+        path.contains("abcdef1234567890_200.webp"),
+        "thumbnail_path should point to the content-addressed cache file"
+    );
+}
+
+#[tokio::test]
 async fn test_thumbnail_cache_hit_returns_200() {
     let (state, _cache_dir) = test_state();
     let watched = tempfile::tempdir().unwrap();
