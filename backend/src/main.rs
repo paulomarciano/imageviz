@@ -284,6 +284,8 @@ fn spawn_background_indexing(
     let db_path = database_path.to_path_buf();
 
     tokio::spawn(async move {
+        let index_start = std::time::Instant::now();
+
         tracing::info!(
             folders = %config.watched_folders.iter().map(|f| f.path.as_str()).collect::<Vec<_>>().join(", "),
             "Starting initial file scan and indexing"
@@ -350,11 +352,14 @@ fn spawn_background_indexing(
             }
         };
 
+        let duration_ms = index_start.elapsed().as_millis() as u64;
+
         if tantivy_ok
             && let Err(e) = sse_tx.send(SseEvent {
                 event_type: "indexing_complete".into(),
                 data: serde_json::json!({
                     "total": stats.created + stats.updated + stats.skipped,
+                    "duration_ms": duration_ms,
                 }),
             })
         {

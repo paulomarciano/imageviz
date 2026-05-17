@@ -481,6 +481,25 @@ mod tests {
         assert!(json_str.contains("test.png"));
     }
 
+    #[test]
+    fn test_indexing_complete_event_includes_duration_ms() {
+        let event = SseEvent {
+            event_type: "indexing_complete".into(),
+            data: json!({
+                "total": 14433,
+                "duration_ms": 2340,
+            }),
+        };
+
+        let json_str = serde_json::to_string(&event).expect("serialize");
+        assert!(json_str.contains("indexing_complete"), "event_type should be indexing_complete");
+        assert!(
+            json_str.contains("\"duration_ms\":2340"),
+            "indexing_complete must include duration_ms in payload, got: {json_str}"
+        );
+        assert!(json_str.contains("\"total\":14433"), "indexing_complete must include total");
+    }
+
     // -----------------------------------------------------------------------
     // Integration tests (tokio)
     // -----------------------------------------------------------------------
