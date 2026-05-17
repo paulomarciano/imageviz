@@ -357,8 +357,33 @@ fn resolve_media_path(
             }
         })?;
 
-    // Resolve the relative path to an absolute path using watched folders
-    // from the config table.
+    // Try to resolve via folder_id → watched_folders path first (preferred).
+    let folder_id: Option<String> = db
+        .query_row(
+            "SELECT folder_id FROM media_items WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get(0),
+        )
+        .ok();
+
+    if let Some(ref fid) = folder_id {
+        let folder_path: Option<String> = db
+            .query_row(
+                "SELECT path FROM watched_folders WHERE id = ?1",
+                rusqlite::params![fid],
+                |row| row.get(0),
+            )
+            .ok();
+
+        if let Some(ref base) = folder_path {
+            let full = std::path::Path::new(base).join(&relative_path);
+            if full.exists() {
+                return Ok((full, mime_type, filename));
+            }
+        }
+    }
+
+    // Fallback: resolve using the config JSON (backward compat).
     let config_str: String = db
         .query_row("SELECT value FROM config WHERE key = 'watched_folders'", [], |row| row.get(0))
         .map_err(|_| (StatusCode::NOT_FOUND, Json(json!({"error": "File not found on disk"}))))?;

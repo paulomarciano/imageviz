@@ -10,6 +10,7 @@
 //! in transactions of [`BATCH_SIZE`] files for write throughput.
 
 use crate::config::AppConfig;
+use crate::config::folder_id_map;
 use crate::metadata::detect::{MediaInfo, detect_media};
 use crate::metadata::png::parse_png_metadata;
 use crate::scanner::hasher::compute_file_hash;
@@ -19,6 +20,7 @@ use r2d2::Pool;
 use crate::db::SqliteConnectionManager;
 use rusqlite::OptionalExtension;
 use rusqlite::{Connection, params};
+use std::collections::HashMap;
 use std::path::Path;
 use uuid::Uuid;
 
@@ -46,9 +48,15 @@ pub async fn full_index(
     config: &AppConfig,
     progress: &progress::ProgressTracker,
 ) -> Result<IndexStats, IndexError> {
-    progress.set_status(progress::IndexStatus::Scanning);
+    // Ensure all watched folders have stable UUIDs before scanning.
+    let mut config = config.clone();
+    {
+        let conn = pool.get()?;
+        crate::config::assign_folder_ids(&conn, &mut config)?;
+    }
 
-    let all_files = scan_all_folders(config)?;
+    let fid_map = folder_id_map(&config);
+    let all_files = scan_all_folders(&config)?;
     progress.set_total(all_files.len());
 
     progress.set_status(progress::IndexStatus::Indexing);
@@ -57,23 +65,27 @@ pub async fn full_index(
     if all_files.is_empty() {
         // Still need to clean up deleted items even when no files to index
         let conn = pool.get()?;
-        let removed = remove_deleted_items(&conn, config)?;
+        let removed = remove_deleted_items(&conn, &config)?;
         stats.deleted = removed;
         progress.set_status(progress::IndexStatus::Complete);
         return Ok(stats);
     }
 
+    // Build a list of (folder_id, file) pairs by looking up each file's
+    // watched folder from the config.
+    let folder_file_pairs = resolve_folder_file_pairs(&all_files, &fid_map);
+
     // Process files in batches to limit transaction size
-    for chunk in all_files.chunks(BATCH_SIZE) {
+    for chunk in folder_file_pairs.chunks(BATCH_SIZE) {
         // Phase 1: Async I/O — compute hashes and metadata without DB lock
         let mut batch_results: Vec<ProcessedFile> = Vec::with_capacity(chunk.len());
-        for file in chunk {
+        for ff_entry in chunk {
             progress.increment_processed();
-            match process_file_metadata(file).await {
+            match process_file_metadata(ff_entry.file, &ff_entry.folder_id).await {
                 Ok(processed) => batch_results.push(processed),
                 Err(e) => {
                     stats.errors += 1;
-                    progress.add_error(format!("{}: {}", file.relative_path, e));
+                    progress.add_error(format!("{}: {}", ff_entry.file.relative_path, e));
                 }
             }
         }
@@ -102,7 +114,7 @@ pub async fn full_index(
     // Runs with its own connection from the pool.
     {
         let conn = pool.get()?;
-        let removed = remove_deleted_items(&conn, config)?;
+        let removed = remove_deleted_items(&conn, &config)?;
         stats.deleted = removed;
     }
 
@@ -127,19 +139,54 @@ pub async fn incremental_index(
 // Pipeline stages
 // ---------------------------------------------------------------------------
 
+/// Pair a file entry with its watched folder ID.
+#[derive(Debug)]
+struct FolderFileEntry<'a> {
+    folder_id: String,
+    file: &'a FileEntry,
+}
+
 /// Intermediate result from the async processing phase of a single file.
 struct ProcessedFile<'a> {
     file: &'a FileEntry,
     new_hash: String,
     media_info: MediaInfo,
     metadata_json: Option<String>,
+    folder_id: String,
+}
+
+/// Resolve folder IDs for all scanned files by matching their absolute path
+/// prefix against watched folder paths.
+fn resolve_folder_file_pairs<'a>(
+    files: &'a [FileEntry],
+    fid_map: &HashMap<String, String>,
+) -> Vec<FolderFileEntry<'a>> {
+    let mut result = Vec::with_capacity(files.len());
+    for file in files {
+        let abs_path = Path::new(&file.absolute_path);
+        if let Some(folder_id) = fid_map
+            .iter()
+            .find_map(|(folder_path, fid)| {
+                abs_path
+                    .strip_prefix(Path::new(folder_path))
+                    .ok()
+                    .map(|_| fid.clone())
+            })
+        {
+            result.push(FolderFileEntry { folder_id, file });
+        }
+    }
+    result
 }
 
 /// Phase 1: Compute hash, detect media, and extract PNG metadata for a file.
 ///
 /// Runs asynchronously without holding the database lock. This phase handles
 /// all I/O-bound work (SHA-256 via spawn_blocking, ffprobe for videos).
-async fn process_file_metadata(file: &FileEntry) -> Result<ProcessedFile<'_>, IndexError> {
+async fn process_file_metadata<'a>(
+    file: &'a FileEntry,
+    folder_id: &'a str,
+) -> Result<ProcessedFile<'a>, IndexError> {
     let abs_path = Path::new(&file.absolute_path);
 
     let new_hash = compute_file_hash(abs_path).await?;
@@ -159,25 +206,20 @@ async fn process_file_metadata(file: &FileEntry) -> Result<ProcessedFile<'_>, In
         None
     };
 
-    Ok(ProcessedFile { file, new_hash, media_info, metadata_json })
+    Ok(ProcessedFile { file, new_hash, media_info, metadata_json, folder_id: folder_id.to_string() })
 }
 
 /// Phase 2: Store a processed file's data in the database.
 ///
-/// Synchronous — must be called while holding the database lock.
-/// Uses `INSERT OR REPLACE` for idempotent upserts.
-///
-/// ## Known limitation
-/// `relative_path` is computed relative to each watched folder root. If two
-/// watched folders contain a file with the same relative path, the second
-/// `INSERT OR REPLACE` overwrites the first. A `folder_id` column will resolve
-/// this in a future wave.
+/// Synchronous — must be called while holding a database connection.
+/// Uses `INSERT OR REPLACE` for idempotent upserts. The `(folder_id, relative_path)`
+/// compound unique index prevents duplicates across multiple watched folders.
 fn store_file(conn: &Connection, processed: &ProcessedFile<'_>) -> Result<IndexChange, IndexError> {
     // Check if file already indexed with same hash (skip if unchanged)
     let existing: Option<(String, Option<String>)> = conn
         .query_row(
-            "SELECT id, checksum FROM media_items WHERE relative_path = ?1",
-            params![processed.file.relative_path],
+            "SELECT id, checksum FROM media_items WHERE folder_id = ?1 AND relative_path = ?2",
+            params![processed.folder_id, processed.file.relative_path],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?;
@@ -199,8 +241,9 @@ fn store_file(conn: &Connection, processed: &ProcessedFile<'_>) -> Result<IndexC
     conn.execute(
         "INSERT OR REPLACE INTO media_items
             (id, filename, relative_path, mime_type, width, height, file_size,
-             file_created_at, file_modified_at, indexed_at, metadata_json, checksum)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+             file_created_at, file_modified_at, indexed_at, metadata_json, checksum,
+             folder_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             id,
             processed.file.filename,
@@ -214,6 +257,7 @@ fn store_file(conn: &Connection, processed: &ProcessedFile<'_>) -> Result<IndexC
             indexed_at,
             processed.metadata_json,
             processed.new_hash,
+            processed.folder_id,
         ],
     )?;
 
@@ -233,22 +277,45 @@ fn scan_all_folders(config: &AppConfig) -> Result<Vec<FileEntry>, IndexError> {
 
 /// Remove items from DB that no longer exist on disk.
 ///
-/// Iterates over all `relative_path` values in the DB and checks whether
-/// the corresponding file still exists in any watched folder. Deleted items
-/// are removed to keep the database in sync with the filesystem.
+/// Iterates over all items in the DB (with folder_id + relative_path) and
+/// checks whether the corresponding file still exists in its watched folder.
+/// Deleted items are removed to keep the database in sync with the filesystem.
 fn remove_deleted_items(conn: &Connection, config: &AppConfig) -> Result<usize, IndexError> {
-    let mut stmt = conn.prepare("SELECT relative_path FROM media_items")?;
-    let db_paths: Vec<String> = stmt.query_map([], |r| r.get(0))?.filter_map(|r| r.ok()).collect();
+    let mut stmt =
+        conn.prepare("SELECT folder_id, relative_path FROM media_items")?;
+    let db_items: Vec<(Option<String>, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let fid_map = folder_id_map(config);
 
     let mut removed = 0;
-    for db_path in &db_paths {
-        let exists = config.watched_folders.iter().any(|f| {
-            let full_path = Path::new(&f.path).join(db_path);
-            full_path.exists()
-        });
+    for (db_folder_id, db_path) in &db_items {
+        // Check if this item's watched folder still has the file on disk
+        let exists = db_folder_id.as_ref().and_then(|fid| {
+            fid_map.iter().find_map(|(folder_path, folder_id)| {
+                if folder_id == fid {
+                    let full_path = Path::new(folder_path).join(db_path);
+                    if full_path.exists() { Some(true) } else { None }
+                } else {
+                    None
+                }
+            })
+        }).unwrap_or(false);
 
         if !exists {
-            conn.execute("DELETE FROM media_items WHERE relative_path = ?1", params![db_path])?;
+            if let Some(fid) = db_folder_id {
+                conn.execute(
+                    "DELETE FROM media_items WHERE folder_id = ?1 AND relative_path = ?2",
+                    params![fid.as_str(), db_path],
+                )?;
+            } else {
+                conn.execute(
+                    "DELETE FROM media_items WHERE relative_path = ?1",
+                    params![db_path],
+                )?;
+            }
             removed += 1;
         }
     }

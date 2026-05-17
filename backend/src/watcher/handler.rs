@@ -188,9 +188,8 @@ async fn handle_file_created_or_modified(
 
     let filename = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
 
-    // Resolve relative path by stripping the watched folder prefix.
-    // This requires a brief DB query to read the config.
-    let relative_path = {
+    // Resolve relative path and folder_id by stripping the watched folder prefix.
+    let (relative_path, folder_id) = {
         let conn = pool.get()?;
         let watched = load_watched_folders(&conn)?;
         resolve_relative_path(path, &watched).ok_or_else(|| {
@@ -208,6 +207,7 @@ async fn handle_file_created_or_modified(
     let pool_clone = pool.clone();
     let im_clone = Arc::clone(index_manager);
     let path_rel = relative_path.clone();
+    let fid = folder_id.clone();
     let fname = filename.clone();
     let mime = media_info.mime_type.clone();
     let h = hash.clone();
@@ -220,11 +220,11 @@ async fn handle_file_created_or_modified(
     let outcome = tokio::task::spawn_blocking(move || -> Result<Outcome, String> {
         let conn = pool_clone.get().map_err(|e| format!("Pool error: {}", e))?;
 
-        // Check whether this file is already tracked in SQLite.
+        // Check whether this file is already tracked in SQLite (by folder + path).
         let existing: Option<(String, Option<String>)> = conn
             .query_row(
-                "SELECT id, checksum FROM media_items WHERE relative_path = ?1",
-                params![path_rel],
+                "SELECT id, checksum FROM media_items WHERE folder_id = ?1 AND relative_path = ?2",
+                params![fid, path_rel],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()
@@ -249,8 +249,9 @@ async fn handle_file_created_or_modified(
         conn.execute(
             "INSERT OR REPLACE INTO media_items
                 (id, filename, relative_path, mime_type, width, height, file_size,
-                 file_created_at, file_modified_at, indexed_at, metadata_json, checksum)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                 file_created_at, file_modified_at, indexed_at, metadata_json, checksum,
+                 folder_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 id,
                 fname,
@@ -264,6 +265,7 @@ async fn handle_file_created_or_modified(
                 indexed_at,
                 meta,
                 h,
+                fid,
             ],
         )
         .map_err(|e| format!("DB insert/update: {}", e))?;
@@ -370,12 +372,12 @@ async fn handle_file_deleted(
     index_manager: &Arc<IndexManager>,
     sse_tx: &broadcast::Sender<SseEvent>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
-    // Resolve relative path.
-    let relative_path = {
+    // Resolve relative path and folder_id.
+    let (relative_path, folder_id) = {
         let conn = pool.get()?;
         let watched = load_watched_folders(&conn)?;
         match resolve_relative_path(path, &watched) {
-            Some(rel) => rel,
+            Some(result) => result,
             None => {
                 tracing::warn!(
                     "Deleted file {} is not inside any watched folder — ignoring",
@@ -389,16 +391,19 @@ async fn handle_file_deleted(
     let pool_clone = pool.clone();
     let im_clone = Arc::clone(index_manager);
     let rel = relative_path.clone();
+    let fid = folder_id.clone();
 
     // Blocking phase: delete from SQLite and Tantivy.
     let outcome = tokio::task::spawn_blocking(move || -> Result<Option<String>, String> {
         let conn = pool_clone.get().map_err(|e| format!("Pool error: {}", e))?;
 
-        // Find the media item by relative path.
+        // Find the media item by folder_id + relative_path.
         let row: Option<(String,)> = conn
-            .query_row("SELECT id FROM media_items WHERE relative_path = ?1", params![rel], |r| {
-                Ok((r.get(0)?,))
-            })
+            .query_row(
+                "SELECT id FROM media_items WHERE folder_id = ?1 AND relative_path = ?2",
+                params![fid, rel],
+                |r| Ok((r.get(0)?,)),
+            )
             .optional()
             .map_err(|e| format!("DB query for existing file on delete: {}", e))?;
 
@@ -459,21 +464,33 @@ fn system_time_to_iso(time: SystemTime) -> String {
 /// Returns an empty list when no config entry exists.
 fn load_watched_folders(
     conn: &Connection,
-) -> Result<Vec<PathBuf>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+) -> Result<Vec<(PathBuf, String)>, Box<dyn std::error::Error + Send + Sync + 'static>> {
     let config = crate::config::load_config(conn)?;
-    Ok(config.watched_folders.iter().map(|f| PathBuf::from(&f.path)).collect())
+    Ok(config
+        .watched_folders
+        .iter()
+        .filter_map(|f| {
+            f.id.as_ref().map(|id| (PathBuf::from(&f.path), id.clone()))
+        })
+        .collect())
 }
 
-/// Resolve a file's relative path by stripping the longest-matching watched
-/// folder prefix.
+/// Resolve a file's relative path and folder_id by stripping the
+/// longest-matching watched folder prefix.
 ///
-/// Returns `None` if the absolute path does not reside inside any configured
-/// watched folder.
-fn resolve_relative_path(absolute_path: &Path, watched_folders: &[PathBuf]) -> Option<String> {
+/// Returns `(relative_path, folder_id)` if the absolute path resides inside
+/// a configured watched folder, or `None` otherwise.
+fn resolve_relative_path(
+    absolute_path: &Path,
+    watched_folders: &[(PathBuf, String)],
+) -> Option<(String, String)> {
     watched_folders
         .iter()
-        .find_map(|folder| absolute_path.strip_prefix(folder).ok())
-        .map(|rel| rel.to_string_lossy().into_owned())
+        .find_map(|(folder_path, folder_id)| {
+            absolute_path.strip_prefix(folder_path).ok().map(|rel| {
+                (rel.to_string_lossy().into_owned(), folder_id.clone())
+            })
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -507,11 +524,13 @@ mod tests {
             db::migrations::run_migrations(&mut conn).expect("migrations");
         }
 
-        // Seed watched folders config.
+        // Seed watched folders config with a stable folder ID.
         let watched = tempfile::tempdir().expect("tempdir");
+        let watched_path = watched.path().to_str().unwrap().to_string();
+        let fid = Uuid::new_v4().to_string();
         let config = json!({
             "watched_folders": [
-                {"path": watched.path().to_str().unwrap()}
+                {"path": watched_path, "id": fid}
             ]
         });
         {
@@ -521,6 +540,12 @@ mod tests {
                 params![config.to_string()],
             )
             .expect("seed config");
+            // Also seed the watched_folders registry table.
+            conn.execute(
+                "INSERT OR IGNORE INTO watched_folders (id, path) VALUES (?1, ?2)",
+                params![fid, watched_path],
+            )
+            .expect("seed watched_folders");
         }
 
         let tantivy_dir = tempfile::tempdir().expect("tempdir");
@@ -553,10 +578,20 @@ mod tests {
         let mut conn = db::open_in_memory().expect("in-memory DB");
         db::migrations::run_migrations(&mut conn).expect("migrations");
 
+        // Seed watched_folders entries.
+        conn.execute(
+            "INSERT INTO watched_folders (id, path) VALUES ('fid1', '/tmp/a')",
+            [],
+        ).expect("seed watched_folders");
+        conn.execute(
+            "INSERT INTO watched_folders (id, path) VALUES ('fid2', '/tmp/b')",
+            [],
+        ).expect("seed watched_folders");
+
         let config = json!({
             "watched_folders": [
-                {"path": "/tmp/a"},
-                {"path": "/tmp/b"}
+                {"path": "/tmp/a", "id": "fid1"},
+                {"path": "/tmp/b", "id": "fid2"}
             ]
         });
         conn.execute(
@@ -567,8 +602,8 @@ mod tests {
 
         let folders = load_watched_folders(&conn).expect("load");
         assert_eq!(folders.len(), 2);
-        assert_eq!(folders[0], PathBuf::from("/tmp/a"));
-        assert_eq!(folders[1], PathBuf::from("/tmp/b"));
+        assert_eq!(folders[0].0, PathBuf::from("/tmp/a"));
+        assert_eq!(folders[1].0, PathBuf::from("/tmp/b"));
     }
 
     #[test]
@@ -582,34 +617,37 @@ mod tests {
 
     #[test]
     fn test_resolve_relative_path_matches() {
-        let folders = vec![PathBuf::from("/media/photos")];
+        let folders = vec![(PathBuf::from("/media/photos"), "fid1".to_string())];
         let result = resolve_relative_path(Path::new("/media/photos/vacation/beach.png"), &folders);
-        assert_eq!(result.as_deref(), Some("vacation/beach.png"));
+        assert_eq!(result.as_ref().map(|(r, _)| r.as_str()), Some("vacation/beach.png"));
+        assert_eq!(result.as_ref().map(|(_, f)| f.as_str()), Some("fid1"));
     }
 
     #[test]
     fn test_resolve_relative_path_no_match() {
-        let folders = vec![PathBuf::from("/media/photos")];
+        let folders = vec![(PathBuf::from("/media/photos"), "fid1".to_string())];
         let result = resolve_relative_path(Path::new("/other/vacation/beach.png"), &folders);
         assert_eq!(result, None);
     }
 
     #[test]
     fn test_resolve_relative_path_exact_match() {
-        let folders = vec![PathBuf::from("/media/photos")];
+        let folders = vec![(PathBuf::from("/media/photos"), "fid1".to_string())];
         let result = resolve_relative_path(Path::new("/media/photos"), &folders);
-        assert_eq!(result.as_deref(), Some(""));
+        assert_eq!(result.as_ref().map(|(r, _)| r.as_str()), Some(""));
+        assert_eq!(result.as_ref().map(|(_, f)| f.as_str()), Some("fid1"));
     }
 
     #[test]
     fn test_resolve_relative_path_first_matching_folder_wins() {
         let folders = vec![
-            PathBuf::from("/media/photos"),
-            PathBuf::from("/media/photos/vacation"), // more specific
+            (PathBuf::from("/media/photos"), "fid1".to_string()),
+            (PathBuf::from("/media/photos/vacation"), "fid2".to_string()),
         ];
         let result = resolve_relative_path(Path::new("/media/photos/vacation/beach.png"), &folders);
         // The first folder in the list matches first.
-        assert_eq!(result.as_deref(), Some("vacation/beach.png"));
+        assert_eq!(result.as_ref().map(|(r, _)| r.as_str()), Some("vacation/beach.png"));
+        assert_eq!(result.as_ref().map(|(_, f)| f.as_str()), Some("fid1"));
     }
 
     // -----------------------------------------------------------------------

@@ -1,6 +1,6 @@
 pub mod settings;
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -8,6 +8,10 @@ pub struct WatchedFolder {
     pub path: String,
     #[serde(default)]
     pub label: Option<String>,
+    /// Stable UUID assigned by the server on PUT /config.
+    /// Persisted in the `watched_folders` table.
+    #[serde(default)]
+    pub id: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
@@ -35,6 +39,50 @@ pub fn load_config(conn: &Connection) -> Result<AppConfig, rusqlite::Error> {
 ///
 /// The entire `watched_folders` array is serialized as JSON and stored in a single
 /// config row keyed by `'watched_folders'`.
+/// Ensure all watched folders have stable UUIDs, persisting to the DB.
+///
+/// For each folder in the config:
+/// 1. Looks up the path in `watched_folders` to see if an ID already exists.
+/// 2. If not, generates a new UUID v4.
+/// 3. Upserts the folder entry into `watched_folders`.
+pub fn assign_folder_ids(conn: &Connection, config: &mut AppConfig) -> Result<(), rusqlite::Error> {
+    for folder in &mut config.watched_folders {
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT id FROM watched_folders WHERE path = ?1",
+                params![folder.path],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+
+        folder.id = Some(existing.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()));
+    }
+
+    for folder in &config.watched_folders {
+        if let Some(ref id) = folder.id {
+            conn.execute(
+                "INSERT OR REPLACE INTO watched_folders (id, path, label) VALUES (?1, ?2, ?3)",
+                params![id, folder.path, folder.label],
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Build a map from watched-folder path to its stable UUID.
+///
+/// Used by the indexer and watcher to resolve `folder_id` for files found
+/// inside each watched folder.
+pub fn folder_id_map(config: &AppConfig) -> std::collections::HashMap<String, String> {
+    config
+        .watched_folders
+        .iter()
+        .filter_map(|f| f.id.as_ref().map(|id| (f.path.clone(), id.clone())))
+        .collect()
+}
+
 pub fn save_config(conn: &Connection, config: &AppConfig) -> Result<(), rusqlite::Error> {
     let json = serde_json::to_string(config)
         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
@@ -72,8 +120,9 @@ mod tests {
             WatchedFolder {
                 path: "/tmp/images".to_string(),
                 label: Some("Test images".to_string()),
+                id: None,
             },
-            WatchedFolder { path: "/tmp/videos".to_string(), label: None },
+            WatchedFolder { path: "/tmp/videos".to_string(), label: None, id: None },
         ];
         let config = AppConfig { watched_folders: folders };
 
@@ -93,12 +142,12 @@ mod tests {
         conn.execute_batch("CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT);").unwrap();
 
         let first = AppConfig {
-            watched_folders: vec![WatchedFolder { path: "/first".to_string(), label: None }],
+            watched_folders: vec![WatchedFolder { path: "/first".to_string(), label: None, id: None }],
         };
         save_config(&conn, &first).unwrap();
 
         let second = AppConfig {
-            watched_folders: vec![WatchedFolder { path: "/second".to_string(), label: None }],
+            watched_folders: vec![WatchedFolder { path: "/second".to_string(), label: None, id: None }],
         };
         save_config(&conn, &second).unwrap();
 

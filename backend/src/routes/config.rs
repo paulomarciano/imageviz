@@ -70,7 +70,7 @@ async fn get_config(
 ///    folders are immediately visible in the search index and gallery.
 async fn update_config(
     State(state): State<Arc<ConfigState>>,
-    Json(config): Json<AppConfig>,
+    Json(mut config): Json<AppConfig>,
 ) -> Result<Json<AppConfig>, (StatusCode, Json<Value>)> {
     // Validate watched folder paths
     validation::validate_watched_folders(&config.watched_folders)?;
@@ -108,6 +108,15 @@ async fn update_config(
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error": "Failed to save configuration"})),
+            )
+        })?;
+
+        // Assign stable folder IDs after saving config.
+        crate::config::assign_folder_ids(&conn, &mut config).map_err(|e| {
+            tracing::error!(error = %e, "Failed to assign folder IDs");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Failed to assign folder IDs"})),
             )
         })?;
     }

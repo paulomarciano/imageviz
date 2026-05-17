@@ -41,6 +41,7 @@ async fn test_incremental_index_processes_files_and_skips_unchanged() {
         watched_folders: vec![WatchedFolder {
             path: dir.path().to_string_lossy().to_string(),
             label: None,
+            id: None,
         }],
     };
 
@@ -70,6 +71,7 @@ async fn test_full_index_creates_entries_for_new_files() {
         watched_folders: vec![WatchedFolder {
             path: dir.path().to_string_lossy().to_string(),
             label: None,
+            id: None,
         }],
     };
     let progress = setup_progress();
@@ -98,6 +100,7 @@ async fn test_incremental_index_skips_unchanged_files() {
         watched_folders: vec![WatchedFolder {
             path: dir.path().to_string_lossy().to_string(),
             label: None,
+            id: None,
         }],
     };
 
@@ -122,6 +125,7 @@ async fn test_incremental_index_updates_modified_files() {
         watched_folders: vec![WatchedFolder {
             path: dir.path().to_string_lossy().to_string(),
             label: None,
+            id: None,
         }],
     };
 
@@ -153,6 +157,7 @@ async fn test_remove_deleted_files_cleans_up_db() {
         watched_folders: vec![WatchedFolder {
             path: dir.path().to_string_lossy().to_string(),
             label: None,
+            id: None,
         }],
     };
 
@@ -184,6 +189,7 @@ async fn test_full_index_is_idempotent() {
         watched_folders: vec![WatchedFolder {
             path: dir.path().to_string_lossy().to_string(),
             label: None,
+            id: None,
         }],
     };
 
@@ -209,6 +215,7 @@ async fn test_indexed_item_has_all_required_fields() {
         watched_folders: vec![WatchedFolder {
             path: dir.path().to_string_lossy().to_string(),
             label: None,
+            id: None,
         }],
     };
 
@@ -315,6 +322,7 @@ async fn test_index_stores_raw_text_entries_without_prompt() {
         watched_folders: vec![WatchedFolder {
             path: dir.path().to_string_lossy().to_string(),
             label: None,
+            id: None,
         }],
     };
 
@@ -353,6 +361,7 @@ async fn test_index_extracts_png_metadata_content() {
         watched_folders: vec![WatchedFolder {
             path: dir.path().to_string_lossy().to_string(),
             label: None,
+            id: None,
         }],
     };
 

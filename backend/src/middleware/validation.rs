@@ -263,14 +263,14 @@ mod tests {
     #[test]
     fn test_validate_watched_folders_ok() {
         use crate::config::WatchedFolder;
-        let folders = vec![WatchedFolder { path: "/media/photos".to_string(), label: None }];
+        let folders = vec![WatchedFolder { path: "/media/photos".to_string(), label: None, id: None }];
         assert!(validate_watched_folders(&folders).is_ok());
     }
 
     #[test]
     fn test_validate_watched_folders_empty_path() {
         use crate::config::WatchedFolder;
-        let folders = vec![WatchedFolder { path: "".to_string(), label: None }];
+        let folders = vec![WatchedFolder { path: "".to_string(), label: None, id: None }];
         assert!(validate_watched_folders(&folders).is_err());
     }
 
@@ -280,6 +280,7 @@ mod tests {
         let folders = vec![WatchedFolder {
             path: "/media/../../etc".to_string(),
             label: None,
+            id: None,
         }];
         assert!(validate_watched_folders(&folders).is_err());
     }
