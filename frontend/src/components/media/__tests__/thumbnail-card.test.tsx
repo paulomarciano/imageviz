@@ -88,7 +88,9 @@ describe('ThumbnailCard', () => {
     fireEvent.error(img);
 
     // Assert
-    expect(await screen.findByText('No preview')).toBeInTheDocument();
+    expect(await screen.findByText('Preview unavailable')).toBeInTheDocument();
+    // Card should still be clickable
+    expect(screen.getByRole('button')).toBeInTheDocument();
   });
 
   it('has accessible button role and aria-label', () => {
