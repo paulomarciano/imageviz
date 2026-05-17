@@ -72,7 +72,10 @@ mod tests {
             "INSERT INTO media_items (id, filename, relative_path, mime_type, file_size, folder_id, file_created_at, file_modified_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params!["uuid-c", "c.png", "shared/path.png", "image/png", 300, "fid-a", "2025-01-01T00:00:00Z", "2025-01-01T00:00:00Z"],
         );
-        assert!(result.is_err(), "Same relative_path in same folder must be rejected by compound UNIQUE");
+        assert!(
+            result.is_err(),
+            "Same relative_path in same folder must be rejected by compound UNIQUE"
+        );
 
         // Verify both items exist (2 rows, not 3).
         let count: i32 =

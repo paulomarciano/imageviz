@@ -91,9 +91,7 @@ mod tests {
         encoder.set_color(png::ColorType::Rgb);
         encoder.set_depth(png::BitDepth::Eight);
         for (keyword, value) in chunks {
-            encoder
-                .add_text_chunk(keyword.to_string(), value.to_string())
-                .expect("add text chunk");
+            encoder.add_text_chunk(keyword.to_string(), value.to_string()).expect("add text chunk");
         }
         let mut writer = encoder.write_header().unwrap();
         let data: Vec<u8> = vec![255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255];
@@ -137,10 +135,7 @@ mod tests {
         let path = dir.path().join("prompt_workflow.png");
         create_png_with_text(
             &path,
-            &[
-                ("prompt", r#"{"3":{"seed":42}}"#),
-                ("workflow", r#"{"nodes":[]}"#),
-            ],
+            &[("prompt", r#"{"3":{"seed":42}}"#), ("workflow", r#"{"nodes":[]}"#)],
         );
 
         let extracted = extract_file_data(&path).await.expect("extract");

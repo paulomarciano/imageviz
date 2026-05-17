@@ -306,15 +306,9 @@ async fn test_thumbnail_populates_thumbnail_path() {
         )
         .unwrap();
 
-    assert!(
-        thumb_path.is_some(),
-        "thumbnail_path should be populated after generation"
-    );
+    assert!(thumb_path.is_some(), "thumbnail_path should be populated after generation");
     let path = thumb_path.unwrap();
-    assert!(
-        !path.is_empty(),
-        "thumbnail_path should be a non-empty string"
-    );
+    assert!(!path.is_empty(), "thumbnail_path should be a non-empty string");
     assert!(
         path.contains("abcdef1234567890_200.webp"),
         "thumbnail_path should point to the content-addressed cache file"

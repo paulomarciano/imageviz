@@ -928,21 +928,13 @@ fn test_batch_get_media_items_chunks_above_limit() {
     let ids: Vec<String> = (0..item_count).map(|i| format!("uuid-{i:04}")).collect();
     let results = super::batch_get_media_items(&conn, &ids, None).expect("batch query");
 
-    assert_eq!(
-        results.len(),
-        item_count,
-        "Should return all {item_count} items even when chunked"
-    );
+    assert_eq!(results.len(), item_count, "Should return all {item_count} items even when chunked");
 
     // Verify each expected ID is present.
-    let result_ids: std::collections::HashSet<String> =
-        results.into_iter().map(|r| r.id).collect();
+    let result_ids: std::collections::HashSet<String> = results.into_iter().map(|r| r.id).collect();
     for i in 0..item_count {
         let expected = format!("uuid-{i:04}");
-        assert!(
-            result_ids.contains(&expected),
-            "Missing expected ID: {expected}"
-        );
+        assert!(result_ids.contains(&expected), "Missing expected ID: {expected}");
     }
 }
 

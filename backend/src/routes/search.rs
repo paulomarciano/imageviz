@@ -277,8 +277,10 @@ fn batch_get_media_items(
         let mut stmt = conn.prepare(&sql)?;
 
         // Collect dynamic parameters as trait objects, then convert to slice refs
-        let mut values: Vec<Box<dyn rusqlite::types::ToSql>> =
-            chunk.iter().map(|id| Box::new(id.clone()) as Box<dyn rusqlite::types::ToSql>).collect();
+        let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = chunk
+            .iter()
+            .map(|id| Box::new(id.clone()) as Box<dyn rusqlite::types::ToSql>)
+            .collect();
         if let Some(mime) = mime_type {
             values.push(Box::new(mime.to_string()) as Box<dyn rusqlite::types::ToSql>);
         }
