@@ -22,7 +22,7 @@ echo ""
 # Build frontend
 echo -e "${YELLOW}[frontend]${NC} Building production bundle..."
 cd "$ROOT_DIR/frontend"
-npm ci --silent 2>/dev/null || true
+npm ci
 npm run build
 FRONTEND_SIZE=$(du -sh dist 2>/dev/null | cut -f1 || echo "unknown")
 echo -e "${GREEN}[frontend]${NC} Built: dist/ (${FRONTEND_SIZE})"

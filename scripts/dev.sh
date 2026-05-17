@@ -10,11 +10,15 @@ BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
+PORT="${PORT:-3001}"
+
 cleanup() {
     echo ""
     echo -e "${BLUE}Shutting down...${NC}"
     kill "$BACKEND_PID" 2>/dev/null || true
+    kill "$FRONTEND_PID" 2>/dev/null || true
     wait "$BACKEND_PID" 2>/dev/null || true
+    wait "$FRONTEND_PID" 2>/dev/null || true
     echo -e "${GREEN}All servers stopped.${NC}"
 }
 
@@ -24,7 +28,7 @@ echo -e "${GREEN}Starting ImageViz development servers...${NC}"
 echo ""
 
 # Start backend
-echo -e "${YELLOW}[backend]${NC} Starting on port 3001..."
+echo -e "${YELLOW}[backend]${NC} Starting on port ${PORT}..."
 cd "$ROOT_DIR/backend"
 cargo run &
 BACKEND_PID=$!
@@ -32,7 +36,7 @@ BACKEND_PID=$!
 # Wait for backend health check
 echo -e "${YELLOW}[backend]${NC} Waiting for backend to be ready..."
 for i in $(seq 1 30); do
-    if curl -s http://localhost:3001/api/v1/health > /dev/null 2>&1; then
+    if curl -s "http://localhost:${PORT}/api/v1/health" > /dev/null 2>&1; then
         echo -e "${GREEN}[backend]${NC} Ready!"
         break
     fi
@@ -47,6 +51,7 @@ done
 echo -e "${YELLOW}[frontend]${NC} Starting on port 5173..."
 cd "$ROOT_DIR/frontend"
 npm run dev &
+FRONTEND_PID=$!
 
-# If frontend exits, kill backend
+# Wait for any process to exit
 wait
