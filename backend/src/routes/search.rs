@@ -146,38 +146,34 @@ async fn search_handler(
     let docs = &top_docs[..top_docs.len().min(limit)];
 
     let id_field = schema.get_field("id").unwrap();
-    let mut media_items: Vec<MediaItemSummary> = Vec::with_capacity(docs.len());
 
-    for (_score, doc_address) in docs {
-        let tantivy_doc: tantivy::TantivyDocument = match searcher.doc(*doc_address) {
-            Ok(d) => d,
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to retrieve Tantivy document");
-                continue;
-            }
-        };
+    // Collect IDs from Tantivy hits.
+    let item_ids: Vec<String> = docs
+        .iter()
+        .filter_map(|(_score, doc_address)| {
+            let tantivy_doc: tantivy::TantivyDocument = match searcher.doc(*doc_address) {
+                Ok(d) => d,
+                Err(_) => return None,
+            };
+            let item_id = match tantivy_doc.get_first(id_field).and_then(|v| v.as_str()) {
+                Some(id) if !id.is_empty() => id.to_string(),
+                _ => return None,
+            };
+            Some(item_id)
+        })
+        .collect();
 
-        let item_id = tantivy_doc.get_first(id_field).and_then(|v| v.as_str()).unwrap_or("");
+    // Single DB connection + single batch query instead of N per-hit queries.
+    let conn = state.db.get().map_err(|e| {
+        tracing::error!(error = %e, "Failed to acquire database connection");
+        (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "Service temporarily unavailable"})))
+    })?;
 
-        if item_id.is_empty() {
-            continue;
-        }
-
-        let conn = state.db.get().map_err(|e| {
-            tracing::error!(error = %e, "Failed to acquire database connection");
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({"error": "Service temporarily unavailable"})),
-            )
+    let mut media_items = batch_get_media_items(&conn, &item_ids, params.mime_type.as_deref())
+        .map_err(|e| {
+            tracing::error!(error = %e, "Batch DB lookup failed for search hits");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Search lookup failed"})))
         })?;
-        match get_media_item_by_id(&conn, item_id, params.mime_type.as_deref()) {
-            Ok(Some(item)) => media_items.push(item),
-            Ok(None) => { /* item deleted between Tantivy search and DB lookup */ }
-            Err(e) => {
-                tracing::warn!(error = %e, id = %item_id, "DB lookup failed for search hit");
-            }
-        }
-    }
 
     // ---- Sort results ----
     if params.sort == "recency" {
@@ -232,28 +228,34 @@ struct MediaItemSummary {
 // Database helpers
 // ---------------------------------------------------------------------------
 
-/// Fetch a single media item summary from SQLite by UUID.
+/// Fetch media items from SQLite by IDs — single batch query instead of N
+/// individual lookups.
 ///
-/// Returns `Ok(None)` when the id does not exist (e.g. deleted between
-/// Tantivy search and DB lookup).
-fn get_media_item_by_id(
-    db: &rusqlite::Connection,
-    id: &str,
+/// Uses a dynamic `WHERE id IN (?1, ?2, ..., ?N)` clause.  An optional MIME
+/// type filter is appended as an additional parameter.
+fn batch_get_media_items(
+    conn: &rusqlite::Connection,
+    ids: &[String],
     mime_type: Option<&str>,
-) -> Result<Option<MediaItemSummary>, rusqlite::Error> {
-    const BASE_SQL: &str = "SELECT id, filename, relative_path, mime_type, width, height, file_size, \
-                file_created_at, file_modified_at \
-         FROM media_items WHERE id = ?1";
+) -> Result<Vec<MediaItemSummary>, rusqlite::Error> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
 
-    let sql = if mime_type.is_some() {
+    // Build parameterised IN clause: (?1, ?2, ..., ?N)
+    let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("?{i}")).collect();
+    let mut sql = format!(
         "SELECT id, filename, relative_path, mime_type, width, height, file_size, \
-                file_created_at, file_modified_at \
-         FROM media_items WHERE id = ?1 AND mime_type LIKE ?2"
-    } else {
-        BASE_SQL
-    };
+         file_created_at, file_modified_at \
+         FROM media_items WHERE id IN ({})",
+        placeholders.join(", "),
+    );
 
-    let mut stmt = db.prepare(sql)?;
+    if mime_type.is_some() {
+        sql.push_str(&format!(" AND mime_type LIKE ?{}", ids.len() + 1));
+    }
+
+    let mut stmt = conn.prepare(&sql)?;
 
     let mapper = |row: &rusqlite::Row| -> Result<MediaItemSummary, rusqlite::Error> {
         Ok(MediaItemSummary {
@@ -270,16 +272,17 @@ fn get_media_item_by_id(
         })
     };
 
-    let mut rows = if let Some(mime) = mime_type {
-        stmt.query_map(rusqlite::params![id, mime], mapper)?
-    } else {
-        stmt.query_map(rusqlite::params![id], mapper)?
-    };
-
-    match rows.next() {
-        Some(Ok(item)) => Ok(Some(item)),
-        _ => Ok(None),
+    // Collect dynamic parameters as trait objects, then convert to slice refs
+    let mut values: Vec<Box<dyn rusqlite::types::ToSql>> =
+        ids.iter().map(|id| Box::new(id.clone()) as Box<dyn rusqlite::types::ToSql>).collect();
+    if let Some(mime) = mime_type {
+        values.push(Box::new(mime.to_string()) as Box<dyn rusqlite::types::ToSql>);
     }
+
+    let params: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(|v| v.as_ref()).collect();
+    let rows = stmt.query_map(params.as_slice(), mapper)?;
+
+    rows.collect::<Result<Vec<_>, _>>()
 }
 
 // ---------------------------------------------------------------------------
