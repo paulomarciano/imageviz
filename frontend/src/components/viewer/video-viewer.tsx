@@ -9,6 +9,7 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import type { MediaItemDetail } from '../../types/media';
+import { VideoIcon } from '@/components/shared/icons';
 
 interface VideoViewerProps {
   readonly item: MediaItemDetail;
@@ -88,19 +89,7 @@ export function VideoViewer({ item }: VideoViewerProps) {
     <div className="relative w-full h-full flex items-center justify-center bg-black">
       {error ? (
         <div className="text-gray-400 text-center">
-          <svg
-            className="w-12 h-12 mx-auto mb-3 text-gray-500"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={1.5}
-              d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"
-            />
-          </svg>
+          <VideoIcon className="w-12 h-12 mx-auto mb-3 text-gray-500" />
           <p className="text-lg mb-2">{error}</p>
           <button onClick={handleRetry} className="text-blue-400 hover:text-blue-300">
             Retry

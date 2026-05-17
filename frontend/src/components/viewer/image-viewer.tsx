@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import type { MediaItemDetail } from '../../types/media';
 
 interface ImageViewerProps {
@@ -8,11 +8,15 @@ interface ImageViewerProps {
 export function ImageViewer({ item }: ImageViewerProps) {
   const [zoom, setZoom] = useState(1);
   const [position, setPosition] = useState({ x: 0, y: 0 });
-  const [isDragging, setIsDragging] = useState(false);
-  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
   const [fitMode, setFitMode] = useState(true);
+
+  // Refs for smooth drag (no re-render on mousemove)
+  const containerRef = useRef<HTMLDivElement>(null);
+  const isDraggingRef = useRef(false);
+  const dragStartRef = useRef({ x: 0, y: 0 });
+  const positionRef = useRef({ x: 0, y: 0 });
 
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
@@ -24,27 +28,39 @@ export function ImageViewer({ item }: ImageViewerProps) {
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
       if (zoom > 1) {
-        setIsDragging(true);
-        setDragStart({ x: e.clientX - position.x, y: e.clientY - position.y });
+        isDraggingRef.current = true;
+        dragStartRef.current = {
+          x: e.clientX - positionRef.current.x,
+          y: e.clientY - positionRef.current.y,
+        };
       }
     },
-    [zoom, position],
+    [zoom],
   );
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent) => {
-      if (isDragging) {
-        setPosition({
-          x: e.clientX - dragStart.x,
-          y: e.clientY - dragStart.y,
-        });
+      if (!isDraggingRef.current || !containerRef.current) return;
+
+      const newX = e.clientX - dragStartRef.current.x;
+      const newY = e.clientY - dragStartRef.current.y;
+      positionRef.current = { x: newX, y: newY };
+
+      // Direct DOM manipulation — no React reconciliation on mousemove
+      const img = containerRef.current.querySelector<HTMLImageElement>('img');
+      if (img) {
+        img.style.transform = `translate(${newX}px, ${newY}px) scale(${zoom})`;
       }
     },
-    [isDragging, dragStart],
+    [zoom],
   );
 
   const handleMouseUp = useCallback(() => {
-    setIsDragging(false);
+    if (isDraggingRef.current) {
+      isDraggingRef.current = false;
+      // Update React state once at the end of drag
+      setPosition({ ...positionRef.current });
+    }
   }, []);
 
   const handleDoubleClick = useCallback(() => {
@@ -55,6 +71,7 @@ export function ImageViewer({ item }: ImageViewerProps) {
       setFitMode(true);
       setZoom(1);
       setPosition({ x: 0, y: 0 });
+      positionRef.current = { x: 0, y: 0 };
     }
   }, [fitMode]);
 
@@ -63,11 +80,18 @@ export function ImageViewer({ item }: ImageViewerProps) {
     setImageLoaded(false);
   }, []);
 
+  // Sync React position state to CSS transform when not mid-drag
+  const imgStyle = !fitMode
+    ? {
+        transform: `translate(${position.x}px, ${position.y}px) scale(${zoom})`,
+        transformOrigin: 'center center',
+      }
+    : undefined;
+
   return (
     <div
-      className={`relative w-full h-full flex items-center justify-center bg-black/90 overflow-hidden select-none ${
-        isDragging ? 'cursor-grabbing' : 'cursor-grab'
-      }`}
+      ref={containerRef}
+      className="relative w-full h-full flex items-center justify-center bg-black/90 overflow-hidden select-none cursor-grab active:cursor-grabbing"
       onWheel={handleWheel}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
@@ -97,14 +121,7 @@ export function ImageViewer({ item }: ImageViewerProps) {
             className={`select-none transition-opacity duration-200 ${
               imageLoaded ? 'opacity-100' : 'opacity-0'
             } ${fitMode ? 'max-w-full max-h-full object-contain' : ''}`}
-            style={
-              !fitMode
-                ? {
-                    transform: `translate(${position.x}px, ${position.y}px) scale(${zoom})`,
-                    transformOrigin: 'center center',
-                  }
-                : undefined
-            }
+            style={imgStyle}
             draggable={false}
           />
         </>

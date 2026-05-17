@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { AlertTriangleIcon } from './icons';
 
 interface ErrorStateProps {
   readonly message: string;
@@ -11,19 +12,7 @@ export function ErrorState({ message, details, onRetry }: ErrorStateProps) {
 
   return (
     <div className="flex flex-col items-center justify-center h-full p-8 text-center">
-      <svg
-        className="w-12 h-12 text-red-400 mb-4"
-        fill="none"
-        viewBox="0 0 24 24"
-        stroke="currentColor"
-      >
-        <path
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          strokeWidth={1.5}
-          d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"
-        />
-      </svg>
+      <AlertTriangleIcon className="w-12 h-12 text-red-400 mb-4" />
 
       <p className="text-gray-300 text-lg font-medium mb-2">{message}</p>
 

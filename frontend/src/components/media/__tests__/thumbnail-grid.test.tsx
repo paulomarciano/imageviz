@@ -129,7 +129,6 @@ const EXPECTED_GRID_CLASSES = [
   'lg:grid-cols-4',
   'xl:grid-cols-5',
   'gap-3',
-  'p-3',
 ];
 
 /* ------------------------------------------------------------------ */
@@ -230,9 +229,11 @@ describe('ThumbnailGrid – responsive grid layout', () => {
 
     const { container } = render(<ThumbnailGrid onItemClick={vi.fn()} />);
 
-    // Skeleton grid should use the exact same responsive classes
+    // Skeleton grid should use the exact same responsive classes.
+    // The SkeletonGrid component wraps cards in a grid container nested
+    // inside a padding wrapper.
     const skeletonGrid = container
-      .querySelector('[class*="animate-pulse"]')
+      .querySelector('[class*="grid"] [class*="animate-pulse"]')
       ?.closest('[class*="grid"]');
     expect(skeletonGrid).not.toBeNull();
 

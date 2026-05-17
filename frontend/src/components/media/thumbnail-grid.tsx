@@ -42,7 +42,9 @@ export function ThumbnailGrid({ onItemClick }: ThumbnailGridProps) {
   const mimeType = mimeTypePattern(mediaTypeFilter);
   const sort = useAtomValue(searchSortAtom);
 
-  const browseData = useInfiniteMedia(100, mimeType);
+  const browseEnabled = viewMode !== 'search';
+
+  const browseData = useInfiniteMedia(100, mimeType, browseEnabled);
   const searchData = useSearch(searchQuery, 100, mimeType, sort);
 
   const {

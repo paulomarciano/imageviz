@@ -1,4 +1,6 @@
 import { useEffect, useRef } from 'react';
+import { useFocusTrap } from '../../hooks/use-focus-trap';
+import { CloseIcon } from './icons';
 
 interface Shortcut {
   readonly keys: string[];
@@ -72,40 +74,7 @@ export function ShortcutsPanel({ isOpen, onClose }: ShortcutsPanelProps) {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, onClose]);
 
-  // Trap focus inside the panel modal
-  useEffect(() => {
-    if (!isOpen || !panelRef.current) return;
-
-    const element = panelRef.current;
-    const focusableSelector =
-      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
-
-    const handleTabKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Tab') return;
-
-      const focusableElements = element.querySelectorAll<HTMLElement>(focusableSelector);
-      if (focusableElements.length === 0) return;
-
-      const first = focusableElements[0]!;
-      const last = focusableElements[focusableElements.length - 1]!;
-
-      if (e.shiftKey && document.activeElement === first) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && document.activeElement === last) {
-        e.preventDefault();
-        first.focus();
-      }
-    };
-
-    element.addEventListener('keydown', handleTabKey);
-
-    // Focus the first focusable element on open
-    const firstFocusable = element.querySelector<HTMLElement>(focusableSelector);
-    firstFocusable?.focus();
-
-    return () => element.removeEventListener('keydown', handleTabKey);
-  }, [isOpen]);
+  useFocusTrap(panelRef, isOpen);
 
   if (!isOpen) return null;
 
@@ -129,14 +98,7 @@ export function ShortcutsPanel({ isOpen, onClose }: ShortcutsPanelProps) {
             className="p-1 text-gray-400 hover:text-white transition-colors rounded"
             aria-label="Close shortcuts"
           >
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M6 18L18 6M6 6l12 12"
-              />
-            </svg>
+            <CloseIcon />
           </button>
         </div>
 

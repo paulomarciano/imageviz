@@ -127,23 +127,18 @@ describe('ImageViewer', () => {
     expect(root).toHaveClass('cursor-grab');
   });
 
-  it('applies cursor-grabbing class while dragging', () => {
+  it('has cursor-grab class for pan interaction hint', () => {
     // Arrange
     const item = createMockDetail();
 
     // Act
     render(<ImageViewer item={item} />);
 
-    // We need to first zoom in for dragging to be possible (zoom > 1)
+    // The container always shows cursor-grab; active:cursor-grabbing is
+    // handled by CSS pseudo-class during mousedown (no React state change).
     const container = document.querySelector('[class*="cursor-grab"]')!;
-    fireEvent.wheel(container, { deltaY: -100 });
-
-    // Now mouse down + move = dragging
-    fireEvent.mouseDown(container, { clientX: 100, clientY: 100 });
-    fireEvent.mouseMove(container, { clientX: 150, clientY: 120 });
-
-    // Assert — class is now dynamically applied based on isDragging state
-    expect(container).toHaveClass('cursor-grabbing');
+    expect(container).toHaveClass('cursor-grab');
+    expect(container).toHaveClass('active:cursor-grabbing');
   });
 
   /* ---------- Zoom indicator ---------- */

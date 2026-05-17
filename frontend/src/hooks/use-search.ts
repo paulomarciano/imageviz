@@ -2,6 +2,7 @@ import { useInfiniteQuery } from '@tanstack/react-query';
 import { searchMedia } from '../api/search.ts';
 import type { MediaItem, PaginatedResponse } from '../types';
 import type { SearchSort } from '../store/search-atoms.ts';
+import { CursorPageParam, INITIAL_PAGE_PARAM, getNextPageParam } from './use-cursor-pagination';
 
 /**
  * Custom hook for full-text search with cursor-based pagination.
@@ -32,7 +33,7 @@ export function useSearch(
   const infiniteQuery = useInfiniteQuery<PaginatedResponse<MediaItem>, Error>({
     queryKey: ['search', query, { limit, mimeType: mimeType ?? 'all', sort }],
     queryFn: ({ pageParam }) => {
-      const cursor = pageParam as { cursor?: string; cursor_id?: string } | undefined;
+      const cursor = pageParam as CursorPageParam;
       return searchMedia({
         q: query,
         limit,
@@ -43,14 +44,8 @@ export function useSearch(
       });
     },
     // Initial page has no cursor — backend returns the first page.
-    initialPageParam: undefined as { cursor?: string; cursor_id?: string } | undefined,
-    getNextPageParam: (lastPage) => {
-      if (!lastPage.meta.has_more) return undefined;
-      return {
-        cursor: lastPage.meta.next_cursor ?? undefined,
-        cursor_id: lastPage.meta.next_cursor_id ?? undefined,
-      };
-    },
+    initialPageParam: INITIAL_PAGE_PARAM,
+    getNextPageParam,
     enabled,
     // Search results change less often than the media list.
     staleTime: 2 * 60 * 1000, // 2 minutes

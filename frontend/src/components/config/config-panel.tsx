@@ -1,7 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
+import { useFocusTrap } from '../../hooks/use-focus-trap';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { get } from '../../api/client.ts';
 import type { AppConfig, WatchedFolder, IndexStats } from '../../types/api.ts';
+import { CloseIcon, TrashIcon } from '@/components/shared/icons';
 
 /** Format bytes to human-readable string. */
 function formatBytes(bytes: number): string {
@@ -44,34 +46,7 @@ export function ConfigPanel({ onClose }: ConfigPanelProps) {
   const [initialized, setInitialized] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Focus trap — cycle Tab among focusable elements inside the panel
-  useEffect(() => {
-    const el = panelRef.current;
-    if (!el) return;
-
-    const focusableSelector = 'button, input, select, textarea, [tabindex]:not([tabindex="-1"])';
-
-    const handleTabKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Tab') return;
-      const focusable = el.querySelectorAll<HTMLElement>(focusableSelector);
-      if (focusable.length === 0) return;
-      const first = focusable[0]!;
-      const last = focusable[focusable.length - 1]!;
-      if (e.shiftKey && document.activeElement === first) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && document.activeElement === last) {
-        e.preventDefault();
-        first.focus();
-      }
-    };
-
-    el.addEventListener('keydown', handleTabKey);
-    // Focus the first focusable element when panel opens
-    const firstFocusable = el.querySelector<HTMLElement>(focusableSelector);
-    firstFocusable?.focus();
-    return () => el.removeEventListener('keydown', handleTabKey);
-  }, []);
+  useFocusTrap(panelRef);
 
   // Fetch current config
   const configQuery = useQuery<AppConfig, Error>({
@@ -141,14 +116,7 @@ export function ConfigPanel({ onClose }: ConfigPanelProps) {
           className="p-1 text-gray-400 hover:text-white transition-colors rounded"
           aria-label="Close settings"
         >
-          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M6 18L18 6M6 6l12 12"
-            />
-          </svg>
+          <CloseIcon />
         </button>
       </div>
 
@@ -221,14 +189,7 @@ export function ConfigPanel({ onClose }: ConfigPanelProps) {
                     className="ml-2 p-1 text-gray-500 hover:text-red-400 shrink-0 transition-colors"
                     aria-label={`Remove ${folder.path}`}
                   >
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                        d="M6 18L18 6M6 6l12 12"
-                      />
-                    </svg>
+                    <TrashIcon />
                   </button>
                 </li>
               ))}

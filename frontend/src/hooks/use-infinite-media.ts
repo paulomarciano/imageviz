@@ -1,12 +1,14 @@
 import { useInfiniteQuery } from '@tanstack/react-query';
 import { fetchMediaList } from '../api/media';
 import type { MediaItem, PaginatedResponse } from '../types';
+import { CursorPageParam, INITIAL_PAGE_PARAM, getNextPageParam } from './use-cursor-pagination';
 
-export function useInfiniteMedia(limit = 100, mimeType?: string) {
+export function useInfiniteMedia(limit = 100, mimeType?: string, enabled = true) {
   const query = useInfiniteQuery<PaginatedResponse<MediaItem>, Error>({
     queryKey: ['media', 'list', { limit, mimeType: mimeType ?? 'all' }],
+    enabled,
     queryFn: ({ pageParam }) => {
-      const cursor = pageParam as { cursor?: string; cursor_id?: string } | undefined;
+      const cursor = pageParam as CursorPageParam;
       return fetchMediaList({
         limit,
         cursor: cursor?.cursor,
@@ -14,14 +16,8 @@ export function useInfiniteMedia(limit = 100, mimeType?: string) {
         mime_type: mimeType,
       });
     },
-    initialPageParam: undefined as { cursor?: string; cursor_id?: string } | undefined,
-    getNextPageParam: (lastPage) => {
-      if (!lastPage.meta.has_more) return undefined;
-      return {
-        cursor: lastPage.meta.next_cursor ?? undefined,
-        cursor_id: lastPage.meta.next_cursor_id ?? undefined,
-      };
-    },
+    initialPageParam: INITIAL_PAGE_PARAM,
+    getNextPageParam,
     staleTime: 5 * 60 * 1000,
     gcTime: 30 * 60 * 1000,
     refetchOnWindowFocus: false,

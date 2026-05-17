@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo } from 'react';
 import { useAtom, useAtomValue } from 'jotai';
+import { useQueryClient } from '@tanstack/react-query';
 import { DndProvider } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import { AppShell } from './components/layout/app-shell';
@@ -20,6 +21,7 @@ import { useSseGridUpdates } from './hooks/use-sse-grid-updates';
 import type { MediaItem } from './types/media';
 
 function App() {
+  const queryClient = useQueryClient();
   const searchQuery = useAtomValue(searchQueryAtom);
   const viewMode = useAtomValue(mediaViewModeAtom);
   const [selectedItem, setSelectedItem] = useAtom(selectedMediaItemAtom);
@@ -54,8 +56,8 @@ function App() {
   // Wire SSE events → TanStack Query cache
   useSseGridUpdates();
 
-  const browseData = useInfiniteMedia();
-  const searchData = useSearch(searchQuery);
+  const browseData = useInfiniteMedia(100, undefined, viewMode !== 'search');
+  const searchData = useSearch(searchQuery, 100, undefined, 'recency');
   const allItems = viewMode === 'search' ? searchData.results : browseData.allItems;
 
   const handleItemClick = useCallback(
@@ -92,8 +94,11 @@ function App() {
 
   const handleClose = useCallback(() => {
     setDetailOpen(false);
+    if (selectedItem) {
+      queryClient.removeQueries({ queryKey: ['media', 'item', selectedItem.id] });
+    }
     setSelectedItem(null);
-  }, [setDetailOpen, setSelectedItem]);
+  }, [setDetailOpen, setSelectedItem, selectedItem, queryClient]);
 
   return (
     <DndProvider backend={HTML5Backend}>

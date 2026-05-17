@@ -14,50 +14,13 @@ import { formatFileSize } from '../../utils/format';
 import { ImageViewer } from './image-viewer';
 import { VideoViewer } from './video-viewer';
 import { MetadataPanel } from './metadata-panel';
+import { useFocusTrap } from '../../hooks/use-focus-trap';
 
 interface DetailViewProps {
   readonly items: MediaItem[];
   readonly currentIndex: number;
   readonly onNavigate: (index: number) => void;
   readonly onClose: () => void;
-}
-
-/**
- * Trap focus within the modal so Tab/Shift+Tab cycle among interactive
- * elements inside the dialog rather than escaping to the page behind it.
- */
-function useFocusTrap(containerRef: React.RefObject<HTMLDivElement | null>) {
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== 'Tab') return;
-
-      const focusable = el.querySelectorAll<HTMLElement>(
-        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-      );
-      if (focusable.length === 0) return;
-
-      const first = focusable[0]!;
-      const last = focusable[focusable.length - 1]!;
-
-      if (e.shiftKey) {
-        if (document.activeElement === first) {
-          e.preventDefault();
-          last.focus();
-        }
-      } else {
-        if (document.activeElement === last) {
-          e.preventDefault();
-          first.focus();
-        }
-      }
-    };
-
-    el.addEventListener('keydown', handleKeyDown);
-    return () => el.removeEventListener('keydown', handleKeyDown);
-  }, [containerRef]);
 }
 
 export function DetailView({ items, currentIndex, onNavigate, onClose }: DetailViewProps) {

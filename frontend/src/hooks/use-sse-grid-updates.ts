@@ -8,12 +8,20 @@
  * - Invalidates all queries on `indexing_complete` and `lagged`
  */
 
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useSetAtom } from 'jotai';
 import { useSse } from './use-sse';
 import { sseStatusAtom, recentSseEventsAtom, newFileCountAtom } from '../store/sse-atoms';
 import type { SseEvent, MediaItem } from '../types';
+
+/** Events older than this are pruned from the debug log. */
+const FIVE_MINUTES_MS = 5 * 60 * 1000;
+
+/** Max recent events kept in the atom for debugging. */
+const MAX_RECENT_EVENTS = 50;
+
+type TimedEvent = SseEvent & { _timestamp: number };
 
 /**
  * Global SSE event → TanStack Query cache bridge hook.
@@ -23,17 +31,25 @@ import type { SseEvent, MediaItem } from '../types';
  * - Removes items on `file_deleted`
  * - Invalidates individual item queries on `file_modified`
  * - Invalidates all queries on `indexing_complete` and `lagged`
+ * - Prunes events older than 5 minutes from the debug store
  */
 export function useSseGridUpdates() {
   const queryClient = useQueryClient();
   const setSseStatus = useSetAtom(sseStatusAtom);
   const setRecentEvents = useSetAtom(recentSseEventsAtom);
   const setNewFileCount = useSetAtom(newFileCountAtom);
+  const recentRef = useRef<TimedEvent[]>([]);
 
   const onEvent = useCallback(
     (event: SseEvent) => {
-      // Track recent events (last 50 for debugging)
-      setRecentEvents((prev) => [event, ...prev].slice(0, 50));
+      const now = Date.now();
+      const timedEvent: TimedEvent = { ...event, _timestamp: now };
+
+      // Track recent events with time-based pruning (for debugging)
+      recentRef.current = [timedEvent, ...recentRef.current]
+        .filter((e) => now - e._timestamp < FIVE_MINUTES_MS)
+        .slice(0, MAX_RECENT_EVENTS);
+      setRecentEvents(recentRef.current);
 
       switch (event.event) {
         case 'file_created': {

@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { AlertTriangleIcon } from './icons';
 
 interface ErrorBoundaryProps {
   readonly children: ReactNode;
@@ -35,19 +36,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
       return (
         <div className="h-full flex items-center justify-center p-8">
           <div className="bg-gray-800 border border-gray-700 rounded-lg p-6 max-w-md text-center">
-            <svg
-              className="w-12 h-12 text-red-400 mx-auto mb-3"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={1.5}
-                d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"
-              />
-            </svg>
+            <AlertTriangleIcon className="w-12 h-12 text-red-400 mx-auto mb-3" />
             <h2 className="text-lg font-semibold text-white mb-2">Something went wrong</h2>
             <p className="text-gray-400 text-sm mb-4">
               {this.state.error?.message || 'An unexpected error occurred'}
