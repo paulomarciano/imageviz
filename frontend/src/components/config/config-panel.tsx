@@ -1,8 +1,8 @@
-import { useRef, useState } from 'react';
-import { useFocusTrap } from '../../hooks/use-focus-trap';
+import { useEffect, useRef, useState } from 'react';
+import { useFocusTrap } from '@/hooks/use-focus-trap';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { get } from '../../api/client.ts';
-import type { AppConfig, WatchedFolder, IndexStats } from '../../types/api.ts';
+import { get } from '@/api/client';
+import type { AppConfig, WatchedFolder, IndexStats } from '@/types/api';
 import { CloseIcon, TrashIcon } from '@/components/shared/icons';
 
 /** Format bytes to human-readable string. */
@@ -62,10 +62,12 @@ export function ConfigPanel({ onClose }: ConfigPanelProps) {
   });
 
   // Initialize local state from fetched config
-  if (configQuery.data && !initialized) {
-    setLocalFolders(configQuery.data.watched_folders);
-    setInitialized(true);
-  }
+  useEffect(() => {
+    if (configQuery.data && !initialized) {
+      setLocalFolders(configQuery.data.watched_folders);
+      setInitialized(true);
+    }
+  }, [configQuery.data, initialized]);
 
   // Save mutation
   const saveMutation = useMutation<AppConfig, Error, AppConfig>({

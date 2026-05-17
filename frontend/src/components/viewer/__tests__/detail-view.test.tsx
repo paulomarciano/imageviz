@@ -6,7 +6,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { screen, fireEvent } from '@testing-library/react';
+import { renderWithProviders } from '../../../test-utils/render-utils';
 import { DetailView } from '../detail-view';
 import type { MediaItem } from '../../../types/media';
 
@@ -64,21 +65,21 @@ describe('DetailView', () => {
   /* ---------- Rendering ---------- */
 
   it('renders nothing when items array is empty', () => {
-    const { container } = render(
+    const { container } = renderWithProviders(
       <DetailView items={[]} currentIndex={0} onNavigate={vi.fn()} onClose={vi.fn()} />,
     );
     expect(container.innerHTML).toBe('');
   });
 
   it('renders nothing when currentIndex is out of bounds', () => {
-    const { container } = render(
+    const { container } = renderWithProviders(
       <DetailView items={mockItems} currentIndex={99} onNavigate={vi.fn()} onClose={vi.fn()} />,
     );
     expect(container.innerHTML).toBe('');
   });
 
   it('renders the overlay container', () => {
-    render(<DetailView {...defaultProps} />);
+    renderWithProviders(<DetailView {...defaultProps} />);
     const overlay = document.querySelector('.fixed.inset-0');
     expect(overlay).toBeInTheDocument();
   });
@@ -86,13 +87,13 @@ describe('DetailView', () => {
   /* ---------- Close button ---------- */
 
   it('shows close button', () => {
-    render(<DetailView {...defaultProps} />);
+    renderWithProviders(<DetailView {...defaultProps} />);
     expect(screen.getByLabelText('Close detail view')).toBeInTheDocument();
   });
 
   it('calls onClose when close button clicked', () => {
     const onClose = vi.fn();
-    render(<DetailView {...defaultProps} onClose={onClose} />);
+    renderWithProviders(<DetailView {...defaultProps} onClose={onClose} />);
     fireEvent.click(screen.getByLabelText('Close detail view'));
     expect(onClose).toHaveBeenCalledOnce();
   });
@@ -100,35 +101,35 @@ describe('DetailView', () => {
   /* ---------- Navigation buttons ---------- */
 
   it('shows previous button when not at first item', () => {
-    render(<DetailView {...defaultProps} currentIndex={1} />);
+    renderWithProviders(<DetailView {...defaultProps} currentIndex={1} />);
     expect(screen.getByLabelText('Previous item')).toBeInTheDocument();
   });
 
   it('does not show previous button at first item', () => {
-    render(<DetailView {...defaultProps} currentIndex={0} />);
+    renderWithProviders(<DetailView {...defaultProps} currentIndex={0} />);
     expect(screen.queryByLabelText('Previous item')).not.toBeInTheDocument();
   });
 
   it('does not show next button at last item', () => {
-    render(<DetailView {...defaultProps} currentIndex={1} />);
+    renderWithProviders(<DetailView {...defaultProps} currentIndex={1} />);
     expect(screen.queryByLabelText('Next item')).not.toBeInTheDocument();
   });
 
   it('shows next button when not at last item', () => {
-    render(<DetailView {...defaultProps} currentIndex={0} />);
+    renderWithProviders(<DetailView {...defaultProps} currentIndex={0} />);
     expect(screen.getByLabelText('Next item')).toBeInTheDocument();
   });
 
   it('calls onNavigate with previous index when previous is clicked', () => {
     const onNavigate = vi.fn();
-    render(<DetailView {...defaultProps} currentIndex={1} onNavigate={onNavigate} />);
+    renderWithProviders(<DetailView {...defaultProps} currentIndex={1} onNavigate={onNavigate} />);
     fireEvent.click(screen.getByLabelText('Previous item'));
     expect(onNavigate).toHaveBeenCalledWith(0);
   });
 
   it('calls onNavigate with next index when next is clicked', () => {
     const onNavigate = vi.fn();
-    render(<DetailView {...defaultProps} currentIndex={0} onNavigate={onNavigate} />);
+    renderWithProviders(<DetailView {...defaultProps} currentIndex={0} onNavigate={onNavigate} />);
     fireEvent.click(screen.getByLabelText('Next item'));
     expect(onNavigate).toHaveBeenCalledWith(1);
   });
@@ -137,35 +138,35 @@ describe('DetailView', () => {
 
   it('calls onClose on Escape key', () => {
     const onClose = vi.fn();
-    render(<DetailView {...defaultProps} onClose={onClose} />);
+    renderWithProviders(<DetailView {...defaultProps} onClose={onClose} />);
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(onClose).toHaveBeenCalled();
   });
 
   it('navigates forward with ArrowRight', () => {
     const onNavigate = vi.fn();
-    render(<DetailView {...defaultProps} currentIndex={0} onNavigate={onNavigate} />);
+    renderWithProviders(<DetailView {...defaultProps} currentIndex={0} onNavigate={onNavigate} />);
     fireEvent.keyDown(window, { key: 'ArrowRight' });
     expect(onNavigate).toHaveBeenCalledWith(1);
   });
 
   it('navigates backward with ArrowLeft', () => {
     const onNavigate = vi.fn();
-    render(<DetailView {...defaultProps} currentIndex={1} onNavigate={onNavigate} />);
+    renderWithProviders(<DetailView {...defaultProps} currentIndex={1} onNavigate={onNavigate} />);
     fireEvent.keyDown(window, { key: 'ArrowLeft' });
     expect(onNavigate).toHaveBeenCalledWith(0);
   });
 
   it('does not navigate left when at first item', () => {
     const onNavigate = vi.fn();
-    render(<DetailView {...defaultProps} onNavigate={onNavigate} />);
+    renderWithProviders(<DetailView {...defaultProps} onNavigate={onNavigate} />);
     fireEvent.keyDown(window, { key: 'ArrowLeft' });
     expect(onNavigate).not.toHaveBeenCalled();
   });
 
   it('does not navigate right when at last item', () => {
     const onNavigate = vi.fn();
-    render(<DetailView {...defaultProps} currentIndex={1} onNavigate={onNavigate} />);
+    renderWithProviders(<DetailView {...defaultProps} currentIndex={1} onNavigate={onNavigate} />);
     fireEvent.keyDown(window, { key: 'ArrowRight' });
     expect(onNavigate).not.toHaveBeenCalled();
   });
@@ -173,12 +174,12 @@ describe('DetailView', () => {
   /* ---------- Body scroll lock ---------- */
 
   it('locks body scroll on mount', () => {
-    render(<DetailView {...defaultProps} />);
+    renderWithProviders(<DetailView {...defaultProps} />);
     expect(document.body.style.overflow).toBe('hidden');
   });
 
   it('restores body scroll on unmount', () => {
-    const { unmount } = render(<DetailView {...defaultProps} />);
+    const { unmount } = renderWithProviders(<DetailView {...defaultProps} />);
     unmount();
     expect(document.body.style.overflow).toBe('');
   });
@@ -186,14 +187,14 @@ describe('DetailView', () => {
   /* ---------- Metadata panel ---------- */
 
   it('renders metadata panel', () => {
-    render(<DetailView {...defaultProps} />);
+    renderWithProviders(<DetailView {...defaultProps} />);
     expect(screen.getByText('No metadata available for this file')).toBeInTheDocument();
   });
 
   /* ---------- Animation class ---------- */
 
   it('has fade-in animation class', () => {
-    render(<DetailView {...defaultProps} />);
+    renderWithProviders(<DetailView {...defaultProps} />);
     const overlay = document.querySelector('.fixed.inset-0');
     expect(overlay).toHaveClass('animate-fade-in');
   });

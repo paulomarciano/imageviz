@@ -2,7 +2,7 @@ import { useAtom } from 'jotai';
 import { SearchBar } from '../search/search-bar';
 import { MediaTypeFilter } from '../search/media-type-filter';
 import { SortToggle } from '../search/sort-toggle';
-import { configPanelOpenAtom } from '../../store/ui-atoms';
+import { configPanelOpenAtom } from '@/store/ui-atoms';
 import { GearIcon } from '@/components/shared/icons';
 
 export function Header() {

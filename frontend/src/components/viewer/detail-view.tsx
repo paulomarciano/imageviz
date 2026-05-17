@@ -7,14 +7,15 @@
  * `currentIndex` for arrow-based navigation.
  */
 
-import { useEffect, useState, useRef } from 'react';
-import type { MediaItem, MediaItemDetail } from '../../types/media';
-import { fetchMediaItem } from '../../api/media';
-import { formatFileSize } from '../../utils/format';
+import { useEffect, useRef } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import type { MediaItem, MediaItemDetail } from '@/types/media';
+import { fetchMediaItem } from '@/api/media';
+import { formatFileSize } from '@/utils/format';
 import { ImageViewer } from './image-viewer';
 import { VideoViewer } from './video-viewer';
 import { MetadataPanel } from './metadata-panel';
-import { useFocusTrap } from '../../hooks/use-focus-trap';
+import { useFocusTrap } from '@/hooks/use-focus-trap';
 
 interface DetailViewProps {
   readonly items: MediaItem[];
@@ -24,47 +25,33 @@ interface DetailViewProps {
 }
 
 export function DetailView({ items, currentIndex, onNavigate, onClose }: DetailViewProps) {
-  const [detailItem, setDetailItem] = useState<MediaItemDetail | null>(null);
-  const [loadingDetail, setLoadingDetail] = useState(false);
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
 
   const item = items[currentIndex];
-  if (!item) return null;
+
+  const { data: detailItem, isLoading: loadingDetail } = useQuery<MediaItemDetail>({
+    queryKey: ['media', 'item', item?.id],
+    queryFn: async () => {
+      try {
+        return await fetchMediaItem(item!.id);
+      } catch {
+        return {
+          ...item!,
+          file_url: `/api/v1/media/${item!.id}/file`,
+          metadata: null,
+        } as MediaItemDetail;
+      }
+    },
+    enabled: !!item,
+    staleTime: 5 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
+  });
 
   // Focus the close button on mount (first focusable element).
   useEffect(() => {
     closeButtonRef.current?.focus();
   }, []);
-
-  // Fetch full detail when the selected item changes.
-  useEffect(() => {
-    let cancelled = false;
-    setLoadingDetail(true);
-
-    fetchMediaItem(item.id)
-      .then((detail) => {
-        if (!cancelled) {
-          setDetailItem(detail);
-          setLoadingDetail(false);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          // Fallback: construct MediaItemDetail from the list MediaItem.
-          setDetailItem({
-            ...item,
-            file_url: `/api/v1/media/${item.id}/file`,
-            metadata: null,
-          });
-          setLoadingDetail(false);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [item.id, item]);
 
   // Keyboard navigation: ← → navigate, Escape closes.
   useEffect(() => {
@@ -96,6 +83,9 @@ export function DetailView({ items, currentIndex, onNavigate, onClose }: DetailV
 
   // Focus trap inside the modal.
   useFocusTrap(overlayRef);
+
+  // Guard: all hooks must be called before this point.
+  if (!item) return null;
 
   const isVideo = item.mime_type.startsWith('video/');
 
