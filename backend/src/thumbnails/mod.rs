@@ -11,6 +11,7 @@
 
 pub mod cache;
 pub mod image;
+pub mod limiter;
 pub mod video;
 
 pub use self::cache::get_or_generate_thumbnail;

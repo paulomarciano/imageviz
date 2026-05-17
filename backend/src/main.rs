@@ -13,6 +13,7 @@ use imageviz_backend::routes::events::EventsState;
 use imageviz_backend::routes::media::MediaState;
 use imageviz_backend::routes::search::SearchState;
 use imageviz_backend::routes::stats::StatsState;
+use imageviz_backend::thumbnails::limiter::ThumbnailLimiter;
 use imageviz_backend::search::IndexManager;
 use imageviz_backend::watcher::FileWatcher;
 use imageviz_backend::watcher::handler::SseEvent;
@@ -45,6 +46,10 @@ async fn main() {
         IndexManager::open_or_create(&settings.tantivy_index_dir)
             .expect("Failed to open Tantivy index"),
     );
+
+    let thumbnail_limiter = Arc::new(ThumbnailLimiter::new(
+        imageviz_backend::thumbnails::limiter::max_thumbnail_concurrency(),
+    ));
 
     let progress = Arc::new(ProgressTracker::new());
 
@@ -82,6 +87,7 @@ async fn main() {
     let media_state = Arc::new(MediaState {
         db: Arc::clone(&db),
         thumbnail_cache_dir: settings.thumbnail_cache_dir.clone(),
+        thumbnail_limiter: Arc::clone(&thumbnail_limiter),
     });
     let search_state =
         Arc::new(SearchState { index_manager: Arc::clone(&index_manager), db: Arc::clone(&db) });

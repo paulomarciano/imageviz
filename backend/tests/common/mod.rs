@@ -81,6 +81,9 @@ pub fn create_test_app_with_search() -> TestApp {
     let media_state = Arc::new(imageviz_backend::routes::media::MediaState {
         db: Arc::clone(&db),
         thumbnail_cache_dir: cache_dir.path().to_path_buf(),
+        thumbnail_limiter: Arc::new(
+            imageviz_backend::thumbnails::limiter::ThumbnailLimiter::new(16),
+        ),
     });
     let search_state = Arc::new(imageviz_backend::routes::search::SearchState {
         index_manager: Arc::clone(&index_manager),

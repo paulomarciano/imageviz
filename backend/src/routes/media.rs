@@ -15,11 +15,13 @@ use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 use tokio::sync::Mutex;
 
 use crate::thumbnails::cache::CacheError;
+use crate::thumbnails::limiter::ThumbnailLimiter;
 
 /// Shared application state for media endpoints.
 pub struct MediaState {
     pub db: Arc<Mutex<rusqlite::Connection>>,
     pub thumbnail_cache_dir: PathBuf,
+    pub thumbnail_limiter: Arc<ThumbnailLimiter>,
 }
 
 pub fn routes() -> Router<Arc<MediaState>> {
@@ -624,6 +626,14 @@ async fn serve_thumbnail(
         .unwrap_or_default();
     drop(db);
 
+    // Acquire thumbnail generation permit (limits CPU contention)
+    let _permit = state.thumbnail_limiter.acquire().await.map_err(|_| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "Too many thumbnail requests. Try again later."})),
+        )
+    })?;
+
     // Generate or retrieve cached thumbnail
     let thumbnail = crate::thumbnails::get_or_generate_thumbnail(
         &file_path,
@@ -685,6 +695,7 @@ mod tests {
         let state = Arc::new(MediaState {
             db: Arc::new(Mutex::new(conn)),
             thumbnail_cache_dir: cache_dir.path().to_path_buf(),
+            thumbnail_limiter: Arc::new(ThumbnailLimiter::new(16)), // generous for tests
         });
         (state, cache_dir)
     }

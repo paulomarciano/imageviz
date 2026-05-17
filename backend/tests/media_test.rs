@@ -35,6 +35,9 @@ fn create_media_test_app() -> (Router, Arc<MediaState>, tempfile::TempDir) {
     let media_state = Arc::new(MediaState {
         db: Arc::clone(&db),
         thumbnail_cache_dir: cache_dir.path().to_path_buf(),
+        thumbnail_limiter: Arc::new(
+            imageviz_backend::thumbnails::limiter::ThumbnailLimiter::new(16),
+        ),
     });
 
     let app = imageviz_backend::health_router()
