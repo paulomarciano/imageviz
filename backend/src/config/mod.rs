@@ -68,6 +68,13 @@ pub fn assign_folder_ids(conn: &Connection, config: &mut AppConfig) -> Result<()
         }
     }
 
+    // Persist the IDs back to the config table JSON so that downstream
+    // readers (e.g. load_watched_folders in the watcher handler) can
+    // resolve folder IDs without a separate query to the watched_folders
+    // table. Without this, every file event log-floods with:
+    //   "File ... is not inside any configured watched folder"
+    save_config(conn, config)?;
+
     Ok(())
 }
 
