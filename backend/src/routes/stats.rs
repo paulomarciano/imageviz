@@ -1,15 +1,17 @@
 use axum::{Router, extract::State, http::StatusCode, response::Json, routing::get};
+use r2d2::Pool;
+
+use crate::db::SqliteConnectionManager;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 
 use crate::indexer::progress::{IndexStatus, ProgressTracker};
 
 /// Shared application state for the stats endpoint.
 pub struct StatsState {
-    pub db: Arc<Mutex<rusqlite::Connection>>,
+    pub db: Pool<SqliteConnectionManager>,
     pub progress: Arc<ProgressTracker>,
 }
 
@@ -40,17 +42,20 @@ pub struct IndexingInfo {
 async fn get_stats(
     State(state): State<Arc<StatsState>>,
 ) -> Result<Json<IndexStats>, (StatusCode, Json<Value>)> {
-    let db = state.db.lock().await;
+    let conn = state.db.get().map_err(|e| {
+        tracing::error!(error = %e, "Failed to acquire database connection");
+        (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "Service temporarily unavailable"})))
+    })?;
 
     // Total file count
     let total: u64 =
-        db.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).map_err(|e| {
+        conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).map_err(|e| {
             tracing::error!(error = %e, "Failed to count media items");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
         })?;
 
     // Total file size
-    let total_file_size: u64 = db
+    let total_file_size: u64 = conn
         .query_row("SELECT COALESCE(SUM(file_size), 0) FROM media_items", [], |r| r.get(0))
         .map_err(|e| {
             tracing::error!(error = %e, "Failed to sum media file sizes");
@@ -58,7 +63,7 @@ async fn get_stats(
         })?;
 
     // MIME type histogram
-    let mut stmt = db
+    let mut stmt = conn
         .prepare(
             "SELECT mime_type, COUNT(*) as cnt FROM media_items \
              GROUP BY mime_type ORDER BY cnt DESC",
@@ -83,7 +88,7 @@ async fn get_stats(
 
     // Last indexed timestamp (most recent `indexed_at` across all items)
     let last_indexed_at: Option<String> =
-        db.query_row("SELECT MAX(indexed_at) FROM media_items", [], |r| r.get(0)).unwrap_or(None);
+        conn.query_row("SELECT MAX(indexed_at) FROM media_items", [], |r| r.get(0)).unwrap_or(None);
 
     // Indexing status from the ProgressTracker
     let snapshot = state.progress.snapshot();
@@ -114,12 +119,15 @@ mod tests {
     /// ProgressTracker.  The database is pre-populated with the
     /// `media_items` table so queries return clean results.
     fn test_state() -> Arc<StatsState> {
-        let mut conn = crate::db::open_in_memory().expect("Failed to create in-memory database");
-        crate::db::migrations::run_migrations(&mut conn).expect("Failed to run migrations");
+        let pool = crate::db::pool::create_in_memory_pool();
+        {
+            let mut conn = pool.get().expect("Failed to get connection for migrations");
+            crate::db::migrations::run_migrations(&mut conn).expect("Failed to run migrations");
+        }
 
         let progress = Arc::new(ProgressTracker::new());
 
-        Arc::new(StatsState { db: Arc::new(Mutex::new(conn)), progress })
+        Arc::new(StatsState { db: pool, progress })
     }
 
     #[tokio::test]
@@ -155,20 +163,20 @@ mod tests {
 
         // Seed media items with various MIME types and sizes
         {
-            let db = state.db.lock().await;
-            db.execute(
+            let conn = state.db.get().expect("Failed to get DB connection");
+            conn.execute(
                 "INSERT INTO media_items \
                  (id, filename, relative_path, mime_type, file_size, file_created_at, file_modified_at) \
                  VALUES ('a', 'a.png', 'a.png', 'image/png', 100, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')",
                 [],
             ).unwrap();
-            db.execute(
+            conn.execute(
                 "INSERT INTO media_items \
                  (id, filename, relative_path, mime_type, file_size, file_created_at, file_modified_at) \
                  VALUES ('b', 'b.jpg', 'b.jpg', 'image/jpeg', 200, '2025-01-02T00:00:00Z', '2025-01-02T00:00:00Z')",
                 [],
             ).unwrap();
-            db.execute(
+            conn.execute(
                 "INSERT INTO media_items \
                  (id, filename, relative_path, mime_type, file_size, file_created_at, file_modified_at) \
                  VALUES ('c', 'c.webm', 'c.webm', 'video/webm', 5000, '2025-01-03T00:00:00Z', '2025-01-03T00:00:00Z')",
@@ -207,11 +215,11 @@ mod tests {
 
         // Seed multiple items with the same MIME type
         {
-            let db = state.db.lock().await;
+            let conn = state.db.get().expect("Failed to get DB connection");
             // 2 PNGs, 3 JPEGs, 1 WEBM
             for i in 0..2 {
                 let id = format!("png-{}", i);
-                db.execute(
+                conn.execute(
                     "INSERT INTO media_items \
                      (id, filename, relative_path, mime_type, file_size, file_created_at, file_modified_at) \
                      VALUES (?1, ?2, ?2, 'image/png', 100, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')",
@@ -220,14 +228,14 @@ mod tests {
             }
             for i in 0..3 {
                 let id = format!("jpg-{}", i);
-                db.execute(
+                conn.execute(
                     "INSERT INTO media_items \
                      (id, filename, relative_path, mime_type, file_size, file_created_at, file_modified_at) \
                      VALUES (?1, ?2, ?2, 'image/jpeg', 200, '2025-01-02T00:00:00Z', '2025-01-02T00:00:00Z')",
                     rusqlite::params![id, format!("{}.jpg", id)],
                 ).unwrap();
             }
-            db.execute(
+            conn.execute(
                 "INSERT INTO media_items \
                  (id, filename, relative_path, mime_type, file_size, file_created_at, file_modified_at) \
                  VALUES ('webm-0', 'c.webm', 'c.webm', 'video/webm', 5000, '2025-01-03T00:00:00Z', '2025-01-03T00:00:00Z')",

@@ -2,7 +2,10 @@ use rusqlite::Connection;
 use std::path::Path;
 
 pub mod migrations;
+pub mod pool;
 pub mod schema;
+
+pub use pool::SqliteConnectionManager;
 
 #[cfg(test)]
 mod schema_test;

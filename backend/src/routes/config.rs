@@ -5,6 +5,9 @@ use axum::{
     response::Json,
     routing::get,
 };
+use r2d2::Pool;
+
+use crate::db::SqliteConnectionManager;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -19,11 +22,11 @@ use crate::watcher::FileWatcher;
 
 /// Shared application state for config endpoints.
 ///
-/// Wraps a SQLite connection, file watcher, Tantivy index manager, and
+/// Wraps a SQLite connection pool, file watcher, Tantivy index manager, and
 /// progress tracker so that the [`update_config`] handler can dynamically
 /// add watched folders at runtime and trigger a background re-index.
 pub struct ConfigState {
-    pub db: Arc<Mutex<rusqlite::Connection>>,
+    pub db: Pool<SqliteConnectionManager>,
     /// File-system watcher — used to add/remove watches for new folders.
     pub watcher: Arc<Mutex<FileWatcher>>,
     /// Tantivy search index manager — needed for background re-index.
@@ -45,8 +48,11 @@ pub fn routes() -> Router<Arc<ConfigState>> {
 async fn get_config(
     State(state): State<Arc<ConfigState>>,
 ) -> Result<Json<AppConfig>, (StatusCode, Json<Value>)> {
-    let db = state.db.lock().await;
-    let config = crate::config::load_config(&db).map_err(|e| {
+    let conn = state.db.get().map_err(|e| {
+        tracing::error!(error = %e, "Failed to acquire database connection");
+        (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "Service temporarily unavailable"})))
+    })?;
+    let config = crate::config::load_config(&conn).map_err(|e| {
         tracing::error!(error = %e, "Failed to load config from database");
         (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Failed to load configuration"})))
     })?;
@@ -72,8 +78,14 @@ async fn update_config(
     // Load the old config from the database *before* overwriting so that
     // we can diff the folder lists and know which paths to add/remove.
     let old_config = {
-        let db = state.db.lock().await;
-        crate::config::load_config(&db).map_err(|e| {
+        let conn = state.db.get().map_err(|e| {
+            tracing::error!(error = %e, "Failed to acquire database connection");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "Service temporarily unavailable"})),
+            )
+        })?;
+        crate::config::load_config(&conn).map_err(|e| {
             tracing::error!(error = %e, "Failed to load config from database");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -84,8 +96,14 @@ async fn update_config(
 
     // Persist the new config.
     {
-        let db = state.db.lock().await;
-        crate::config::save_config(&db, &config).map_err(|e| {
+        let conn = state.db.get().map_err(|e| {
+            tracing::error!(error = %e, "Failed to acquire database connection");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "Service temporarily unavailable"})),
+            )
+        })?;
+        crate::config::save_config(&conn, &config).map_err(|e| {
             tracing::error!(error = %e, "Failed to save config to database");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -137,7 +155,7 @@ async fn update_config(
     // Spawn a background re-index so that existing files in newly-added
     // folders are indexed immediately (not just new files created after
     // the watcher was added).
-    let db = Arc::clone(&state.db);
+    let pool = state.db.clone();
     let config_clone = config.clone();
     let im = Arc::clone(&state.index_manager);
     let progress = Arc::clone(&state.progress);
@@ -145,14 +163,14 @@ async fn update_config(
 
     tokio::spawn(async move {
         // Phase 1: scan files and populate SQLite.
-        if let Err(e) = crate::indexer::full_index(&db, &config_clone, &progress).await {
+        if let Err(e) = crate::indexer::full_index(&pool, &config_clone, &progress).await {
             tracing::error!(error = %e, "Re-index after config update failed (Phase 1)");
             return;
         }
 
         // Phase 2: rebuild Tantivy full-text index from SQLite using a
         // separate read‑only connection (WAL mode permits concurrent
-        // readers) so that the shared db Mutex stays available for API
+        // readers) so that the shared pool stays available for API
         // requests during the re-index.
         let read_conn = match crate::db::open(&db_path) {
             Ok(c) => c,
@@ -271,8 +289,11 @@ mod tests {
     /// index directory is not removed while `IndexManager` holds open handles.
     fn test_state() -> (Arc<ConfigState>, tempfile::TempDir) {
         let tantivy_dir = tempfile::tempdir().expect("tempdir");
-        let mut conn = crate::db::open_in_memory().expect("Failed to create in-memory database");
-        crate::db::migrations::run_migrations(&mut conn).expect("Failed to run migrations");
+        let pool = crate::db::pool::create_in_memory_pool();
+        {
+            let mut conn = pool.get().expect("Failed to get connection for migrations");
+            crate::db::migrations::run_migrations(&mut conn).expect("Failed to run migrations");
+        }
 
         let index_manager = Arc::new(
             crate::search::IndexManager::open_or_create(&tantivy_dir.path().join("tantivy"))
@@ -282,7 +303,7 @@ mod tests {
         let (watcher, _rx) = crate::watcher::FileWatcher::new(&[]).expect("FileWatcher");
 
         let state = Arc::new(ConfigState {
-            db: Arc::new(Mutex::new(conn)),
+            db: pool,
             watcher: Arc::new(Mutex::new(watcher)),
             index_manager,
             progress: Arc::new(crate::indexer::progress::ProgressTracker::new()),
@@ -302,8 +323,9 @@ mod tests {
     /// reached in the error path.
     fn bad_state() -> (Arc<ConfigState>, tempfile::TempDir) {
         let tantivy_dir = tempfile::tempdir().expect("tempdir");
-        let conn =
-            rusqlite::Connection::open_in_memory().expect("Failed to create in-memory database");
+        // Use an in-memory pool but do NOT run migrations so that
+        // queries fail with "no such table".
+        let pool = crate::db::pool::create_in_memory_pool();
 
         let index_manager = Arc::new(
             crate::search::IndexManager::open_or_create(&tantivy_dir.path().join("tantivy"))
@@ -313,7 +335,7 @@ mod tests {
         let (watcher, _rx) = crate::watcher::FileWatcher::new(&[]).expect("FileWatcher");
 
         let state = Arc::new(ConfigState {
-            db: Arc::new(Mutex::new(conn)),
+            db: pool,
             watcher: Arc::new(Mutex::new(watcher)),
             index_manager,
             progress: Arc::new(crate::indexer::progress::ProgressTracker::new()),

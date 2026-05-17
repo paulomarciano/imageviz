@@ -5,6 +5,9 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
+use r2d2::Pool;
+
+use crate::db::SqliteConnectionManager;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -12,7 +15,6 @@ use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
-use tokio::sync::Mutex;
 
 use crate::middleware::validation;
 use crate::thumbnails::cache::CacheError;
@@ -20,7 +22,7 @@ use crate::thumbnails::limiter::ThumbnailLimiter;
 
 /// Shared application state for media endpoints.
 pub struct MediaState {
-    pub db: Arc<Mutex<rusqlite::Connection>>,
+    pub db: Pool<SqliteConnectionManager>,
     pub thumbnail_cache_dir: PathBuf,
     pub thumbnail_limiter: Arc<ThumbnailLimiter>,
 }
@@ -88,18 +90,21 @@ async fn list_media(
     let has_cursor = params.cursor.is_some() && params.cursor_id.is_some();
     let has_mime = params.mime_type.is_some();
 
-    let db = state.db.lock().await;
+    let conn = state.db.get().map_err(|e| {
+        tracing::error!(error = %e, "Failed to acquire database connection");
+        (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "Service temporarily unavailable"})))
+    })?;
 
     // Compute total count (fast COUNT with or without mime_type filter)
     let total: i64 = if let Some(ref mime_type) = params.mime_type {
-        db.query_row(
+        conn.query_row(
             "SELECT COUNT(*) FROM media_items WHERE mime_type LIKE ?1",
             rusqlite::params![mime_type],
             |row| row.get(0),
         )
         .unwrap_or(0)
     } else {
-        db.query_row("SELECT COUNT(*) FROM media_items", [], |row| row.get(0)).unwrap_or(0)
+        conn.query_row("SELECT COUNT(*) FROM media_items", [], |row| row.get(0)).unwrap_or(0)
     };
 
     // Build SQL dynamically for cursor-based pagination
@@ -142,7 +147,7 @@ async fn list_media(
         values.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
 
     let mut items: Vec<MediaItemSummary> = {
-        let mut stmt = db.prepare(&sql).map_err(|e| {
+        let mut stmt = conn.prepare(&sql).map_err(|e| {
             tracing::error!(error = %e, "Failed to prepare media list query");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
         })?;
@@ -192,7 +197,7 @@ async fn list_media(
         items
     };
 
-    drop(db);
+    drop(conn);
 
     let has_more = items.len() > limit as usize;
     items.truncate(limit as usize);
@@ -243,9 +248,12 @@ async fn get_media_item(
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     validation::validate_media_id(&id)?;
 
-    let db = state.db.lock().await;
+    let conn = state.db.get().map_err(|e| {
+        tracing::error!(error = %e, "Failed to acquire database connection");
+        (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "Service temporarily unavailable"})))
+    })?;
 
-    let row = db
+    let row = conn
         .query_row(
             "SELECT id, filename, relative_path, mime_type, width, height, file_size,
                     file_created_at, file_modified_at, metadata_json
@@ -290,9 +298,12 @@ async fn get_media_metadata(
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     validation::validate_media_id(&id)?;
 
-    let db = state.db.lock().await;
+    let conn = state.db.get().map_err(|e| {
+        tracing::error!(error = %e, "Failed to acquire database connection");
+        (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "Service temporarily unavailable"})))
+    })?;
 
-    let metadata_json: Option<String> = db
+    let metadata_json: Option<String> = conn
         .query_row(
             "SELECT metadata_json FROM media_items WHERE id = ?1",
             rusqlite::params![id],
@@ -420,17 +431,20 @@ async fn serve_file(
 ) -> Result<Response, (StatusCode, Json<Value>)> {
     validation::validate_media_id(&id)?;
 
-    // Resolve file path and get caching info from DB in a single lock
-    let db = state.db.lock().await;
-    let (file_path, mime_type, filename) = resolve_media_path(&db, &id)?;
-    let (checksum, modified_at): (String, String) = db
+    // Resolve file path and get caching info from DB
+    let conn = state.db.get().map_err(|e| {
+        tracing::error!(error = %e, "Failed to acquire database connection");
+        (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "Service temporarily unavailable"})))
+    })?;
+    let (file_path, mime_type, filename) = resolve_media_path(&conn, &id)?;
+    let (checksum, modified_at): (String, String) = conn
         .query_row(
             "SELECT COALESCE(checksum, ''), COALESCE(file_modified_at, '') FROM media_items WHERE id = ?1",
             rusqlite::params![id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap_or_default();
-    drop(db);
+    drop(conn);
 
     // Get file metadata for size
     let metadata = tokio::fs::metadata(&file_path).await.map_err(|e| {
@@ -610,18 +624,21 @@ async fn serve_thumbnail(
     let width: u32 = params.get("width").and_then(|w| w.parse().ok()).unwrap_or(200);
     validation::validate_thumbnail_width(width)?;
 
-    // Look up media item, resolve file path, and get checksum (single lock)
-    let db = state.db.lock().await;
-    let (file_path, mime_type, _) = resolve_media_path(&db, &id)?;
+    // Look up media item, resolve file path, and get checksum
+    let conn = state.db.get().map_err(|e| {
+        tracing::error!(error = %e, "Failed to acquire database connection");
+        (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "Service temporarily unavailable"})))
+    })?;
+    let (file_path, mime_type, _) = resolve_media_path(&conn, &id)?;
 
-    let checksum: String = db
+    let checksum: String = conn
         .query_row(
             "SELECT COALESCE(checksum, '') FROM media_items WHERE id = ?1",
             rusqlite::params![id],
             |row| row.get(0),
         )
         .unwrap_or_default();
-    drop(db);
+    drop(conn);
 
     // Acquire thumbnail generation permit (limits CPU contention)
     let _permit = state.thumbnail_limiter.acquire().await.map_err(|_| {
@@ -681,16 +698,19 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    /// Build a test `MediaState` with an in-memory SQLite database and a
-    /// temporary cache directory (kept alive until the test finishes).
+    /// Build a test `MediaState` with an in-memory SQLite connection pool and
+    /// a temporary cache directory (kept alive until the test finishes).
     /// The database is created via the real migration path so the schema
     /// matches production.
     fn test_state() -> (Arc<MediaState>, tempfile::TempDir) {
-        let mut conn = crate::db::open_in_memory().expect("Failed to create in-memory database");
-        crate::db::migrations::run_migrations(&mut conn).expect("Failed to run migrations");
+        let pool = crate::db::pool::create_in_memory_pool();
+        {
+            let mut conn = pool.get().expect("Failed to get connection for migrations");
+            crate::db::migrations::run_migrations(&mut conn).expect("Failed to run migrations");
+        }
         let cache_dir = tempfile::tempdir().expect("tempdir");
         let state = Arc::new(MediaState {
-            db: Arc::new(Mutex::new(conn)),
+            db: pool,
             thumbnail_cache_dir: cache_dir.path().to_path_buf(),
             thumbnail_limiter: Arc::new(ThumbnailLimiter::new(16)), // generous for tests
         });
@@ -699,13 +719,13 @@ mod tests {
 
     /// Seed the database with a watched-folder config pointing at `folder_path`.
     async fn seed_config(state: &Arc<MediaState>, folder_path: &std::path::Path) {
-        let db = state.db.lock().await;
+        let conn = state.db.get().expect("Failed to get DB connection");
         let config = json!({
             "watched_folders": [
                 {"path": folder_path.to_str().unwrap()}
             ]
         });
-        db.execute(
+        conn.execute(
             "INSERT INTO config (key, value) VALUES ('watched_folders', ?1)",
             rusqlite::params![config.to_string()],
         )
@@ -721,8 +741,8 @@ mod tests {
         mime_type: &str,
         checksum: &str,
     ) {
-        let db = state.db.lock().await;
-        db.execute(
+        let conn = state.db.get().expect("Failed to get DB connection");
+        conn.execute(
             "INSERT INTO media_items (id, filename, relative_path, mime_type, file_size, file_created_at, file_modified_at, checksum)
              VALUES (?1, ?2, ?3, ?4, 1024, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z', ?5)",
             rusqlite::params![id, filename, relative_path, mime_type, checksum],
@@ -745,8 +765,8 @@ mod tests {
         file_created_at: &str,
         file_modified_at: &str,
     ) {
-        let db = state.db.lock().await;
-        db.execute(
+        let conn = state.db.get().expect("Failed to get DB connection");
+        conn.execute(
             "INSERT INTO media_items (id, filename, relative_path, mime_type, file_size, width, height, file_created_at, file_modified_at, checksum)
              VALUES (?1, ?2, ?3, ?4, 1024, ?5, ?6, ?7, ?8, ?9)",
             rusqlite::params![id, filename, relative_path, mime_type, width, height, file_created_at, file_modified_at, checksum],
@@ -1506,8 +1526,8 @@ mod tests {
         let (state, _cache_dir) = test_state();
 
         {
-            let db = state.db.lock().await;
-            db.execute(
+            let conn = state.db.get().expect("Failed to get DB connection");
+            conn.execute(
                 "INSERT INTO media_items \
                  (id, filename, relative_path, mime_type, width, height, file_size, \
                   file_created_at, file_modified_at, metadata_json, checksum) \
@@ -1573,8 +1593,8 @@ mod tests {
         let (state, _cache_dir) = test_state();
 
         {
-            let db = state.db.lock().await;
-            db.execute(
+            let conn = state.db.get().expect("Failed to get DB connection");
+            conn.execute(
                 "INSERT INTO media_items \
                  (id, filename, relative_path, mime_type, file_size, \
                   file_created_at, file_modified_at) \
@@ -1640,8 +1660,8 @@ mod tests {
         let (state, _cache_dir) = test_state();
 
         {
-            let db = state.db.lock().await;
-            db.execute(
+            let conn = state.db.get().expect("Failed to get DB connection");
+            conn.execute(
                 "INSERT INTO media_items \
                  (id, filename, relative_path, mime_type, file_size, \
                   file_created_at, file_modified_at, metadata_json) \
@@ -1687,8 +1707,8 @@ mod tests {
         let (state, _cache_dir) = test_state();
 
         {
-            let db = state.db.lock().await;
-            db.execute(
+            let conn = state.db.get().expect("Failed to get DB connection");
+            conn.execute(
                 "INSERT INTO media_items \
                  (id, filename, relative_path, mime_type, file_size, \
                   file_created_at, file_modified_at) \

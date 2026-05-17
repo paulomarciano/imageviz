@@ -27,6 +27,7 @@ png = "0.18"
 tantivy = "0.26"
 notify = { version = "8", features = ["macos_kqueue"] }
 notify-debouncer-mini = "0.7"
+r2d2 = "0.8"
 
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["json", "stream"] }

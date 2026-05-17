@@ -21,13 +21,15 @@ use axum::{
     response::Json,
     routing::get,
 };
+use r2d2::Pool;
+
+use crate::db::SqliteConnectionManager;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema::Value as TantivyValue;
-use tokio::sync::Mutex;
 
 use crate::middleware::validation;
 use crate::search::IndexManager;
@@ -39,7 +41,7 @@ use crate::search::IndexManager;
 /// Shared application state for the search endpoint.
 pub struct SearchState {
     pub index_manager: Arc<IndexManager>,
-    pub db: Arc<Mutex<rusqlite::Connection>>,
+    pub db: Pool<SqliteConnectionManager>,
 }
 
 // ---------------------------------------------------------------------------
@@ -161,8 +163,11 @@ async fn search_handler(
             continue;
         }
 
-        let db = state.db.lock().await;
-        match get_media_item_by_id(&db, item_id, params.mime_type.as_deref()) {
+        let conn = state.db.get().map_err(|e| {
+            tracing::error!(error = %e, "Failed to acquire database connection");
+            (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "Service temporarily unavailable"})))
+        })?;
+        match get_media_item_by_id(&conn, item_id, params.mime_type.as_deref()) {
             Ok(Some(item)) => media_items.push(item),
             Ok(None) => { /* item deleted between Tantivy search and DB lookup */ }
             Err(e) => {
@@ -286,7 +291,7 @@ mod tests {
     use tantivy::doc;
     use tower::ServiceExt;
 
-    /// Build a test `SearchState` with an in-memory SQLite database, a
+    /// Build a test `SearchState` with an in-memory SQLite connection pool, a
     /// temporary Tantivy index, and no seeded data.
     ///
     /// Returns the `TempDir` guard so the on-disk Tantivy index lives as
@@ -294,15 +299,18 @@ mod tests {
     fn test_state() -> (tempfile::TempDir, Arc<SearchState>) {
         let dir = tempfile::tempdir().expect("tempdir");
 
-        let mut conn = crate::db::open_in_memory().expect("Failed to create in-memory database");
-        crate::db::migrations::run_migrations(&mut conn).expect("Failed to run migrations");
+        let pool = crate::db::pool::create_in_memory_pool();
+        {
+            let mut conn = pool.get().expect("Failed to get connection for migrations");
+            crate::db::migrations::run_migrations(&mut conn).expect("Failed to run migrations");
+        }
 
         let index_manager =
             IndexManager::open_or_create(&dir.path().join("tantivy")).expect("IndexManager");
 
         let state = Arc::new(SearchState {
             index_manager: Arc::new(index_manager),
-            db: Arc::new(Mutex::new(conn)),
+            db: pool,
         });
 
         (dir, state)
@@ -329,8 +337,8 @@ mod tests {
     ) {
         // SQLite
         {
-            let db = state.db.lock().await;
-            db.execute(
+            let conn = state.db.get().expect("Failed to get DB connection");
+            conn.execute(
                 "INSERT INTO media_items \
                  (id, filename, relative_path, mime_type, width, height, file_size, \
                   file_created_at, file_modified_at, metadata_json) \
@@ -759,8 +767,8 @@ mod tests {
 
         // Remove the "deleted" item from SQLite only
         {
-            let db = state.db.lock().await;
-            db.execute("DELETE FROM media_items WHERE id = 'uuid-deleted'", []).expect("delete");
+            let conn = state.db.get().expect("Failed to get DB connection");
+            conn.execute("DELETE FROM media_items WHERE id = 'uuid-deleted'", []).expect("delete");
         }
 
         let app = routes().with_state(state);

@@ -1,6 +1,9 @@
 use axum::Router;
+use r2d2::Pool;
+
+use imageviz_backend::db::SqliteConnectionManager;
 use std::sync::Arc;
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::broadcast;
 
 /// A test application bundling the router with all internal state handles
 /// so that integration tests can seed data and drive the broadcast channel.
@@ -11,7 +14,7 @@ use tokio::sync::{Mutex, broadcast};
 #[allow(dead_code)]
 pub struct TestApp {
     pub router: Router,
-    pub db: Arc<Mutex<rusqlite::Connection>>,
+    pub pool: Pool<SqliteConnectionManager>,
     pub index_manager: Arc<imageviz_backend::search::IndexManager>,
     pub sse_tx: broadcast::Sender<imageviz_backend::watcher::handler::SseEvent>,
     /// Kept alive for the duration of the test — holds the Tantivy index directory.
@@ -47,10 +50,12 @@ pub fn create_test_app() -> Router {
 /// when compiled individually.
 #[allow(dead_code)]
 pub fn create_test_app_with_search() -> TestApp {
-    // 1. In-memory SQLite with migrations
-    let mut conn = imageviz_backend::db::open_in_memory().expect("in-memory DB");
-    imageviz_backend::db::migrations::run_migrations(&mut conn).expect("migrations");
-    let db = Arc::new(Mutex::new(conn));
+    // 1. In-memory SQLite pool with migrations
+    let pool = imageviz_backend::db::pool::create_in_memory_pool();
+    {
+        let mut conn = pool.get().expect("get conn for migrations");
+        imageviz_backend::db::migrations::run_migrations(&mut conn).expect("migrations");
+    }
 
     // 2. Temporary Tantivy index
     let tantivy_dir = tempfile::tempdir().expect("tempdir for tantivy");
@@ -71,15 +76,15 @@ pub fn create_test_app_with_search() -> TestApp {
 
     // 7. Build state structs
     let config_state = Arc::new(imageviz_backend::routes::config::ConfigState {
-        db: Arc::clone(&db),
-        watcher: Arc::new(Mutex::new(watcher)),
+        db: pool.clone(),
+        watcher: Arc::new(tokio::sync::Mutex::new(watcher)),
         index_manager: Arc::clone(&index_manager),
         progress: Arc::clone(&progress),
         db_path: tantivy_dir.path().join("imageviz.db"),
     });
     let cache_dir = tempfile::tempdir().expect("tempdir for thumbnail cache");
     let media_state = Arc::new(imageviz_backend::routes::media::MediaState {
-        db: Arc::clone(&db),
+        db: pool.clone(),
         thumbnail_cache_dir: cache_dir.path().to_path_buf(),
         thumbnail_limiter: Arc::new(
             imageviz_backend::thumbnails::limiter::ThumbnailLimiter::new(16),
@@ -87,12 +92,12 @@ pub fn create_test_app_with_search() -> TestApp {
     });
     let search_state = Arc::new(imageviz_backend::routes::search::SearchState {
         index_manager: Arc::clone(&index_manager),
-        db: Arc::clone(&db),
+        db: pool.clone(),
     });
     let events_state =
         Arc::new(imageviz_backend::routes::events::EventsState { sse_tx: sse_tx.clone() });
     let stats_state = Arc::new(imageviz_backend::routes::stats::StatsState {
-        db: Arc::clone(&db),
+        db: pool.clone(),
         progress: Arc::clone(&progress),
     });
 
@@ -104,5 +109,5 @@ pub fn create_test_app_with_search() -> TestApp {
         .nest("/api/v1", imageviz_backend::routes::events::routes().with_state(events_state))
         .nest("/api/v1", imageviz_backend::routes::stats::routes().with_state(stats_state));
 
-    TestApp { router, db, index_manager, sse_tx, _tantivy_dir: tantivy_dir, _cache_dir: cache_dir }
+    TestApp { router, pool, index_manager, sse_tx, _tantivy_dir: tantivy_dir, _cache_dir: cache_dir }
 }

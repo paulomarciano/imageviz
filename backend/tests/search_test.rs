@@ -42,8 +42,8 @@ async fn seed_item(
 ) {
     // SQLite
     {
-        let db = app.db.lock().await;
-        db.execute(
+        let conn = app.pool.get().expect("get conn");
+        conn.execute(
             "INSERT INTO media_items \
              (id, filename, relative_path, mime_type, width, height, file_size, \
               file_created_at, file_modified_at, metadata_json) \
@@ -482,8 +482,8 @@ async fn test_search_handles_item_deleted_from_db() {
 
     // Remove from SQLite only
     {
-        let db = app.db.lock().await;
-        db.execute("DELETE FROM media_items WHERE id = 'uuid-deleted'", [])
+        let conn = app.pool.get().expect("get conn");
+        conn.execute("DELETE FROM media_items WHERE id = 'uuid-deleted'", [])
             .expect("delete from SQLite");
     }
 

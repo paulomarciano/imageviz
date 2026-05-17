@@ -1,14 +1,17 @@
 use super::*;
 use crate::config::WatchedFolder;
 use crate::db::migrations::run_migrations;
-use rusqlite::Connection;
+use crate::db::SqliteConnectionManager;
+use r2d2::Pool;
 
-/// Create a test DB with schema applied.
-fn setup_db() -> Connection {
-    let mut conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
-    run_migrations(&mut conn).unwrap();
-    conn
+/// Create a test pool with schema applied.
+fn setup_pool() -> Pool<SqliteConnectionManager> {
+    let pool = crate::db::pool::create_in_memory_pool();
+    {
+        let mut conn = pool.get().unwrap();
+        run_migrations(&mut conn).unwrap();
+    }
+    pool
 }
 
 /// Create a progress tracker for testing.
@@ -18,12 +21,11 @@ fn setup_progress() -> progress::ProgressTracker {
 
 #[tokio::test]
 async fn test_empty_config_returns_empty_stats() {
-    let conn = setup_db();
-    let db = Mutex::new(conn);
+    let pool = setup_pool();
     let config = AppConfig::default();
     let progress = setup_progress();
 
-    let stats = full_index(&db, &config, &progress).await.unwrap();
+    let stats = full_index(&pool, &config, &progress).await.unwrap();
 
     assert_eq!(stats, IndexStats { created: 0, updated: 0, skipped: 0, deleted: 0, errors: 0 });
 }
@@ -34,8 +36,7 @@ async fn test_incremental_index_processes_files_and_skips_unchanged() {
     let png_path = dir.path().join("test.png");
     create_minimal_png(&png_path);
 
-    let conn = setup_db();
-    let db = Mutex::new(conn);
+    let pool = setup_pool();
     let config = AppConfig {
         watched_folders: vec![WatchedFolder {
             path: dir.path().to_string_lossy().to_string(),
@@ -44,11 +45,11 @@ async fn test_incremental_index_processes_files_and_skips_unchanged() {
     };
 
     // incremental_index delegates to full_index internally
-    let stats = incremental_index(&db, &config, &setup_progress()).await.unwrap();
+    let stats = incremental_index(&pool, &config, &setup_progress()).await.unwrap();
     assert_eq!(stats.created, 1, "incremental_index should create entries for new files");
 
     // Second call should skip unchanged files
-    let stats = incremental_index(&db, &config, &setup_progress()).await.unwrap();
+    let stats = incremental_index(&pool, &config, &setup_progress()).await.unwrap();
     assert_eq!(stats.skipped, 1, "incremental_index should skip unchanged files");
 }
 
@@ -64,8 +65,7 @@ async fn test_full_index_creates_entries_for_new_files() {
     let jpg_path = dir.path().join("test.jpg");
     std::fs::write(&jpg_path, b"fake jpeg data").unwrap();
 
-    let conn = setup_db();
-    let db = Mutex::new(conn);
+    let pool = setup_pool();
     let config = AppConfig {
         watched_folders: vec![WatchedFolder {
             path: dir.path().to_string_lossy().to_string(),
@@ -74,17 +74,16 @@ async fn test_full_index_creates_entries_for_new_files() {
     };
     let progress = setup_progress();
 
-    let stats = full_index(&db, &config, &progress).await.unwrap();
+    let stats = full_index(&pool, &config, &progress).await.unwrap();
 
     // PNG should be indexed; JPG will fail detection (invalid format)
     assert_eq!(stats.created, 1, "Only valid PNG should be created");
     assert_eq!(stats.errors, 1, "JPG should fail detection");
 
     // Verify entry in DB
-    let count: i32 = {
-        let conn = db.lock().await;
-        conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).unwrap()
-    };
+    let conn = pool.get().unwrap();
+    let count: i32 =
+        conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).unwrap();
     assert_eq!(count, 1, "Only one media item in DB");
 }
 
@@ -94,8 +93,7 @@ async fn test_incremental_index_skips_unchanged_files() {
     let png_path = dir.path().join("test.png");
     create_minimal_png(&png_path);
 
-    let conn = setup_db();
-    let db = Mutex::new(conn);
+    let pool = setup_pool();
     let config = AppConfig {
         watched_folders: vec![WatchedFolder {
             path: dir.path().to_string_lossy().to_string(),
@@ -104,11 +102,11 @@ async fn test_incremental_index_skips_unchanged_files() {
     };
 
     // First index — should create
-    let stats1 = full_index(&db, &config, &setup_progress()).await.unwrap();
+    let stats1 = full_index(&pool, &config, &setup_progress()).await.unwrap();
     assert_eq!(stats1.created, 1);
 
     // Second index with no changes — should skip
-    let stats2 = full_index(&db, &config, &setup_progress()).await.unwrap();
+    let stats2 = full_index(&pool, &config, &setup_progress()).await.unwrap();
     assert_eq!(stats2.created, 0);
     assert_eq!(stats2.skipped, 1);
 }
@@ -119,8 +117,7 @@ async fn test_incremental_index_updates_modified_files() {
     let png_path = dir.path().join("test.png");
     create_minimal_png(&png_path);
 
-    let conn = setup_db();
-    let db = Mutex::new(conn);
+    let pool = setup_pool();
     let config = AppConfig {
         watched_folders: vec![WatchedFolder {
             path: dir.path().to_string_lossy().to_string(),
@@ -129,7 +126,7 @@ async fn test_incremental_index_updates_modified_files() {
     };
 
     // First index
-    full_index(&db, &config, &setup_progress()).await.unwrap();
+    full_index(&pool, &config, &setup_progress()).await.unwrap();
 
     // Modify file (change a byte)
     let mut data = std::fs::read(&png_path).unwrap();
@@ -139,7 +136,7 @@ async fn test_incremental_index_updates_modified_files() {
     std::fs::write(&png_path, &data).unwrap();
 
     // Second index — should update
-    let stats = full_index(&db, &config, &setup_progress()).await.unwrap();
+    let stats = full_index(&pool, &config, &setup_progress()).await.unwrap();
     assert_eq!(stats.updated, 1);
     assert_eq!(stats.created, 0);
     assert_eq!(stats.skipped, 0);
@@ -151,8 +148,7 @@ async fn test_remove_deleted_files_cleans_up_db() {
     let png_path = dir.path().join("test.png");
     create_minimal_png(&png_path);
 
-    let conn = setup_db();
-    let db = Mutex::new(conn);
+    let pool = setup_pool();
     let config = AppConfig {
         watched_folders: vec![WatchedFolder {
             path: dir.path().to_string_lossy().to_string(),
@@ -161,20 +157,19 @@ async fn test_remove_deleted_files_cleans_up_db() {
     };
 
     // Index the file
-    full_index(&db, &config, &setup_progress()).await.unwrap();
+    full_index(&pool, &config, &setup_progress()).await.unwrap();
 
     // Delete the file from disk
     std::fs::remove_file(&png_path).unwrap();
 
     // Re-index — should detect deletion
-    let stats = full_index(&db, &config, &setup_progress()).await.unwrap();
+    let stats = full_index(&pool, &config, &setup_progress()).await.unwrap();
     assert_eq!(stats.deleted, 1);
 
     // DB should be empty
-    let count: i32 = {
-        let conn = db.lock().await;
-        conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).unwrap()
-    };
+    let conn = pool.get().unwrap();
+    let count: i32 =
+        conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).unwrap();
     assert_eq!(count, 0);
 }
 
@@ -184,8 +179,7 @@ async fn test_full_index_is_idempotent() {
     let png_path = dir.path().join("test.png");
     create_minimal_png(&png_path);
 
-    let conn = setup_db();
-    let db = Mutex::new(conn);
+    let pool = setup_pool();
     let config = AppConfig {
         watched_folders: vec![WatchedFolder {
             path: dir.path().to_string_lossy().to_string(),
@@ -195,13 +189,12 @@ async fn test_full_index_is_idempotent() {
 
     // Index 3 times — should be idempotent (no duplicate entries)
     for _ in 0..3 {
-        full_index(&db, &config, &setup_progress()).await.unwrap();
+        full_index(&pool, &config, &setup_progress()).await.unwrap();
     }
 
-    let count: i32 = {
-        let conn = db.lock().await;
-        conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).unwrap()
-    };
+    let conn = pool.get().unwrap();
+    let count: i32 =
+        conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).unwrap();
     assert_eq!(count, 1, "Should have exactly one entry after 3 index runs");
 }
 
@@ -211,8 +204,7 @@ async fn test_indexed_item_has_all_required_fields() {
     let png_path = dir.path().join("test.png");
     create_minimal_png(&png_path);
 
-    let conn = setup_db();
-    let db = Mutex::new(conn);
+    let pool = setup_pool();
     let config = AppConfig {
         watched_folders: vec![WatchedFolder {
             path: dir.path().to_string_lossy().to_string(),
@@ -220,10 +212,10 @@ async fn test_indexed_item_has_all_required_fields() {
         }],
     };
 
-    full_index(&db, &config, &setup_progress()).await.unwrap();
+    full_index(&pool, &config, &setup_progress()).await.unwrap();
 
     // Verify all required columns are populated
-    let conn = db.lock().await;
+    let conn = pool.get().unwrap();
     let row: (
         String,
         String,
@@ -275,7 +267,6 @@ async fn test_indexed_item_has_all_required_fields() {
     assert!(row.10.is_none(), "metadata_json should be None for a minimal PNG without text chunks");
     assert!(row.11.is_some(), "checksum should be present");
     assert_eq!(row.11.as_ref().unwrap().len(), 64, "checksum should be SHA-256 (64 hex chars)");
-    drop(conn);
 }
 
 /// Create a minimal valid PNG file for testing.
@@ -319,8 +310,7 @@ async fn test_index_stores_raw_text_entries_without_prompt() {
     // Create a PNG with a non-standard text chunk (no prompt/workflow)
     create_png_with_text_chunks(&png_path, &[("Description", "@michiking's image")]);
 
-    let conn = setup_db();
-    let db = Mutex::new(conn);
+    let pool = setup_pool();
     let config = AppConfig {
         watched_folders: vec![WatchedFolder {
             path: dir.path().to_string_lossy().to_string(),
@@ -328,10 +318,10 @@ async fn test_index_stores_raw_text_entries_without_prompt() {
         }],
     };
 
-    full_index(&db, &config, &setup_progress()).await.unwrap();
+    full_index(&pool, &config, &setup_progress()).await.unwrap();
 
     // Verify metadata_json was populated even without prompt/workflow
-    let conn = db.lock().await;
+    let conn = pool.get().unwrap();
     let row: (Option<String>,) = conn
         .query_row(
             "SELECT metadata_json FROM media_items WHERE filename = 'no_prompt.png'",
@@ -346,7 +336,6 @@ async fn test_index_stores_raw_text_entries_without_prompt() {
 
     // Verify the raw_text_entries contain the Description
     assert_eq!(parsed["raw_text_entries"]["Description"], "@michiking's image");
-    drop(conn);
 }
 
 #[tokio::test]
@@ -359,8 +348,7 @@ async fn test_index_extracts_png_metadata_content() {
     let workflow_json = r#"{"nodes":[{"id":3,"type":"KSampler"}]}"#;
     create_png_with_text_chunks(&png_path, &[("prompt", prompt_json), ("workflow", workflow_json)]);
 
-    let conn = setup_db();
-    let db = Mutex::new(conn);
+    let pool = setup_pool();
     let config = AppConfig {
         watched_folders: vec![WatchedFolder {
             path: dir.path().to_string_lossy().to_string(),
@@ -368,10 +356,10 @@ async fn test_index_extracts_png_metadata_content() {
         }],
     };
 
-    full_index(&db, &config, &setup_progress()).await.unwrap();
+    full_index(&pool, &config, &setup_progress()).await.unwrap();
 
     // Verify metadata_json was populated correctly
-    let conn = db.lock().await;
+    let conn = pool.get().unwrap();
     let row: (Option<String>,) = conn
         .query_row(
             "SELECT metadata_json FROM media_items WHERE filename = 'with_metadata.png'",
@@ -388,5 +376,4 @@ async fn test_index_extracts_png_metadata_content() {
     assert_eq!(parsed["prompt"]["3"]["inputs"]["seed"], 12345);
     assert_eq!(parsed["prompt"]["3"]["inputs"]["steps"], 20);
     assert_eq!(parsed["workflow"]["nodes"][0]["type"], "KSampler");
-    drop(conn);
 }

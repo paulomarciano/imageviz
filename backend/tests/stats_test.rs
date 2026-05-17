@@ -60,21 +60,21 @@ async fn test_stats_with_seeded_data() {
 
     // Seed some media items directly into the DB
     {
-        let db = app.db.lock().await;
+        let conn = app.pool.get().expect("get conn");
         // Two PNGs, one JPEG
-        db.execute(
+        conn.execute(
             "INSERT INTO media_items \
              (id, filename, relative_path, mime_type, file_size, file_created_at, file_modified_at) \
              VALUES ('a', 'a.png', 'a.png', 'image/png', 500, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')",
             [],
         ).unwrap();
-        db.execute(
+        conn.execute(
             "INSERT INTO media_items \
              (id, filename, relative_path, mime_type, file_size, file_created_at, file_modified_at) \
              VALUES ('b', 'b.png', 'b.png', 'image/png', 300, '2025-01-02T00:00:00Z', '2025-01-02T00:00:00Z')",
             [],
         ).unwrap();
-        db.execute(
+        conn.execute(
             "INSERT INTO media_items \
              (id, filename, relative_path, mime_type, file_size, file_created_at, file_modified_at) \
              VALUES ('c', 'c.jpg', 'c.jpg', 'image/jpeg', 2000, '2025-01-03T00:00:00Z', '2025-01-03T00:00:00Z')",

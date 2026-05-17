@@ -14,10 +14,12 @@ use crate::metadata::detect::{MediaInfo, detect_media};
 use crate::metadata::png::parse_png_metadata;
 use crate::scanner::hasher::compute_file_hash;
 use crate::scanner::walker::{FileEntry, scan_folder};
+use r2d2::Pool;
+
+use crate::db::SqliteConnectionManager;
 use rusqlite::OptionalExtension;
 use rusqlite::{Connection, params};
 use std::path::Path;
-use tokio::sync::Mutex;
 use uuid::Uuid;
 
 pub mod progress;
@@ -40,7 +42,7 @@ const BATCH_SIZE: usize = 100;
 ///
 /// Transactions are committed every [`BATCH_SIZE`] files for performance.
 pub async fn full_index(
-    db: &Mutex<Connection>,
+    pool: &Pool<SqliteConnectionManager>,
     config: &AppConfig,
     progress: &progress::ProgressTracker,
 ) -> Result<IndexStats, IndexError> {
@@ -54,7 +56,7 @@ pub async fn full_index(
 
     if all_files.is_empty() {
         // Still need to clean up deleted items even when no files to index
-        let conn = db.lock().await;
+        let conn = pool.get()?;
         let removed = remove_deleted_items(&conn, config)?;
         stats.deleted = removed;
         progress.set_status(progress::IndexStatus::Complete);
@@ -76,8 +78,8 @@ pub async fn full_index(
             }
         }
 
-        // Phase 2: DB writes — lock, batch-transact, upsert
-        let conn = db.lock().await;
+        // Phase 2: DB writes — acquire connection from pool, batch-transact, upsert
+        let conn = pool.get()?;
         conn.execute_batch("BEGIN")?;
         for processed in &batch_results {
             match store_file(&conn, processed) {
@@ -97,9 +99,9 @@ pub async fn full_index(
     }
 
     // Clean up: remove DB entries for files no longer on disk.
-    // Runs in its own lock cycle to avoid blocking the write path.
+    // Runs with its own connection from the pool.
     {
-        let conn = db.lock().await;
+        let conn = pool.get()?;
         let removed = remove_deleted_items(&conn, config)?;
         stats.deleted = removed;
     }
@@ -114,11 +116,11 @@ pub async fn full_index(
 /// files with matching checksums at the scanner level once the initial
 /// index is populated.
 pub async fn incremental_index(
-    db: &Mutex<Connection>,
+    pool: &Pool<SqliteConnectionManager>,
     config: &AppConfig,
     progress: &progress::ProgressTracker,
 ) -> Result<IndexStats, IndexError> {
-    full_index(db, config, progress).await
+    full_index(pool, config, progress).await
 }
 
 // ---------------------------------------------------------------------------
@@ -286,6 +288,8 @@ pub enum IndexError {
     Detection(crate::metadata::detect::DetectionError),
     Png(crate::metadata::png::PngParseError),
     Db(rusqlite::Error),
+    /// Connection pool error (r2d2).
+    Pool(r2d2::Error),
 }
 
 impl std::fmt::Display for IndexError {
@@ -296,6 +300,7 @@ impl std::fmt::Display for IndexError {
             IndexError::Detection(e) => write!(f, "Detection error: {}", e),
             IndexError::Png(e) => write!(f, "PNG error: {}", e),
             IndexError::Db(e) => write!(f, "DB error: {}", e),
+            IndexError::Pool(e) => write!(f, "Pool error: {}", e),
         }
     }
 }
@@ -329,6 +334,12 @@ impl From<crate::metadata::png::PngParseError> for IndexError {
 impl From<rusqlite::Error> for IndexError {
     fn from(e: rusqlite::Error) -> Self {
         IndexError::Db(e)
+    }
+}
+
+impl From<r2d2::Error> for IndexError {
+    fn from(e: r2d2::Error) -> Self {
+        IndexError::Pool(e)
     }
 }
 

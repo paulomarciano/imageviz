@@ -5,6 +5,10 @@ use tokio::signal;
 use tokio::sync::Mutex;
 use tower_http::cors::CorsLayer;
 
+use r2d2::Pool;
+
+use imageviz_backend::db::SqliteConnectionManager;
+
 use imageviz_backend::config::AppConfig;
 use imageviz_backend::indexer::progress::ProgressTracker;
 use imageviz_backend::middleware::logging::logging_layer;
@@ -42,13 +46,13 @@ async fn main() {
         std::fs::create_dir_all(parent).expect("Failed to create Tantivy index directory");
     }
 
-    let conn =
-        imageviz_backend::db::open(&settings.database_path).expect("Failed to open database");
-    let mut conn_mut = conn;
-    imageviz_backend::db::migrations::run_migrations(&mut conn_mut)
-        .expect("Failed to run database migrations");
-
-    let db = Arc::new(Mutex::new(conn_mut));
+    let pool = imageviz_backend::db::pool::create_pool(&settings.database_path)
+        .expect("Failed to create database pool");
+    {
+        let mut conn = pool.get().expect("Failed to get connection for migrations");
+        imageviz_backend::db::migrations::run_migrations(&mut conn)
+            .expect("Failed to run database migrations");
+    }
 
     let index_manager = Arc::new(
         IndexManager::open_or_create(&settings.tantivy_index_dir)
@@ -66,7 +70,7 @@ async fn main() {
     // Load startup config before creating the watcher and background
     // indexer so that both see the same configuration.
     let config = {
-        let conn = db.lock().await;
+        let conn = pool.get().expect("Failed to get connection for config");
         imageviz_backend::config::load_config(&conn).unwrap_or_default()
     };
 
@@ -75,7 +79,7 @@ async fn main() {
     // runtime when the user adds a new watched folder.
     let config_clone = config.clone();
     let watcher = Arc::new(Mutex::new(start_file_watcher(
-        Arc::clone(&db),
+        pool.clone(),
         Arc::clone(&index_manager),
         sse_tx.clone(),
         &config_clone,
@@ -86,24 +90,24 @@ async fn main() {
     let _watcher_guard = Arc::clone(&watcher);
 
     let config_state = Arc::new(ConfigState {
-        db: Arc::clone(&db),
+        db: pool.clone(),
         watcher: Arc::clone(&watcher),
         index_manager: Arc::clone(&index_manager),
         progress: Arc::clone(&progress),
         db_path: settings.database_path.clone(),
     });
     let media_state = Arc::new(MediaState {
-        db: Arc::clone(&db),
+        db: pool.clone(),
         thumbnail_cache_dir: settings.thumbnail_cache_dir.clone(),
         thumbnail_limiter: Arc::clone(&thumbnail_limiter),
     });
     let search_state =
-        Arc::new(SearchState { index_manager: Arc::clone(&index_manager), db: Arc::clone(&db) });
-    let stats_state = Arc::new(StatsState { db: Arc::clone(&db), progress: Arc::clone(&progress) });
+        Arc::new(SearchState { index_manager: Arc::clone(&index_manager), db: pool.clone() });
+    let stats_state = Arc::new(StatsState { db: pool.clone(), progress: Arc::clone(&progress) });
     let events_state = Arc::new(EventsState { sse_tx: sse_tx.clone() });
 
     spawn_background_indexing(
-        Arc::clone(&db),
+        pool.clone(),
         Arc::clone(&index_manager),
         Arc::clone(&progress),
         sse_tx.clone(),
@@ -230,14 +234,14 @@ async fn cleanup_resources(index_manager: &Arc<IndexManager>) {
 /// 2. **Phase 2** — `full_reindex`: read all SQLite rows and rebuild the Tantivy
 ///    full-text search index.
 ///
-/// # Lock safety
+/// # Concurrency
 ///
 /// Phase 2 uses a **separate read-only SQLite connection** (WAL mode allows
-/// concurrent readers) so that the shared `db` Mutex remains available for API
+/// concurrent readers) so that the connection pool remains available for API
 /// requests during the Tantivy reindex. Without this, every `GET /api/v1/media`
 /// or `/search` request would block until the entire Tantivy index was rebuilt.
 fn spawn_background_indexing(
-    db: Arc<Mutex<rusqlite::Connection>>,
+    pool: Pool<SqliteConnectionManager>,
     index_manager: Arc<IndexManager>,
     progress: Arc<ProgressTracker>,
     sse_tx: tokio::sync::broadcast::Sender<SseEvent>,
@@ -259,7 +263,7 @@ fn spawn_background_indexing(
 
         // Phase 1: scan files and populate SQLite
         let stats =
-            match imageviz_backend::indexer::full_index(db.as_ref(), &config, progress.as_ref())
+            match imageviz_backend::indexer::full_index(&pool, &config, progress.as_ref())
                 .await
             {
                 Ok(s) => s,
@@ -335,7 +339,7 @@ fn spawn_background_indexing(
 /// [`routes::config::update_config`] handler to dynamically add watches
 /// at runtime via [`FileWatcher::watch`].
 fn start_file_watcher(
-    db: Arc<Mutex<rusqlite::Connection>>,
+    pool: Pool<SqliteConnectionManager>,
     index_manager: Arc<IndexManager>,
     sse_tx: tokio::sync::broadcast::Sender<SseEvent>,
     config: &AppConfig,
@@ -347,7 +351,7 @@ fn start_file_watcher(
 
     tokio::spawn(imageviz_backend::watcher::handler::run_event_handler(
         rx,
-        db,
+        pool,
         index_manager,
         sse_tx,
     ));

@@ -4,9 +4,11 @@ use axum::{
     http::{Request, StatusCode, header},
 };
 use http_body_util::BodyExt;
+use r2d2::Pool;
+
+use imageviz_backend::db::SqliteConnectionManager;
 use serde_json::json;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tower::ServiceExt;
 use tower_http::cors::CorsLayer;
 
@@ -16,7 +18,7 @@ use imageviz_backend::routes::media::{MediaState, routes};
 // Test helpers
 // ---------------------------------------------------------------------------
 
-/// Build a test app with an in-memory database and a temporary cache directory.
+/// Build a test app with an in-memory connection pool and a temporary cache directory.
 ///
 /// The returned router has:
 /// - `GET /api/v1/health` (from the app factory)
@@ -26,14 +28,16 @@ use imageviz_backend::routes::media::{MediaState, routes};
 /// The database contains only the schema — no seeded data. Callers must
 /// call `seed_config` and `seed_media_item` to populate test data.
 fn create_media_test_app() -> (Router, Arc<MediaState>, tempfile::TempDir) {
-    let mut conn =
-        imageviz_backend::db::open_in_memory().expect("Failed to create in-memory database");
-    imageviz_backend::db::migrations::run_migrations(&mut conn).expect("Failed to run migrations");
+    let pool: Pool<SqliteConnectionManager> =
+        imageviz_backend::db::pool::create_in_memory_pool();
+    {
+        let mut conn = pool.get().expect("Failed to get connection for migrations");
+        imageviz_backend::db::migrations::run_migrations(&mut conn).expect("Failed to run migrations");
+    }
 
     let cache_dir = tempfile::tempdir().expect("Failed to create cache directory");
-    let db = Arc::new(Mutex::new(conn));
     let media_state = Arc::new(MediaState {
-        db: Arc::clone(&db),
+        db: pool,
         thumbnail_cache_dir: cache_dir.path().to_path_buf(),
         thumbnail_limiter: Arc::new(
             imageviz_backend::thumbnails::limiter::ThumbnailLimiter::new(16),
@@ -49,11 +53,11 @@ fn create_media_test_app() -> (Router, Arc<MediaState>, tempfile::TempDir) {
 
 /// Seed the config table with a single watched folder pointing at `folder_path`.
 async fn seed_config(state: &Arc<MediaState>, folder_path: &std::path::Path) {
-    let db = state.db.lock().await;
+    let conn = state.db.get().expect("Failed to get DB connection");
     let config = json!({
         "watched_folders": [{"path": folder_path.to_str().unwrap()}]
     });
-    db.execute(
+    conn.execute(
         "INSERT INTO config (key, value) VALUES ('watched_folders', ?1)",
         rusqlite::params![config.to_string()],
     )
@@ -69,8 +73,8 @@ async fn seed_media_item(
     mime_type: &str,
     checksum: &str,
 ) {
-    let db = state.db.lock().await;
-    db.execute(
+    let conn = state.db.get().expect("Failed to get DB connection");
+    conn.execute(
         "INSERT INTO media_items (id, filename, relative_path, mime_type, file_size, file_created_at, file_modified_at, checksum)
          VALUES (?1, ?2, ?3, ?4, 1024, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z', ?5)",
         rusqlite::params![id, filename, relative_path, mime_type, checksum],

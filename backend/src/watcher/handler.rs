@@ -23,6 +23,9 @@ use crate::metadata::png::parse_png_metadata;
 use crate::scanner::hasher::compute_file_hash;
 use crate::search::IndexManager;
 use crate::watcher::FileEvent;
+use r2d2::Pool;
+
+use crate::db::SqliteConnectionManager;
 use rusqlite::OptionalExtension;
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
@@ -30,7 +33,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tantivy::doc;
-use tokio::sync::{Mutex, broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
@@ -84,13 +87,13 @@ struct Outcome {
 /// is closed (i.e., the watcher is dropped).
 pub async fn run_event_handler(
     mut file_events_rx: mpsc::Receiver<Vec<FileEvent>>,
-    db: Arc<Mutex<Connection>>,
+    pool: Pool<SqliteConnectionManager>,
     index_manager: Arc<IndexManager>,
     sse_tx: broadcast::Sender<SseEvent>,
 ) {
     while let Some(events) = file_events_rx.recv().await {
         for event in &events {
-            if let Err(e) = handle_single_event(event, &db, &index_manager, &sse_tx).await {
+            if let Err(e) = handle_single_event(event, &pool, &index_manager, &sse_tx).await {
                 tracing::error!("Error handling event {:?}: {}", event.path(), e);
             }
         }
@@ -114,24 +117,24 @@ pub async fn run_event_handler(
 #[allow(clippy::type_complexity)]
 async fn handle_single_event(
     event: &FileEvent,
-    db: &Arc<Mutex<Connection>>,
+    pool: &Pool<SqliteConnectionManager>,
     index_manager: &Arc<IndexManager>,
     sse_tx: &broadcast::Sender<SseEvent>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     match event {
         FileEvent::Modified { path } | FileEvent::Created { path } => {
             if path.exists() {
-                handle_file_created_or_modified(path, db, index_manager, sse_tx).await?;
+                handle_file_created_or_modified(path, pool, index_manager, sse_tx).await?;
             } else {
                 tracing::debug!(
                     "Modified event for non-existent file — treating as delete: {}",
                     path.display()
                 );
-                handle_file_deleted(path, db, index_manager, sse_tx).await?;
+                handle_file_deleted(path, pool, index_manager, sse_tx).await?;
             }
         }
         FileEvent::Deleted { path } => {
-            handle_file_deleted(path, db, index_manager, sse_tx).await?;
+            handle_file_deleted(path, pool, index_manager, sse_tx).await?;
         }
     }
     Ok(())
@@ -149,7 +152,7 @@ async fn handle_single_event(
 /// 6. Broadcast `"file_created"` or `"file_modified"` event.
 async fn handle_file_created_or_modified(
     path: &Path,
-    db: &Arc<Mutex<Connection>>,
+    pool: &Pool<SqliteConnectionManager>,
     index_manager: &Arc<IndexManager>,
     sse_tx: &broadcast::Sender<SseEvent>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
@@ -186,9 +189,9 @@ async fn handle_file_created_or_modified(
     let filename = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
 
     // Resolve relative path by stripping the watched folder prefix.
-    // This requires a brief DB lock to read the config.
+    // This requires a brief DB query to read the config.
     let relative_path = {
-        let conn = db.lock().await;
+        let conn = pool.get()?;
         let watched = load_watched_folders(&conn)?;
         resolve_relative_path(path, &watched).ok_or_else(|| {
             format!("File {} is not inside any configured watched folder", path.display())
@@ -202,7 +205,7 @@ async fn handle_file_created_or_modified(
     let img_file_size = media_info.file_size;
 
     // Clone values needed inside the blocking closure.
-    let db_clone = Arc::clone(db);
+    let pool_clone = pool.clone();
     let im_clone = Arc::clone(index_manager);
     let path_rel = relative_path.clone();
     let fname = filename.clone();
@@ -215,7 +218,7 @@ async fn handle_file_created_or_modified(
     // -- Phase 2: Blocking DB + Tantivy operations -------------------------
 
     let outcome = tokio::task::spawn_blocking(move || -> Result<Outcome, String> {
-        let conn = db_clone.blocking_lock();
+        let conn = pool_clone.get().map_err(|e| format!("Pool error: {}", e))?;
 
         // Check whether this file is already tracked in SQLite.
         let existing: Option<(String, Option<String>)> = conn
@@ -363,13 +366,13 @@ async fn handle_file_created_or_modified(
 /// corresponding Tantivy document, and broadcasts a `"file_deleted"` event.
 async fn handle_file_deleted(
     path: &Path,
-    db: &Arc<Mutex<Connection>>,
+    pool: &Pool<SqliteConnectionManager>,
     index_manager: &Arc<IndexManager>,
     sse_tx: &broadcast::Sender<SseEvent>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     // Resolve relative path.
     let relative_path = {
-        let conn = db.lock().await;
+        let conn = pool.get()?;
         let watched = load_watched_folders(&conn)?;
         match resolve_relative_path(path, &watched) {
             Some(rel) => rel,
@@ -383,13 +386,13 @@ async fn handle_file_deleted(
         }
     };
 
-    let db_clone = Arc::clone(db);
+    let pool_clone = pool.clone();
     let im_clone = Arc::clone(index_manager);
     let rel = relative_path.clone();
 
     // Blocking phase: delete from SQLite and Tantivy.
     let outcome = tokio::task::spawn_blocking(move || -> Result<Option<String>, String> {
-        let conn = db_clone.blocking_lock();
+        let conn = pool_clone.get().map_err(|e| format!("Pool error: {}", e))?;
 
         // Find the media item by relative path.
         let row: Option<(String,)> = conn
@@ -483,7 +486,6 @@ mod tests {
     use crate::db;
     use crate::search::IndexManager;
     use std::sync::Arc;
-    use tokio::sync::Mutex;
 
     // -----------------------------------------------------------------------
     // Helper: create a real temp SQLite DB + Tantivy index for integration
@@ -491,7 +493,7 @@ mod tests {
 
     struct TestContext {
         _tantivy_dir: tempfile::TempDir,
-        db: Arc<Mutex<Connection>>,
+        pool: Pool<SqliteConnectionManager>,
         index_manager: Arc<IndexManager>,
         sse_tx: broadcast::Sender<SseEvent>,
         sse_rx: broadcast::Receiver<SseEvent>,
@@ -499,8 +501,11 @@ mod tests {
     }
 
     fn test_context() -> TestContext {
-        let mut conn = db::open_in_memory().expect("in-memory DB");
-        db::migrations::run_migrations(&mut conn).expect("migrations");
+        let pool = crate::db::pool::create_in_memory_pool();
+        {
+            let mut conn = pool.get().expect("in-memory conn");
+            db::migrations::run_migrations(&mut conn).expect("migrations");
+        }
 
         // Seed watched folders config.
         let watched = tempfile::tempdir().expect("tempdir");
@@ -509,11 +514,14 @@ mod tests {
                 {"path": watched.path().to_str().unwrap()}
             ]
         });
-        conn.execute(
-            "INSERT INTO config (key, value) VALUES ('watched_folders', ?1)",
-            params![config.to_string()],
-        )
-        .expect("seed config");
+        {
+            let conn = pool.get().expect("get conn");
+            conn.execute(
+                "INSERT INTO config (key, value) VALUES ('watched_folders', ?1)",
+                params![config.to_string()],
+            )
+            .expect("seed config");
+        }
 
         let tantivy_dir = tempfile::tempdir().expect("tempdir");
         let im = IndexManager::open_or_create(&tantivy_dir.path().join("tantivy"))
@@ -523,7 +531,7 @@ mod tests {
 
         TestContext {
             _tantivy_dir: tantivy_dir,
-            db: Arc::new(Mutex::new(conn)),
+            pool,
             index_manager: Arc::new(im),
             sse_tx,
             sse_rx,
@@ -639,12 +647,12 @@ mod tests {
 
         let event = FileEvent::Modified { path: file_path.clone() };
 
-        handle_single_event(&event, &ctx.db, &ctx.index_manager, &ctx.sse_tx)
+        handle_single_event(&event, &ctx.pool, &ctx.index_manager, &ctx.sse_tx)
             .await
             .expect("handle single event");
 
         // Verify the DB has an entry.
-        let conn = ctx.db.lock().await;
+        let conn = ctx.pool.get().expect("get conn");
         let count: i64 =
             conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).expect("count");
         assert_eq!(count, 1, "should have one media item");
@@ -684,7 +692,7 @@ mod tests {
 
         handle_single_event(
             &FileEvent::Modified { path: file_path.clone() },
-            &ctx.db,
+            &ctx.pool,
             &ctx.index_manager,
             &ctx.sse_tx,
         )
@@ -693,7 +701,7 @@ mod tests {
 
         // Read back the ID and clear the SSE channel.
         let first_id: String = {
-            let conn = ctx.db.lock().await;
+            let conn = ctx.pool.get().expect("get conn");
             conn.query_row("SELECT id FROM media_items", [], |r| r.get(0)).expect("query id")
         };
         let _ = ctx.sse_rx.try_recv().ok(); // drain the file_created event
@@ -707,7 +715,7 @@ mod tests {
 
         handle_single_event(
             &FileEvent::Modified { path: file_path.clone() },
-            &ctx.db,
+            &ctx.pool,
             &ctx.index_manager,
             &ctx.sse_tx,
         )
@@ -715,7 +723,7 @@ mod tests {
         .expect("second handle (modify)");
 
         // Verify the same ID was reused.
-        let conn = ctx.db.lock().await;
+        let conn = ctx.pool.get().expect("get conn");
         let count: i64 =
             conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).expect("count");
         assert_eq!(count, 1, "should still have only one media item");
@@ -741,7 +749,7 @@ mod tests {
         // First index.
         handle_single_event(
             &FileEvent::Modified { path: file_path.clone() },
-            &ctx.db,
+            &ctx.pool,
             &ctx.index_manager,
             &ctx.sse_tx,
         )
@@ -752,7 +760,7 @@ mod tests {
         // Re-index same file (content unchanged).
         handle_single_event(
             &FileEvent::Modified { path: file_path.clone() },
-            &ctx.db,
+            &ctx.pool,
             &ctx.index_manager,
             &ctx.sse_tx,
         )
@@ -774,7 +782,7 @@ mod tests {
 
         handle_single_event(
             &FileEvent::Modified { path: file_path.clone() },
-            &ctx.db,
+            &ctx.pool,
             &ctx.index_manager,
             &ctx.sse_tx,
         )
@@ -787,7 +795,7 @@ mod tests {
 
         handle_single_event(
             &FileEvent::Deleted { path: file_path.clone() },
-            &ctx.db,
+            &ctx.pool,
             &ctx.index_manager,
             &ctx.sse_tx,
         )
@@ -795,7 +803,7 @@ mod tests {
         .expect("delete");
 
         // DB should be empty.
-        let conn = ctx.db.lock().await;
+        let conn = ctx.pool.get().expect("get conn");
         let count: i64 =
             conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).expect("count");
         assert_eq!(count, 0, "DB should have no items after delete");
@@ -823,7 +831,7 @@ mod tests {
 
         handle_single_event(
             &FileEvent::Deleted { path: fake_path.clone() },
-            &ctx.db,
+            &ctx.pool,
             &ctx.index_manager,
             &ctx.sse_tx,
         )
@@ -845,7 +853,7 @@ mod tests {
 
         handle_single_event(
             &FileEvent::Modified { path: file_path.clone() },
-            &ctx.db,
+            &ctx.pool,
             &ctx.index_manager,
             &ctx.sse_tx,
         )
@@ -858,7 +866,7 @@ mod tests {
 
         handle_single_event(
             &FileEvent::Modified { path: file_path.clone() },
-            &ctx.db,
+            &ctx.pool,
             &ctx.index_manager,
             &ctx.sse_tx,
         )
@@ -866,7 +874,7 @@ mod tests {
         .expect("modified-without-file");
 
         // DB should be empty (treated as delete).
-        let conn = ctx.db.lock().await;
+        let conn = ctx.pool.get().expect("get conn");
         let count: i64 =
             conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).expect("count");
         assert_eq!(count, 0, "modified event for missing file should act as delete");
@@ -883,7 +891,7 @@ mod tests {
 
         let result = handle_single_event(
             &FileEvent::Modified { path: file_path.clone() },
-            &ctx.db,
+            &ctx.pool,
             &ctx.index_manager,
             &ctx.sse_tx,
         )
