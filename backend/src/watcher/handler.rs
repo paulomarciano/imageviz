@@ -581,10 +581,11 @@ mod tests {
         assert_eq!(second_id, first_id, "ID should be preserved across modify");
         drop(conn);
 
-        // Verify SSE event was file_modified.
+        // Verify SSE event was file_modified with all required fields.
         let sse = ctx.sse_rx.try_recv().expect("SSE event");
         assert_eq!(sse.event_type, "file_modified");
         assert_eq!(sse.data["id"], first_id);
+        assert_eq!(sse.data["metadata_updated"], true, "file_modified must include metadata_updated");
     }
 
     #[tokio::test]

@@ -47,6 +47,7 @@ pub fn broadcast_change(
                 data: json!({
                     "id": outcome.id,
                     "filename": filename,
+                    "metadata_updated": true,
                 }),
             };
             let _ = sse_tx.send(event);
