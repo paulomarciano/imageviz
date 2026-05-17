@@ -6,6 +6,7 @@ mod tests {
     use std::path::Path;
 
     #[tokio::test]
+    #[ignore = "requires test-fixtures/sample_comfyui_01.png (run scripts/generate-fixtures.sh)"]
     async fn test_generate_thumbnail_from_png() {
         // Arrange
         let source = fixture_path("sample_comfyui_01.png");
@@ -66,6 +67,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires test-fixtures/sample_comfyui_01.png (run scripts/generate-fixtures.sh)"]
     async fn test_thumbnail_aspect_ratio_preserved() {
         // Arrange
         let source = fixture_path("sample_comfyui_01.png");
@@ -112,6 +114,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires test-fixtures/sample_comfyui_01.png (run scripts/generate-fixtures.sh)"]
     async fn test_thumbnail_output_is_valid_webp() {
         // Arrange
         let source = fixture_path("sample_comfyui_01.png");
