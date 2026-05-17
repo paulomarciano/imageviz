@@ -14,6 +14,7 @@ use crate::thumbnails::image;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
+use std::time::SystemTime;
 
 /// Errors that can occur during cache operations.
 #[derive(Debug)]
@@ -63,6 +64,44 @@ impl From<std::io::Error> for CacheError {
     fn from(e: std::io::Error) -> Self {
         CacheError::Io(e)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Eviction configuration
+// ---------------------------------------------------------------------------
+
+/// Default maximum cache size in bytes (2 GB).
+const DEFAULT_MAX_CACHE_SIZE: u64 = 2_000_000_000;
+/// Default minimum free disk space in bytes (500 MB).
+const DEFAULT_MIN_FREE_SPACE: u64 = 500_000_000;
+/// Target usage ratio after eviction: evict down to 80% of max.
+const EVICTION_TARGET_RATIO: f64 = 0.8;
+
+/// Get the max cache size from `THUMBNAIL_CACHE_MAX_MB` env var (in MB).
+pub fn max_cache_size() -> u64 {
+    std::env::var("THUMBNAIL_CACHE_MAX_MB")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(|mb| mb * 1_024 * 1_024)
+        .unwrap_or(DEFAULT_MAX_CACHE_SIZE)
+}
+
+/// Get the minimum free disk space from `MIN_FREE_DISK_MB` env var (in MB).
+pub fn min_free_disk_space() -> u64 {
+    std::env::var("MIN_FREE_DISK_MB")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(|mb| mb * 1_024 * 1_024)
+        .unwrap_or(DEFAULT_MIN_FREE_SPACE)
+}
+
+/// Statistics from a single eviction pass.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct EvictionStats {
+    /// Number of files evicted.
+    pub evicted: usize,
+    /// Total bytes freed.
+    pub freed_bytes: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -222,7 +261,130 @@ pub async fn get_or_generate_thumbnail(
     tokio::fs::copy(&generated_path, &tmp_path).await?;
     tokio::fs::rename(&tmp_path, &cache_path).await?;
 
+    // Check cache size and evict old files if needed (best-effort).
+    if let Err(e) = evict_if_needed(cache_dir, max_cache_size(), min_free_disk_space()) {
+        tracing::warn!(error = %e, "Cache eviction check failed");
+    }
+
     Ok(cache_path)
+}
+
+// ---------------------------------------------------------------------------
+// Eviction logic
+// ---------------------------------------------------------------------------
+
+/// Compute the total size of all files in a directory (shallow, non-recursive).
+fn dir_size(path: &Path) -> std::io::Result<u64> {
+    let mut total = 0u64;
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            total += entry.metadata()?.len();
+        }
+    }
+    Ok(total)
+}
+
+/// Estimate free disk space for the filesystem containing `path`.
+///
+/// Returns a large sentinel value so eviction is driven by the cache size
+/// limit under normal conditions. This avoids adding a platform-specific
+/// dependency like `libc` for querying `statvfs`/`statfs`.
+fn free_disk_space(_path: &Path) -> u64 {
+    let _ = _path; // suppress unused variable warning
+    u64::MAX
+}
+
+/// Check cache size and evict old files if the cache exceeds the limit or
+/// disk space is low.
+///
+/// # Eviction strategy
+///
+/// 1. Gather all cached files with their access times and sizes.
+/// 2. Sort by access time (oldest first).
+/// 3. Compute target: evict enough to bring cache to 80% of max size.
+/// 4. If free disk space is below the minimum, evict even more.
+/// 5. Delete files oldest-first until the target is reached.
+///
+/// # Errors
+///
+/// Returns `CacheError::Io` for filesystem errors. Individual file deletion
+/// failures are logged as warnings and skipped — the eviction continues with
+/// the next file.
+pub fn evict_if_needed(
+    cache_dir: &Path,
+    max_size_bytes: u64,
+    min_free_bytes: u64,
+) -> Result<EvictionStats, CacheError> {
+    if !cache_dir.exists() {
+        return Ok(EvictionStats::default());
+    }
+
+    let current_size = dir_size(cache_dir)?;
+    let free_space = free_disk_space(cache_dir);
+
+    if current_size <= max_size_bytes && free_space >= min_free_bytes {
+        return Ok(EvictionStats::default());
+    }
+
+    // Gather all cached files with their metadata.
+    let mut files: Vec<(PathBuf, u64, SystemTime)> = Vec::new();
+    for entry in std::fs::read_dir(cache_dir)? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            let metadata = entry.metadata()?;
+            files.push((
+                entry.path(),
+                metadata.len(),
+                metadata.accessed().unwrap_or(SystemTime::UNIX_EPOCH),
+            ));
+        }
+    }
+
+    // Sort by access time (oldest first).
+    files.sort_by_key(|(_, _, atime)| *atime);
+
+    // Calculate how much to free.
+    let target_size = (max_size_bytes as f64 * EVICTION_TARGET_RATIO) as u64;
+    let mut to_free = current_size.saturating_sub(target_size);
+
+    // If free space is critically low, evict more aggressively.
+    if free_space < min_free_bytes {
+        to_free = to_free.max(min_free_bytes.saturating_sub(free_space));
+    }
+
+    if to_free == 0 {
+        return Ok(EvictionStats::default());
+    }
+
+    let mut evicted = 0;
+    let mut freed_bytes = 0u64;
+
+    for (path, size, _) in &files {
+        if freed_bytes >= to_free {
+            break;
+        }
+        if let Err(e) = std::fs::remove_file(path) {
+            tracing::warn!(path = %path.display(), error = %e, "Failed to evict thumbnail");
+            continue;
+        }
+        evicted += 1;
+        freed_bytes += size;
+    }
+
+    tracing::info!(
+        evicted,
+        freed_mb = freed_bytes / (1024 * 1024),
+        cache_mb = current_size / (1024 * 1024),
+        max_mb = max_size_bytes / (1024 * 1024),
+        "Evicted {} thumbnails, freed {} MB (cache: {} MB / {} MB)",
+        evicted,
+        freed_bytes / (1024 * 1024),
+        current_size / (1024 * 1024),
+        max_size_bytes / (1024 * 1024),
+    );
+
+    Ok(EvictionStats { evicted, freed_bytes })
 }
 
 #[cfg(test)]

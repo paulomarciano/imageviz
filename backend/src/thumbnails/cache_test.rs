@@ -247,4 +247,80 @@ mod tests {
         assert!(path200.exists(), "200px cached file should exist");
         assert!(path300.exists(), "300px cached file should exist");
     }
+
+    // -----------------------------------------------------------------------
+    // Eviction tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_eviction_when_over_limit() {
+        use crate::thumbnails::cache::{dir_size, evict_if_needed};
+        use std::fs;
+
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create 10 files of 10 MB each = 100 MB total.
+        for i in 0..10 {
+            let path = dir.path().join(format!("thumb_{i}.webp"));
+            let file = fs::File::create(&path).unwrap();
+            // sparse file: allocate 10 MB without writing actual bytes
+            file.set_len(10 * 1024 * 1024).unwrap();
+        }
+
+        // Set max to 50 MB — should evict down to ~40 MB (80% of 50 MB).
+        let stats = evict_if_needed(dir.path(), 50_000_000, 1_000_000_000).unwrap();
+
+        assert!(stats.evicted > 0, "Should evict some files when over limit");
+
+        let remaining = dir_size(dir.path()).unwrap();
+        assert!(
+            remaining <= 50_000_000,
+            "Remaining size {remaining} should be under max 50 MB"
+        );
+    }
+
+    #[test]
+    fn test_no_eviction_when_under_limit() {
+        use crate::thumbnails::cache::evict_if_needed;
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create small files totaling ~few hundred bytes.
+        for i in 0..3 {
+            let path = dir.path().join(format!("small_{i}.webp"));
+            let mut file = std::fs::File::create(&path).unwrap();
+            writeln!(file, "not a real webp").unwrap();
+        }
+
+        let stats = evict_if_needed(dir.path(), 1_000_000_000, 100_000_000).unwrap();
+        assert_eq!(stats.evicted, 0, "Should not evict when under limit");
+    }
+
+    #[test]
+    fn test_eviction_empty_cache_does_not_crash() {
+        use crate::thumbnails::cache::evict_if_needed;
+        let dir = tempfile::tempdir().unwrap();
+        let stats = evict_if_needed(dir.path(), 1_000_000, 100_000_000).unwrap();
+        assert_eq!(stats.evicted, 0);
+    }
+
+    #[test]
+    fn test_dir_size_empty_directory() {
+        use crate::thumbnails::cache::dir_size;
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(dir_size(dir.path()).unwrap(), 0);
+    }
+
+    #[test]
+    fn test_dir_size_counts_only_direct_files() {
+        use crate::thumbnails::cache::dir_size;
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.webp"), b"hello").unwrap();
+        std::fs::create_dir(dir.path().join("subdir")).unwrap();
+        // File inside subdir — dir_size is shallow so this should not count.
+        std::fs::write(dir.path().join("subdir").join("b.webp"), b"world").unwrap();
+        assert_eq!(dir_size(dir.path()).unwrap(), 5, "Should only count direct files");
+    }
 }
