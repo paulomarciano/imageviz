@@ -33,17 +33,21 @@ pub async fn detect_media(path: &Path) -> Result<MediaInfo, DetectionError> {
     let file_size = std::fs::metadata(path).map_err(DetectionError::Io)?.len();
 
     let (width, height) = if mime_type.starts_with("image/") {
-        detect_image_dimensions(path)?
+        // Image dimension decoding is CPU-bound — run on a blocking thread.
+        let path_buf = path.to_path_buf();
+        tokio::task::spawn_blocking(move || detect_image_dimensions(&path_buf))
+            .await
+            .map_err(|join_e| DetectionError::Io(std::io::Error::other(join_e)))?
     } else {
         // Video dimensions via ffprobe
-        match parse_video_metadata(path).await {
+        Ok(match parse_video_metadata(path).await {
             Ok(meta) => (Some(meta.width), Some(meta.height)),
             Err(e) => {
                 tracing::warn!(path = %path.display(), error = %e, "Failed to extract video dimensions");
                 (None, None)
             }
-        }
-    };
+        })
+    }?;
 
     Ok(MediaInfo { mime_type, width, height, file_size })
 }

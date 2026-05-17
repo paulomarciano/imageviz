@@ -177,6 +177,8 @@ async fn update_config(
         // separate read‑only connection (WAL mode permits concurrent
         // readers) so that the shared pool stays available for API
         // requests during the re-index.
+        //
+        // full_reindex is CPU-bound, so it must run on a blocking thread.
         let read_conn = match crate::db::open(&db_path) {
             Ok(c) => c,
             Err(e) => {
@@ -185,9 +187,16 @@ async fn update_config(
             }
         };
 
-        if let Err(e) = crate::search::indexer::full_reindex(&read_conn, &im) {
-            tracing::error!(error = %e, "Tantivy reindex after config update failed (Phase 2)");
-        }
+        let im = Arc::clone(&im);
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = crate::search::indexer::full_reindex(&read_conn, &im) {
+                tracing::error!(error = %e, "Tantivy reindex after config update failed (Phase 2)");
+            }
+        })
+        .await
+        .unwrap_or_else(|join_e| {
+            tracing::error!(error = %join_e, "Tantivy reindex task panicked");
+        });
     });
 
     Ok(Json(config))

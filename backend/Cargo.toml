@@ -21,7 +21,6 @@ futures-util = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
 walkdir = "2"
 image = { version = "0.25", features = ["webp"] }
-mime_guess = "2"
 hex = "0.4"
 png = "0.18"
 tantivy = "0.26"

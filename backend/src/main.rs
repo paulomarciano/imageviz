@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use tokio::signal;
 use tokio::sync::Mutex;
+use tokio::sync::mpsc;
 use tower_http::cors::CorsLayer;
 
 use r2d2::Pool;
@@ -21,10 +22,11 @@ use imageviz_backend::routes::search::SearchState;
 use imageviz_backend::routes::stats::StatsState;
 use imageviz_backend::search::IndexManager;
 use imageviz_backend::thumbnails::limiter::ThumbnailLimiter;
+use imageviz_backend::watcher::FileEvent;
 use imageviz_backend::watcher::FileWatcher;
 use imageviz_backend::watcher::handler::SseEvent;
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -84,12 +86,8 @@ async fn main() {
     // handler so that the config route can add watches dynamically at
     // runtime when the user adds a new watched folder.
     let config_clone = config.clone();
-    let watcher = Arc::new(Mutex::new(start_file_watcher(
-        pool.clone(),
-        Arc::clone(&index_manager),
-        sse_tx.clone(),
-        &config_clone,
-    )));
+    let (watcher, mut file_events_rx) = start_file_watcher(&config_clone);
+    let watcher = Arc::new(Mutex::new(watcher));
 
     // Keep a reference alive for the server lifetime — dropping the
     // _watcher_guard would stop file system monitoring.
@@ -112,7 +110,9 @@ async fn main() {
     let stats_state = Arc::new(StatsState { db: pool.clone(), progress: Arc::clone(&progress) });
     let events_state = Arc::new(EventsState { sse_tx: sse_tx.clone() });
 
-    spawn_background_indexing(
+    // Start background indexing and capture the handle so we can wait for
+    // it to finish before activating the file watcher event handler.
+    let indexing_handle = spawn_background_indexing(
         pool.clone(),
         Arc::clone(&index_manager),
         Arc::clone(&progress),
@@ -120,6 +120,29 @@ async fn main() {
         config,
         &settings.database_path,
     );
+
+    // Spawn a task that waits for initial indexing to complete, then
+    // activates the file watcher event handler.  Events that arrive during
+    // indexing are stale because full_reindex captures all files from
+    // SQLite — processing them would be wasted work, so we drain the
+    // channel before starting the handler.
+    let handler_pool = pool.clone();
+    let handler_im = Arc::clone(&index_manager);
+    let handler_sse_tx = sse_tx.clone();
+    tokio::spawn(async move {
+        let _ = indexing_handle.await;
+        // Discard any events that accumulated while indexing was in
+        // progress — they refer to files already captured by the full
+        // Tantivy reindex.
+        while file_events_rx.try_recv().is_ok() {}
+        imageviz_backend::watcher::handler::run_event_handler(
+            file_events_rx,
+            handler_pool,
+            handler_im,
+            handler_sse_tx,
+        )
+        .await;
+    });
 
     // Build route groups with per-group timeout middleware.
     //
@@ -241,6 +264,10 @@ async fn cleanup_resources(index_manager: &Arc<IndexManager>) {
 /// concurrent readers) so that the connection pool remains available for API
 /// requests during the Tantivy reindex. Without this, every `GET /api/v1/media`
 /// or `/search` request would block until the entire Tantivy index was rebuilt.
+/// Returns a `JoinHandle` that completes when the initial index finishes.
+/// Callers can await this handle before starting the file watcher event
+/// handler so that events arriving during the CPU-heavy initial scan are
+/// not processed wastefully.
 fn spawn_background_indexing(
     pool: Pool<SqliteConnectionManager>,
     index_manager: Arc<IndexManager>,
@@ -248,10 +275,10 @@ fn spawn_background_indexing(
     sse_tx: tokio::sync::broadcast::Sender<SseEvent>,
     config: AppConfig,
     database_path: &std::path::Path,
-) {
+) -> tokio::task::JoinHandle<()> {
     if config.watched_folders.is_empty() {
         tracing::info!("No watched folders configured — skipping initial index");
-        return;
+        return tokio::spawn(async {});
     }
 
     let db_path = database_path.to_path_buf();
@@ -294,21 +321,34 @@ fn spawn_background_indexing(
             }
         };
 
-        let tantivy_ok =
-            match imageviz_backend::search::indexer::full_reindex(&read_conn, &index_manager) {
-                Ok(search_stats) => {
-                    tracing::info!(
-                        indexed = search_stats.indexed_count,
-                        errors = search_stats.errors,
-                        "Tantivy search index populated"
-                    );
-                    true
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "Failed to populate Tantivy index");
-                    false
-                }
-            };
+        // Phase 2 is CPU-bound (iterating all SQLite rows, indexing into
+        // Tantivy), so it must run on a blocking thread to avoid starving
+        // the async runtime.
+        // `full_reindex` returns `Result<_, Box<dyn Error>>` which is not `Send`,
+        // so we convert to `Option` inside the closure for `spawn_blocking`.
+        let im = Arc::clone(&index_manager);
+        let tantivy_ok = match tokio::task::spawn_blocking(move || {
+            imageviz_backend::search::indexer::full_reindex(&read_conn, &im).ok()
+        })
+        .await
+        {
+            Ok(Some(search_stats)) => {
+                tracing::info!(
+                    indexed = search_stats.indexed_count,
+                    errors = search_stats.errors,
+                    "Tantivy search index populated"
+                );
+                true
+            }
+            Ok(None) => {
+                tracing::error!("Failed to populate Tantivy index");
+                false
+            }
+            Err(join_e) => {
+                tracing::error!(error = %join_e, "Tantivy reindex task panicked");
+                false
+            }
+        };
 
         if tantivy_ok
             && let Err(e) = sse_tx.send(SseEvent {
@@ -320,7 +360,7 @@ fn spawn_background_indexing(
         {
             tracing::warn!(error = %e, "Failed to broadcast indexing_complete");
         }
-    });
+    })
 }
 
 /// Spawn a background task that periodically evicts old thumbnails.
@@ -345,37 +385,28 @@ fn spawn_cache_eviction_timer(cache_dir: PathBuf) {
     });
 }
 
-/// Start a file system watcher that monitors watched folders for changes.
+/// Create a file system watcher and return both the watcher guard and the
+/// event receiver.
 ///
-/// File events (create / modify / delete) are debounced (500 ms) and
-/// forwarded to [`run_event_handler`], which updates SQLite, Tantivy, and
-/// broadcasts an SSE event to all connected clients.
-///
-/// **The returned watcher must be kept alive** — dropping it stops all
-/// monitoring.  Callers typically bind the return value to
+/// The returned **watcher must be kept alive** — dropping it stops all
+/// monitoring.  Callers typically bind the first element to
 /// `let _watcher = ...` so it lives for the duration of `main`.
 ///
 /// Unlike the earlier design, this function always creates a watcher and
-/// event handler, even when the config has no folders.  This allows the
+/// event channel, even when the config has no folders.  This allows the
 /// [`routes::config::update_config`] handler to dynamically add watches
 /// at runtime via [`FileWatcher::watch`].
-fn start_file_watcher(
-    pool: Pool<SqliteConnectionManager>,
-    index_manager: Arc<IndexManager>,
-    sse_tx: tokio::sync::broadcast::Sender<SseEvent>,
-    config: &AppConfig,
-) -> FileWatcher {
+///
+/// **The event handler is NOT spawned here.**  Callers are responsible
+/// for starting the handler (via
+/// [`handler::run_event_handler`](imageviz_backend::watcher::handler::run_event_handler))
+/// after initial indexing completes, so that file-watch events arriving
+/// during the CPU-heavy initial scan are not processed wastefully.
+fn start_file_watcher(config: &AppConfig) -> (FileWatcher, mpsc::Receiver<Vec<FileEvent>>) {
     let paths: Vec<PathBuf> =
         config.watched_folders.iter().map(|f| PathBuf::from(&f.path)).collect();
 
     let (watcher, rx) = FileWatcher::new(&paths).expect("Failed to create file watcher");
-
-    tokio::spawn(imageviz_backend::watcher::handler::run_event_handler(
-        rx,
-        pool,
-        index_manager,
-        sse_tx,
-    ));
 
     tracing::info!(
         paths = %paths.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>().join(", "),
@@ -383,5 +414,5 @@ fn start_file_watcher(
         paths.len(),
     );
 
-    watcher
+    (watcher, rx)
 }
