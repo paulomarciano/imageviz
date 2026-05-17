@@ -76,9 +76,7 @@ async fn seed_item(
         schema.get_field("height").unwrap() => height.unwrap_or(0) as u64,
     );
 
-    app.index_manager
-        .add_document(doc)
-        .expect("add Tantivy doc");
+    app.index_manager.add_document(doc).expect("add Tantivy doc");
 }
 
 // ---------------------------------------------------------------------------
@@ -137,12 +135,7 @@ async fn test_search_basic_query_returns_matching_results() {
 
     let response = app
         .router
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/search?q=dragon")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::builder().uri("/api/v1/search?q=dragon").body(Body::empty()).unwrap())
         .await
         .unwrap();
 
@@ -159,14 +152,8 @@ async fn test_search_basic_query_returns_matching_results() {
     assert_eq!(data[0]["width"], 1024);
     assert_eq!(data[0]["height"], 768);
     assert_eq!(data[0]["file_size"], 20480);
-    assert!(data[0]["thumbnail_url"]
-        .as_str()
-        .unwrap()
-        .contains("uuid-dragon"));
-    assert!(data[0]["created_at"]
-        .as_str()
-        .unwrap()
-        .contains("2026-03-01"));
+    assert!(data[0]["thumbnail_url"].as_str().unwrap().contains("uuid-dragon"));
+    assert!(data[0]["created_at"].as_str().unwrap().contains("2026-03-01"));
 
     // Check meta fields
     assert_eq!(body["meta"]["query"], "dragon");
@@ -212,12 +199,7 @@ async fn test_search_across_metadata_json_field() {
     // Search for "Prometheus" — should match via metadata_json TEXT field
     let response = app
         .router
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/search?q=Prometheus")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::builder().uri("/api/v1/search?q=Prometheus").body(Body::empty()).unwrap())
         .await
         .unwrap();
 
@@ -243,12 +225,7 @@ async fn test_search_empty_query_returns_400() {
     let response = app
         .router
         .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/search")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::builder().uri("/api/v1/search").body(Body::empty()).unwrap())
         .await
         .unwrap();
 
@@ -261,12 +238,7 @@ async fn test_search_empty_query_returns_400() {
     // q present but blank
     let response = app
         .router
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/search?q=")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::builder().uri("/api/v1/search?q=").body(Body::empty()).unwrap())
         .await
         .unwrap();
 
@@ -404,10 +376,7 @@ async fn test_search_no_pagination_when_fewer_than_limit() {
     let response = app
         .router
         .oneshot(
-            Request::builder()
-                .uri("/api/v1/search?q=few&limit=10")
-                .body(Body::empty())
-                .unwrap(),
+            Request::builder().uri("/api/v1/search?q=few&limit=10").body(Body::empty()).unwrap(),
         )
         .await
         .unwrap();
@@ -465,11 +434,7 @@ async fn test_search_limit_capped_at_500() {
     let body: Value = serde_json::from_slice(&body_bytes).unwrap();
 
     let data = body["data"].as_array().unwrap();
-    assert_eq!(
-        data.len(),
-        500,
-        "limit should be capped at 500 items per page"
-    );
+    assert_eq!(data.len(), 500, "limit should be capped at 500 items per page");
     assert_eq!(body["meta"]["total"], 500);
     assert_eq!(body["meta"]["has_more"], true);
     assert!(body["meta"]["next_cursor"].is_string());
@@ -524,12 +489,7 @@ async fn test_search_handles_item_deleted_from_db() {
 
     let response = app
         .router
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/search?q=prompt")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::builder().uri("/api/v1/search?q=prompt").body(Body::empty()).unwrap())
         .await
         .unwrap();
 
@@ -561,8 +521,7 @@ async fn test_search_invalid_query_syntax_does_not_crash() {
     // Tantivy is generally permissive; either 200 or 400 is acceptable,
     // but never 500.
     assert!(
-        response.status() == StatusCode::OK
-            || response.status() == StatusCode::BAD_REQUEST,
+        response.status() == StatusCode::OK || response.status() == StatusCode::BAD_REQUEST,
         "malformed query should return either 200 or 400, never 500"
     );
 }

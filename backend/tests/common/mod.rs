@@ -48,19 +48,15 @@ pub fn create_test_app() -> Router {
 #[allow(dead_code)]
 pub fn create_test_app_with_search() -> TestApp {
     // 1. In-memory SQLite with migrations
-    let mut conn =
-        imageviz_backend::db::open_in_memory().expect("in-memory DB");
-    imageviz_backend::db::migrations::run_migrations(&mut conn)
-        .expect("migrations");
+    let mut conn = imageviz_backend::db::open_in_memory().expect("in-memory DB");
+    imageviz_backend::db::migrations::run_migrations(&mut conn).expect("migrations");
     let db = Arc::new(Mutex::new(conn));
 
     // 2. Temporary Tantivy index
     let tantivy_dir = tempfile::tempdir().expect("tempdir for tantivy");
     let index_manager = Arc::new(
-        imageviz_backend::search::IndexManager::open_or_create(
-            &tantivy_dir.path().join("index"),
-        )
-        .expect("IndexManager"),
+        imageviz_backend::search::IndexManager::open_or_create(&tantivy_dir.path().join("index"))
+            .expect("IndexManager"),
     );
 
     // 3. Broadcast channel for SSE
@@ -90,9 +86,8 @@ pub fn create_test_app_with_search() -> TestApp {
         index_manager: Arc::clone(&index_manager),
         db: Arc::clone(&db),
     });
-    let events_state = Arc::new(imageviz_backend::routes::events::EventsState {
-        sse_tx: sse_tx.clone(),
-    });
+    let events_state =
+        Arc::new(imageviz_backend::routes::events::EventsState { sse_tx: sse_tx.clone() });
     let stats_state = Arc::new(imageviz_backend::routes::stats::StatsState {
         db: Arc::clone(&db),
         progress: Arc::clone(&progress),
@@ -100,33 +95,11 @@ pub fn create_test_app_with_search() -> TestApp {
 
     // 6. Assemble the full router under `/api/v1`
     let router = imageviz_backend::health_router()
-        .nest(
-            "/api/v1",
-            imageviz_backend::routes::config::routes().with_state(config_state),
-        )
-        .nest(
-            "/api/v1",
-            imageviz_backend::routes::media::routes().with_state(media_state),
-        )
-        .nest(
-            "/api/v1",
-            imageviz_backend::routes::search::routes().with_state(search_state),
-        )
-        .nest(
-            "/api/v1",
-            imageviz_backend::routes::events::routes().with_state(events_state),
-        )
-        .nest(
-            "/api/v1",
-            imageviz_backend::routes::stats::routes().with_state(stats_state),
-        );
+        .nest("/api/v1", imageviz_backend::routes::config::routes().with_state(config_state))
+        .nest("/api/v1", imageviz_backend::routes::media::routes().with_state(media_state))
+        .nest("/api/v1", imageviz_backend::routes::search::routes().with_state(search_state))
+        .nest("/api/v1", imageviz_backend::routes::events::routes().with_state(events_state))
+        .nest("/api/v1", imageviz_backend::routes::stats::routes().with_state(stats_state));
 
-    TestApp {
-        router,
-        db,
-        index_manager,
-        sse_tx,
-        _tantivy_dir: tantivy_dir,
-        _cache_dir: cache_dir,
-    }
+    TestApp { router, db, index_manager, sse_tx, _tantivy_dir: tantivy_dir, _cache_dir: cache_dir }
 }

@@ -77,6 +77,42 @@ describe('VideoViewer', () => {
     expect(video).toHaveAttribute('poster', '/api/v1/media/video-1/thumbnail');
   });
 
+  it('has autoplay enabled for immediate playback', () => {
+    // Arrange
+    const item = createMockVideoDetail();
+
+    // Act
+    render(<VideoViewer item={item} />);
+    const video = document.querySelector('video');
+
+    // Assert
+    expect(video).toHaveAttribute('autoplay');
+  });
+
+  it('is muted to satisfy browser autoplay policy', () => {
+    // Arrange
+    const item = createMockVideoDetail();
+
+    // Act
+    render(<VideoViewer item={item} />);
+    const video = document.querySelector('video')!;
+
+    // Assert — muted is a DOM property, not an HTML attribute
+    expect(video.muted).toBe(true);
+  });
+
+  it('calls play() on mount for reliable autoplay', () => {
+    // Arrange
+    vi.clearAllMocks();
+    const item = createMockVideoDetail();
+
+    // Act
+    render(<VideoViewer item={item} />);
+
+    // Assert
+    expect(HTMLVideoElement.prototype.play).toHaveBeenCalledOnce();
+  });
+
   /* ---------- Loading state ---------- */
 
   it('shows loading spinner before metadata loads', () => {
@@ -167,6 +203,10 @@ describe('VideoViewer', () => {
     const video = document.querySelector('video')!;
     fireEvent.loadedMetadata(video);
 
+    // Clear mocks after mount so the effect's play() call doesn't
+    // interfere with the keyboard shortcut assertions below.
+    vi.clearAllMocks();
+
     // Start in a "playing" state
     Object.defineProperty(video, 'paused', { value: false, writable: true, configurable: true });
 
@@ -182,7 +222,8 @@ describe('VideoViewer', () => {
     Object.defineProperty(video, 'paused', { value: true, writable: true, configurable: true });
     fireEvent.keyDown(container, { key: ' ' });
 
-    // Assert — play should have been called
+    // Assert — play should have been called once (not counting the
+    // mount effect which was cleared above)
     expect(video.play).toHaveBeenCalledOnce();
   });
 

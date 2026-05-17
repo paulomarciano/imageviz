@@ -43,29 +43,18 @@ async fn get_stats(
     let db = state.db.lock().await;
 
     // Total file count
-    let total: u64 = db
-        .query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0))
-        .map_err(|e| {
+    let total: u64 =
+        db.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).map_err(|e| {
             tracing::error!(error = %e, "Failed to count media items");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Internal server error"})),
-            )
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
         })?;
 
     // Total file size
     let total_file_size: u64 = db
-        .query_row(
-            "SELECT COALESCE(SUM(file_size), 0) FROM media_items",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT COALESCE(SUM(file_size), 0) FROM media_items", [], |r| r.get(0))
         .map_err(|e| {
             tracing::error!(error = %e, "Failed to sum media file sizes");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Internal server error"})),
-            )
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
         })?;
 
     // MIME type histogram
@@ -76,10 +65,7 @@ async fn get_stats(
         )
         .map_err(|e| {
             tracing::error!(error = %e, "Failed to prepare mime_type histogram query");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Internal server error"})),
-            )
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
         })?;
 
     let by_mime_type: HashMap<String, u64> = stmt
@@ -90,18 +76,14 @@ async fn get_stats(
         })
         .map_err(|e| {
             tracing::error!(error = %e, "Failed to execute mime_type histogram query");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Internal server error"})),
-            )
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
         })?
         .filter_map(|r| r.ok())
         .collect();
 
     // Last indexed timestamp (most recent `indexed_at` across all items)
-    let last_indexed_at: Option<String> = db
-        .query_row("SELECT MAX(indexed_at) FROM media_items", [], |r| r.get(0))
-        .unwrap_or(None);
+    let last_indexed_at: Option<String> =
+        db.query_row("SELECT MAX(indexed_at) FROM media_items", [], |r| r.get(0)).unwrap_or(None);
 
     // Indexing status from the ProgressTracker
     let snapshot = state.progress.snapshot();
@@ -118,13 +100,7 @@ async fn get_stats(
         errors: snapshot.errors,
     };
 
-    Ok(Json(IndexStats {
-        total,
-        by_mime_type,
-        total_file_size,
-        last_indexed_at,
-        indexing,
-    }))
+    Ok(Json(IndexStats { total, by_mime_type, total_file_size, last_indexed_at, indexing }))
 }
 
 #[cfg(test)]
@@ -138,17 +114,12 @@ mod tests {
     /// ProgressTracker.  The database is pre-populated with the
     /// `media_items` table so queries return clean results.
     fn test_state() -> Arc<StatsState> {
-        let mut conn = crate::db::open_in_memory()
-            .expect("Failed to create in-memory database");
-        crate::db::migrations::run_migrations(&mut conn)
-            .expect("Failed to run migrations");
+        let mut conn = crate::db::open_in_memory().expect("Failed to create in-memory database");
+        crate::db::migrations::run_migrations(&mut conn).expect("Failed to run migrations");
 
         let progress = Arc::new(ProgressTracker::new());
 
-        Arc::new(StatsState {
-            db: Arc::new(Mutex::new(conn)),
-            progress,
-        })
+        Arc::new(StatsState { db: Arc::new(Mutex::new(conn)), progress })
     }
 
     #[tokio::test]
@@ -309,10 +280,7 @@ mod tests {
         assert_eq!(body["indexing"]["status"], "Scanning");
         assert_eq!(body["indexing"]["total"], 100);
         assert_eq!(body["indexing"]["processed"], 1);
-        assert_eq!(
-            body["indexing"]["errors"].as_array().unwrap().len(),
-            1
-        );
+        assert_eq!(body["indexing"]["errors"].as_array().unwrap().len(), 1);
         assert_eq!(body["indexing"]["errors"][0], "File not found");
     }
 }

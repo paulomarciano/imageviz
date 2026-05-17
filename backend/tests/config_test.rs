@@ -8,7 +8,7 @@
 mod common;
 
 use axum::body::Body;
-use axum::http::{Request, StatusCode, Method};
+use axum::http::{Method, Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -23,12 +23,7 @@ async fn test_config_empty_on_fresh_database() {
 
     let response = app
         .router
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/config")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::builder().uri("/api/v1/config").body(Body::empty()).unwrap())
         .await
         .unwrap();
 
@@ -76,12 +71,7 @@ async fn test_config_put_and_get_roundtrip() {
     // GET config — should match what we PUT
     let get_response = app
         .router
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/config")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::builder().uri("/api/v1/config").body(Body::empty()).unwrap())
         .await
         .unwrap();
 
@@ -185,12 +175,7 @@ async fn test_config_put_idempotent() {
     // GET — should still have 1 folder, not duplicated
     let get_response = app
         .router
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/config")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::builder().uri("/api/v1/config").body(Body::empty()).unwrap())
         .await
         .unwrap();
 

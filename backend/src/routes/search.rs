@@ -15,11 +15,11 @@
 //! provided so that the caller can implement client-side offset if needed.
 
 use axum::{
+    Router,
     extract::{Query, State},
     http::StatusCode,
     response::Json,
     routing::get,
-    Router,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -108,23 +108,17 @@ async fn search_handler(
 
     let metadata_json_field = schema.get_field("metadata_json").map_err(|e| {
         tracing::error!(error = %e, "Missing metadata_json field in Tantivy schema");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": "Internal server error"})),
-        )
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
     })?;
     let filename_field = schema.get_field("filename").map_err(|e| {
         tracing::error!(error = %e, "Missing filename field in Tantivy schema");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": "Internal server error"})),
-        )
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
     })?;
 
-    let query_parser = QueryParser::for_index(state.index_manager.index(), vec![
-        metadata_json_field,
-        filename_field,
-    ]);
+    let query_parser = QueryParser::for_index(
+        state.index_manager.index(),
+        vec![metadata_json_field, filename_field],
+    );
 
     let query = match query_parser.parse_query(&query_str) {
         Ok(q) => q,
@@ -164,10 +158,7 @@ async fn search_handler(
             }
         };
 
-        let item_id = tantivy_doc
-            .get_first(id_field)
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let item_id = tantivy_doc.get_first(id_field).and_then(|v| v.as_str()).unwrap_or("");
 
         if item_id.is_empty() {
             continue;
@@ -185,11 +176,7 @@ async fn search_handler(
 
     // ---- Sort results ----
     if params.sort == "recency" {
-        media_items.sort_by(|a, b| {
-            b.created_at
-                .cmp(&a.created_at)
-                .then_with(|| b.id.cmp(&a.id))
-        });
+        media_items.sort_by(|a, b| b.created_at.cmp(&a.created_at).then_with(|| b.id.cmp(&a.id)));
     }
 
     let (next_cursor, next_cursor_id) = if has_more {
@@ -249,8 +236,7 @@ fn get_media_item_by_id(
     id: &str,
     mime_type: Option<&str>,
 ) -> Result<Option<MediaItemSummary>, rusqlite::Error> {
-    const BASE_SQL: &str =
-        "SELECT id, filename, relative_path, mime_type, width, height, file_size, \
+    const BASE_SQL: &str = "SELECT id, filename, relative_path, mime_type, width, height, file_size, \
                 file_created_at, file_modified_at \
          FROM media_items WHERE id = ?1";
 
@@ -311,10 +297,8 @@ mod tests {
     fn test_state() -> (tempfile::TempDir, Arc<SearchState>) {
         let dir = tempfile::tempdir().expect("tempdir");
 
-        let mut conn = crate::db::open_in_memory()
-            .expect("Failed to create in-memory database");
-        crate::db::migrations::run_migrations(&mut conn)
-            .expect("Failed to run migrations");
+        let mut conn = crate::db::open_in_memory().expect("Failed to create in-memory database");
+        crate::db::migrations::run_migrations(&mut conn).expect("Failed to run migrations");
 
         let index_manager =
             IndexManager::open_or_create(&dir.path().join("tantivy")).expect("IndexManager");
@@ -441,12 +425,7 @@ mod tests {
 
         // Search for "dragon" — should match via metadata_json
         let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/search?q=dragon")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/search?q=dragon").body(Body::empty()).unwrap())
             .await
             .unwrap();
 
@@ -548,12 +527,7 @@ mod tests {
 
         // q present but blank
         let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/search?q=")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/search?q=").body(Body::empty()).unwrap())
             .await
             .unwrap();
 
@@ -641,12 +615,7 @@ mod tests {
 
         // No limit param — should default to 100, returning all 50 items
         let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/search?q=common")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/search?q=common").body(Body::empty()).unwrap())
             .await
             .unwrap();
 
@@ -688,10 +657,7 @@ mod tests {
         // Request limit=1000 — should be capped at 500+1 (for has_more check)
         let response = app
             .oneshot(
-                Request::builder()
-                    .uri("/search?q=capped&limit=1000")
-                    .body(Body::empty())
-                    .unwrap(),
+                Request::builder().uri("/search?q=capped&limit=1000").body(Body::empty()).unwrap(),
             )
             .await
             .unwrap();
@@ -702,11 +668,7 @@ mod tests {
         let body: Value = serde_json::from_slice(&body_bytes).unwrap();
 
         let data = body["data"].as_array().unwrap();
-        assert_eq!(
-            data.len(),
-            500,
-            "limit should be capped at 500 items per page"
-        );
+        assert_eq!(data.len(), 500, "limit should be capped at 500 items per page");
         assert_eq!(body["meta"]["total"], 500);
         assert_eq!(body["meta"]["has_more"], true);
         assert!(body["meta"]["next_cursor"].is_string());
@@ -743,10 +705,7 @@ mod tests {
 
         let response = app
             .oneshot(
-                Request::builder()
-                    .uri("/search?q=paginated&limit=10")
-                    .body(Body::empty())
-                    .unwrap(),
+                Request::builder().uri("/search?q=paginated&limit=10").body(Body::empty()).unwrap(),
             )
             .await
             .unwrap();
@@ -804,20 +763,14 @@ mod tests {
         // Remove the "deleted" item from SQLite only
         {
             let db = state.db.lock().await;
-            db.execute("DELETE FROM media_items WHERE id = 'uuid-deleted'", [])
-                .expect("delete");
+            db.execute("DELETE FROM media_items WHERE id = 'uuid-deleted'", []).expect("delete");
         }
 
         let app = routes().with_state(state);
 
         // Search should still work — deleted item is silently skipped
         let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/search?q=prompt")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/search?q=prompt").body(Body::empty()).unwrap())
             .await
             .unwrap();
 
@@ -849,8 +802,7 @@ mod tests {
 
         // Tantivy is generally permissive, but this should not produce a 500
         assert!(
-            response.status() == StatusCode::OK
-                || response.status() == StatusCode::BAD_REQUEST,
+            response.status() == StatusCode::OK || response.status() == StatusCode::BAD_REQUEST,
             "malformed query should return either 200 or 400, never 500"
         );
     }
@@ -1047,12 +999,7 @@ mod tests {
 
         // No mime_type filter = both results returned
         let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/search?q=water")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/search?q=water").body(Body::empty()).unwrap())
             .await
             .unwrap();
 
@@ -1107,12 +1054,7 @@ mod tests {
 
         // Default sort (no sort param) = recency — newest first
         let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/search?q=dragon")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/search?q=dragon").body(Body::empty()).unwrap())
             .await
             .unwrap();
 
@@ -1123,14 +1065,8 @@ mod tests {
         let data = body["data"].as_array().unwrap();
 
         assert_eq!(data.len(), 2, "both items should match");
-        assert_eq!(
-            data[0]["id"], "uuid-new",
-            "recency sort should put newer item first"
-        );
-        assert_eq!(
-            data[1]["id"], "uuid-old",
-            "recency sort should put older item second"
-        );
+        assert_eq!(data[0]["id"], "uuid-new", "recency sort should put newer item first");
+        assert_eq!(data[1]["id"], "uuid-old", "recency sort should put older item second");
     }
 
     #[tokio::test]
@@ -1242,10 +1178,7 @@ mod tests {
         // sort=score should keep BM25 order: high-score first (more matches)
         let response = app
             .oneshot(
-                Request::builder()
-                    .uri("/search?q=dragon&sort=score")
-                    .body(Body::empty())
-                    .unwrap(),
+                Request::builder().uri("/search?q=dragon&sort=score").body(Body::empty()).unwrap(),
             )
             .await
             .unwrap();
@@ -1261,10 +1194,6 @@ mod tests {
             data[0]["id"], "uuid-high-score",
             "score sort should put higher BM25 score first"
         );
-        assert_eq!(
-            data[1]["id"], "uuid-low-score",
-            "score sort puts lower score second"
-        );
+        assert_eq!(data[1]["id"], "uuid-low-score", "score sort puts lower score second");
     }
-
 }

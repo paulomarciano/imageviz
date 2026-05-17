@@ -1,9 +1,9 @@
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
-    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -77,10 +77,7 @@ async fn list_media(
     Query(params): Query<MediaListParams>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     if params.limit == 0 {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "limit must be positive"})),
-        ));
+        return Err((StatusCode::BAD_REQUEST, Json(json!({"error": "limit must be positive"}))));
     }
     if params.limit > 500 {
         return Err((
@@ -105,8 +102,7 @@ async fn list_media(
         )
         .unwrap_or(0)
     } else {
-        db.query_row("SELECT COUNT(*) FROM media_items", [], |row| row.get(0))
-            .unwrap_or(0)
+        db.query_row("SELECT COUNT(*) FROM media_items", [], |row| row.get(0)).unwrap_or(0)
     };
 
     // Build SQL dynamically for cursor-based pagination
@@ -151,10 +147,7 @@ async fn list_media(
     let mut items: Vec<MediaItemSummary> = {
         let mut stmt = db.prepare(&sql).map_err(|e| {
             tracing::error!(error = %e, "Failed to prepare media list query");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Internal server error"})),
-            )
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
         })?;
 
         let rows = stmt
@@ -183,10 +176,7 @@ async fn list_media(
             })
             .map_err(|e| {
                 tracing::error!(error = %e, "Failed to query media items");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": "Internal server error"})),
-                )
+                (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
             })?;
 
         let mut items: Vec<MediaItemSummary> = Vec::new();
@@ -358,14 +348,8 @@ fn resolve_media_path(
     // Resolve the relative path to an absolute path using watched folders
     // from the config table.
     let config_str: String = db
-        .query_row(
-            "SELECT value FROM config WHERE key = 'watched_folders'",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|_| {
-            (StatusCode::NOT_FOUND, Json(json!({"error": "File not found on disk"})))
-        })?;
+        .query_row("SELECT value FROM config WHERE key = 'watched_folders'", [], |row| row.get(0))
+        .map_err(|_| (StatusCode::NOT_FOUND, Json(json!({"error": "File not found on disk"}))))?;
 
     let config: Value = serde_json::from_str(&config_str).map_err(|_| {
         (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Invalid configuration"})))
@@ -380,16 +364,10 @@ fn resolve_media_path(
         .filter_map(|folder| {
             let base = folder["path"].as_str()?;
             let full = std::path::Path::new(base).join(&relative_path);
-            if full.exists() {
-                Some(full)
-            } else {
-                None
-            }
+            if full.exists() { Some(full) } else { None }
         })
         .next()
-        .ok_or_else(|| {
-            (StatusCode::NOT_FOUND, Json(json!({"error": "File not found on disk"})))
-        })?;
+        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(json!({"error": "File not found on disk"}))))?;
 
     Ok((file_path, mime_type, filename))
 }
@@ -460,9 +438,7 @@ async fn serve_file(
 
     // Check If-None-Match (only for full-file requests, not range)
     if !checksum.is_empty()
-        && let Some(val) = headers
-            .get(header::IF_NONE_MATCH)
-            .and_then(|v| v.to_str().ok())
+        && let Some(val) = headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok())
     {
         let expected = format!("\"{}\"", checksum);
         if val == expected {
@@ -470,10 +446,8 @@ async fn serve_file(
             *res.status_mut() = StatusCode::NOT_MODIFIED;
             res.headers_mut()
                 .insert(header::ETAG, HeaderValue::from_bytes(expected.as_bytes()).unwrap());
-            res.headers_mut().insert(
-                header::CACHE_CONTROL,
-                HeaderValue::from_static("private, max-age=3600"),
-            );
+            res.headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("private, max-age=3600"));
             return Ok(res);
         }
     }
@@ -501,18 +475,19 @@ async fn serve_file(
     }
 
     // No Range header → serve full file with caching headers
-    serve_full_file(&file_path, &mime_type, &filename, &checksum, &modified_at)
+    serve_full_file(&file_path, file_size, &mime_type, &filename, &checksum, &modified_at)
         .await
         .map(IntoResponse::into_response)
 }
 
 /// Serve the full file (200 OK) with caching headers.
 ///
-/// Includes `ETag` (checksum), `Cache-Control: private, max-age=3600`,
-/// and `Last-Modified` (from `file_modified_at`) headers.
+/// Includes `Content-Length`, `ETag` (checksum), `Cache-Control: private,
+/// max-age=3600`, and `Last-Modified` (from `file_modified_at`) headers.
 /// Conditional requests (304) are handled upstream in `serve_file`.
 async fn serve_full_file(
     path: &std::path::Path,
+    file_size: u64,
     mime_type: &str,
     filename: &str,
     checksum: &str,
@@ -533,12 +508,13 @@ async fn serve_full_file(
         header::CONTENT_DISPOSITION,
         HeaderValue::from_bytes(format!("inline; filename=\"{}\"", filename).as_bytes()).unwrap(),
     );
-    res.headers_mut()
-        .insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
     res.headers_mut().insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("private, max-age=3600"),
+        header::CONTENT_LENGTH,
+        HeaderValue::from_bytes(file_size.to_string().as_bytes()).unwrap(),
     );
+    res.headers_mut().insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    res.headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("private, max-age=3600"));
     if !checksum.is_empty() {
         res.headers_mut().insert(
             header::ETAG,
@@ -596,18 +572,16 @@ async fn serve_file_range(
     );
     res.headers_mut().insert(
         header::CONTENT_RANGE,
-        HeaderValue::from_bytes(format!("bytes {}-{}/{}", start, end, file_size).as_bytes()).unwrap(),
+        HeaderValue::from_bytes(format!("bytes {}-{}/{}", start, end, file_size).as_bytes())
+            .unwrap(),
     );
     res.headers_mut().insert(
         header::CONTENT_LENGTH,
         HeaderValue::from_bytes(length.to_string().as_bytes()).unwrap(),
     );
+    res.headers_mut().insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
     res.headers_mut()
-        .insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
-    res.headers_mut().insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("private, max-age=3600"),
-    );
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("private, max-age=3600"));
     if !checksum.is_empty() {
         res.headers_mut().insert(
             header::ETAG,
@@ -628,10 +602,7 @@ async fn serve_thumbnail(
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     // Parse optional width parameter (default 200, range 100-500)
-    let width: u32 = params
-        .get("width")
-        .and_then(|w| w.parse().ok())
-        .unwrap_or(200);
+    let width: u32 = params.get("width").and_then(|w| w.parse().ok()).unwrap_or(200);
 
     if !(100..=500).contains(&width) {
         return Err((
@@ -668,9 +639,10 @@ async fn serve_thumbnail(
             CacheError::SourceNotFound(_) => {
                 (StatusCode::NOT_FOUND, Json(json!({"error": "File not found on disk"})))
             }
-            _ => {
-                (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Failed to generate thumbnail"})))
-            }
+            _ => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Failed to generate thumbnail"})),
+            ),
         }
     })?;
 
@@ -707,10 +679,8 @@ mod tests {
     /// The database is created via the real migration path so the schema
     /// matches production.
     fn test_state() -> (Arc<MediaState>, tempfile::TempDir) {
-        let mut conn = crate::db::open_in_memory()
-            .expect("Failed to create in-memory database");
-        crate::db::migrations::run_migrations(&mut conn)
-            .expect("Failed to run migrations");
+        let mut conn = crate::db::open_in_memory().expect("Failed to create in-memory database");
+        crate::db::migrations::run_migrations(&mut conn).expect("Failed to run migrations");
         let cache_dir = tempfile::tempdir().expect("tempdir");
         let state = Arc::new(MediaState {
             db: Arc::new(Mutex::new(conn)),
@@ -779,8 +749,7 @@ mod tests {
     /// Create a small solid-colour PNG file for testing.
     fn create_test_png(path: &std::path::Path) {
         let img = image::RgbaImage::new(100, 100);
-        img.save_with_format(path, image::ImageFormat::Png)
-            .expect("failed to create test PNG");
+        img.save_with_format(path, image::ImageFormat::Png).expect("failed to create test PNG");
     }
 
     // -----------------------------------------------------------------------
@@ -862,7 +831,8 @@ mod tests {
             "missing.png",
             "image/png",
             "abc123",
-        ).await;
+        )
+        .await;
 
         let app = routes().with_state(state);
 
@@ -898,7 +868,8 @@ mod tests {
             "test.png",
             "image/png",
             "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
-        ).await;
+        )
+        .await;
 
         let app = routes().with_state(state);
 
@@ -917,18 +888,12 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
 
         // Verify response headers
-        let content_type = response
-            .headers()
-            .get(header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap();
+        let content_type =
+            response.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap();
         assert_eq!(content_type, "image/webp");
 
-        let cache_control = response
-            .headers()
-            .get(header::CACHE_CONTROL)
-            .and_then(|v| v.to_str().ok())
-            .unwrap();
+        let cache_control =
+            response.headers().get(header::CACHE_CONTROL).and_then(|v| v.to_str().ok()).unwrap();
         assert_eq!(cache_control, "public, max-age=31536000, immutable");
 
         // Verify body is valid WebP
@@ -949,11 +914,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(response2.status(), StatusCode::OK);
-        let content_type2 = response2
-            .headers()
-            .get(header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap();
+        let content_type2 =
+            response2.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap();
         assert_eq!(content_type2, "image/webp");
     }
 
@@ -972,7 +934,8 @@ mod tests {
             "test.png",
             "image/png",
             "fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321",
-        ).await;
+        )
+        .await;
 
         let app = routes().with_state(state);
 
@@ -1045,7 +1008,8 @@ mod tests {
             "test.png",
             "image/png",
             "",
-        ).await;
+        )
+        .await;
 
         let app = routes().with_state(state);
 
@@ -1061,11 +1025,8 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::OK);
 
-        let content_type = response
-            .headers()
-            .get(header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap();
+        let content_type =
+            response.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap();
         assert_eq!(content_type, "image/png");
 
         let content_disposition = response
@@ -1113,19 +1074,12 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
 
         // Verify ETag header
-        let etag = response
-            .headers()
-            .get(header::ETAG)
-            .and_then(|v| v.to_str().ok())
-            .unwrap();
+        let etag = response.headers().get(header::ETAG).and_then(|v| v.to_str().ok()).unwrap();
         assert_eq!(etag, "\"abc123def456\"");
 
         // Verify Cache-Control header
-        let cache_control = response
-            .headers()
-            .get(header::CACHE_CONTROL)
-            .and_then(|v| v.to_str().ok())
-            .unwrap();
+        let cache_control =
+            response.headers().get(header::CACHE_CONTROL).and_then(|v| v.to_str().ok()).unwrap();
         assert_eq!(cache_control, "private, max-age=3600");
     }
 
@@ -1203,11 +1157,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
 
         // Server should still return its own ETag
-        let etag = response
-            .headers()
-            .get(header::ETAG)
-            .and_then(|v| v.to_str().ok())
-            .unwrap();
+        let etag = response.headers().get(header::ETAG).and_then(|v| v.to_str().ok()).unwrap();
         assert_eq!(etag, "\"realchecksum\"");
     }
 
@@ -1250,11 +1200,8 @@ mod tests {
         );
 
         // Cache-Control should still be present
-        let cache_control = response
-            .headers()
-            .get(header::CACHE_CONTROL)
-            .and_then(|v| v.to_str().ok())
-            .unwrap();
+        let cache_control =
+            response.headers().get(header::CACHE_CONTROL).and_then(|v| v.to_str().ok()).unwrap();
         assert_eq!(cache_control, "private, max-age=3600");
     }
 
@@ -1264,12 +1211,7 @@ mod tests {
 
     /// Helper to seed N media items descending from a base date.
     /// Items get sequential IDs and dates spaced 1 second apart.
-    async fn seed_n_items(
-        state: &Arc<MediaState>,
-        n: u32,
-        base_date: &str,
-        mime_type: &str,
-    ) {
+    async fn seed_n_items(state: &Arc<MediaState>, n: u32, base_date: &str, mime_type: &str) {
         let base = NaiveDateTime::parse_from_str(base_date, "%Y-%m-%dT%H:%M:%S")
             .expect("Invalid base date");
 
@@ -1299,12 +1241,7 @@ mod tests {
         let app = routes().with_state(state);
 
         let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/media")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/media").body(Body::empty()).unwrap())
             .await
             .unwrap();
 
@@ -1317,7 +1254,10 @@ mod tests {
         assert_eq!(body["meta"]["has_more"], false, "empty DB should have has_more=false");
         assert_eq!(body["meta"]["total"], 0, "empty DB should have total=0");
         assert!(body["meta"]["next_cursor"].is_null(), "empty DB should have null next_cursor");
-        assert!(body["meta"]["next_cursor_id"].is_null(), "empty DB should have null next_cursor_id");
+        assert!(
+            body["meta"]["next_cursor_id"].is_null(),
+            "empty DB should have null next_cursor_id"
+        );
     }
 
     #[tokio::test]
@@ -1327,12 +1267,7 @@ mod tests {
         let app = routes().with_state(state);
 
         let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/media?limit=100")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/media?limit=100").body(Body::empty()).unwrap())
             .await
             .unwrap();
 
@@ -1345,16 +1280,16 @@ mod tests {
         assert_eq!(data.len(), 100, "first page should return exactly 100 items");
         assert_eq!(body["meta"]["has_more"], true, "250 items, 100 limit should have more");
         assert!(body["meta"]["next_cursor"].is_string(), "has_more=true should have next_cursor");
-        assert!(body["meta"]["next_cursor_id"].is_string(), "has_more=true should have next_cursor_id");
+        assert!(
+            body["meta"]["next_cursor_id"].is_string(),
+            "has_more=true should have next_cursor_id"
+        );
 
         // Items should be ordered newest first (descending date)
         if data.len() >= 2 {
             let first_created = data[0]["created_at"].as_str().unwrap();
             let second_created = data[1]["created_at"].as_str().unwrap();
-            assert!(
-                first_created >= second_created,
-                "items should be ordered newest first"
-            );
+            assert!(first_created >= second_created, "items should be ordered newest first");
         }
     }
 
@@ -1367,19 +1302,13 @@ mod tests {
         // First page
         let response1 = app
             .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/media?limit=100")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/media?limit=100").body(Body::empty()).unwrap())
             .await
             .unwrap();
 
-        let body1: Value = serde_json::from_slice(
-            &response1.into_body().collect().await.unwrap().to_bytes(),
-        )
-        .unwrap();
+        let body1: Value =
+            serde_json::from_slice(&response1.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
         let page1_ids: Vec<&str> = body1["data"]
             .as_array()
             .unwrap()
@@ -1404,10 +1333,9 @@ mod tests {
             .await
             .unwrap();
 
-        let body2: Value = serde_json::from_slice(
-            &response2.into_body().collect().await.unwrap().to_bytes(),
-        )
-        .unwrap();
+        let body2: Value =
+            serde_json::from_slice(&response2.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
         let page2_ids: Vec<&str> = body2["data"]
             .as_array()
             .unwrap()
@@ -1420,7 +1348,11 @@ mod tests {
 
         // Verify no overlap between pages
         for id in &page2_ids {
-            assert!(!page1_ids.contains(id), "cursor pagination should have no overlap: {} is in both pages", id);
+            assert!(
+                !page1_ids.contains(id),
+                "cursor pagination should have no overlap: {} is in both pages",
+                id
+            );
         }
     }
 
@@ -1431,12 +1363,7 @@ mod tests {
         let app = routes().with_state(state);
 
         let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/media?limit=100")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/media?limit=100").body(Body::empty()).unwrap())
             .await
             .unwrap();
 
@@ -1513,11 +1440,7 @@ mod tests {
         // Verify all returned items are images
         for item in data {
             let mime = item["mime_type"].as_str().unwrap();
-            assert!(
-                mime.starts_with("image/"),
-                "all items should be images, got: {}",
-                mime
-            );
+            assert!(mime.starts_with("image/"), "all items should be images, got: {}", mime);
         }
     }
 
@@ -1529,12 +1452,7 @@ mod tests {
         // Test limit > 500
         let response = app
             .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/media?limit=1000")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/media?limit=1000").body(Body::empty()).unwrap())
             .await
             .unwrap();
 
@@ -1542,19 +1460,11 @@ mod tests {
 
         let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
         let body: Value = serde_json::from_slice(&body_bytes).unwrap();
-        assert!(
-            body["error"].as_str().unwrap().contains("500"),
-            "error should mention 500 limit"
-        );
+        assert!(body["error"].as_str().unwrap().contains("500"), "error should mention 500 limit");
 
         // Test limit = 0
         let response2 = app
-            .oneshot(
-                Request::builder()
-                    .uri("/media?limit=0")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/media?limit=0").body(Body::empty()).unwrap())
             .await
             .unwrap();
 
@@ -1635,8 +1545,18 @@ mod tests {
         assert_eq!(body["width"], 800);
         assert_eq!(body["height"], 600);
         assert_eq!(body["file_size"], 4096);
-        assert!(body["thumbnail_url"].as_str().unwrap().contains("/media/00000000-0000-0000-0000-000000000100/thumbnail"));
-        assert!(body["file_url"].as_str().unwrap().contains("/media/00000000-0000-0000-0000-000000000100/file"));
+        assert!(
+            body["thumbnail_url"]
+                .as_str()
+                .unwrap()
+                .contains("/media/00000000-0000-0000-0000-000000000100/thumbnail")
+        );
+        assert!(
+            body["file_url"]
+                .as_str()
+                .unwrap()
+                .contains("/media/00000000-0000-0000-0000-000000000100/file")
+        );
         assert_eq!(body["metadata"]["prompt"]["text"], "a test image");
     }
 

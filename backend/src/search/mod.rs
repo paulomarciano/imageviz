@@ -1,13 +1,13 @@
-mod schema;
 pub mod indexer;
+mod schema;
 
 pub use indexer::ReindexStats;
 pub use schema::build_schema;
 
 use std::path::Path;
 use std::sync::Mutex;
-use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term};
 use tantivy::schema::Schema;
+use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term};
 
 // ---------------------------------------------------------------------------
 // IndexManager – public API
@@ -43,19 +43,12 @@ impl IndexManager {
             Index::create_in_dir(path, schema.clone())?
         };
 
-        let reader = index
-            .reader_builder()
-            .reload_policy(ReloadPolicy::OnCommitWithDelay)
-            .try_into()?;
+        let reader =
+            index.reader_builder().reload_policy(ReloadPolicy::OnCommitWithDelay).try_into()?;
 
         let writer = Some(index.writer(50_000_000)?);
 
-        Ok(Self {
-            index,
-            schema,
-            reader,
-            writer: Mutex::new(writer),
-        })
+        Ok(Self { index, schema, reader, writer: Mutex::new(writer) })
     }
 
     /// Add a document to the index.
@@ -63,9 +56,10 @@ impl IndexManager {
     /// The document is buffered in memory until [`commit`](Self::commit)
     /// is called.
     pub fn add_document(&self, doc: TantivyDocument) -> Result<(), Box<dyn std::error::Error>> {
-        let mut guard = self.writer.lock().map_err(|e| {
-            Box::new(std::io::Error::other(format!("Mutex poisoned: {}", e)))
-        })?;
+        let mut guard = self
+            .writer
+            .lock()
+            .map_err(|e| Box::new(std::io::Error::other(format!("Mutex poisoned: {}", e))))?;
         let writer = guard.as_mut().ok_or("IndexWriter has been consumed")?;
         writer.add_document(doc)?;
         Ok(())
@@ -75,9 +69,10 @@ impl IndexManager {
     /// documents immediately.
     pub fn commit(&self) -> Result<(), Box<dyn std::error::Error>> {
         {
-            let mut guard = self.writer.lock().map_err(|e| {
-                Box::new(std::io::Error::other(format!("Mutex poisoned: {}", e)))
-            })?;
+            let mut guard = self
+                .writer
+                .lock()
+                .map_err(|e| Box::new(std::io::Error::other(format!("Mutex poisoned: {}", e))))?;
             if let Some(writer) = guard.as_mut() {
                 writer.commit()?;
             }
@@ -108,9 +103,10 @@ impl IndexManager {
 
     /// Remove every document from the index.
     pub fn delete_all_documents(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let mut guard = self.writer.lock().map_err(|e| {
-            Box::new(std::io::Error::other(format!("Mutex poisoned: {}", e)))
-        })?;
+        let mut guard = self
+            .writer
+            .lock()
+            .map_err(|e| Box::new(std::io::Error::other(format!("Mutex poisoned: {}", e))))?;
         let writer = guard.as_mut().ok_or("IndexWriter has been consumed")?;
         writer.delete_all_documents()?;
         Ok(())
@@ -128,9 +124,10 @@ impl IndexManager {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let field = self.schema.get_field(field_name)?;
         let term = Term::from_field_text(field, value);
-        let mut guard = self.writer.lock().map_err(|e| {
-            Box::new(std::io::Error::other(format!("Mutex poisoned: {}", e)))
-        })?;
+        let mut guard = self
+            .writer
+            .lock()
+            .map_err(|e| Box::new(std::io::Error::other(format!("Mutex poisoned: {}", e))))?;
         let writer = guard.as_mut().ok_or("IndexWriter has been consumed")?;
         writer.delete_term(term);
         Ok(())

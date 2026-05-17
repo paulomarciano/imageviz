@@ -1,8 +1,8 @@
 #[cfg(test)]
 mod tests {
     use crate::test_support::fixture_path;
-    use crate::thumbnails::generate_image_thumbnail;
     use crate::thumbnails::ThumbnailError;
+    use crate::thumbnails::generate_image_thumbnail;
     use std::path::Path;
 
     #[tokio::test]
@@ -88,7 +88,8 @@ mod tests {
 
         // Re-encode a 200px-wide version with known height and compare filesize
         // as a sanity check that the resize was applied.
-        let expected_height = ((orig_h as f64 * target_width as f64) / orig_w as f64).round() as u32;
+        let expected_height =
+            ((orig_h as f64 * target_width as f64) / orig_w as f64).round() as u32;
         assert!(expected_height > 0, "thumbnail should have non-zero height");
     }
 
@@ -123,11 +124,7 @@ mod tests {
         // Assert: WebP files have RIFF header with WEBP identifier at offset 8
         let data = std::fs::read(&path).expect("failed to read thumbnail file");
         assert!(data.len() >= 12, "file too small to be a valid WebP image");
-        assert_eq!(
-            &data[0..4],
-            b"RIFF",
-            "WebP files must start with the RIFF header"
-        );
+        assert_eq!(&data[0..4], b"RIFF", "WebP files must start with the RIFF header");
         assert_eq!(
             &data[8..12],
             b"WEBP",

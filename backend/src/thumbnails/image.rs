@@ -53,9 +53,7 @@ pub async fn generate_image_thumbnail(
         return Err(ThumbnailError::SourceNotFound(source_path.to_path_buf()));
     }
 
-    let source_abs = source_path
-        .canonicalize()
-        .map_err(ThumbnailError::Io)?;
+    let source_abs = source_path.canonicalize().map_err(ThumbnailError::Io)?;
 
     let output_path = thumbnail_output_path(&source_abs, target_width);
 

@@ -1,7 +1,7 @@
 use axum::{
+    Router,
     body::Body,
     http::{Request, StatusCode, header},
-    Router,
 };
 use http_body_util::BodyExt;
 use serde_json::json;
@@ -26,10 +26,9 @@ use imageviz_backend::routes::media::{MediaState, routes};
 /// The database contains only the schema — no seeded data. Callers must
 /// call `seed_config` and `seed_media_item` to populate test data.
 fn create_media_test_app() -> (Router, Arc<MediaState>, tempfile::TempDir) {
-    let mut conn = imageviz_backend::db::open_in_memory()
-        .expect("Failed to create in-memory database");
-    imageviz_backend::db::migrations::run_migrations(&mut conn)
-        .expect("Failed to run migrations");
+    let mut conn =
+        imageviz_backend::db::open_in_memory().expect("Failed to create in-memory database");
+    imageviz_backend::db::migrations::run_migrations(&mut conn).expect("Failed to run migrations");
 
     let cache_dir = tempfile::tempdir().expect("Failed to create cache directory");
     let db = Arc::new(Mutex::new(conn));
@@ -79,8 +78,7 @@ async fn seed_media_item(
 /// Create a small solid-colour PNG file at the given path (100 × 100 pixels).
 fn create_test_png(path: &std::path::Path) {
     let img = image::RgbaImage::new(100, 100);
-    img.save_with_format(path, image::ImageFormat::Png)
-        .expect("failed to create test PNG");
+    img.save_with_format(path, image::ImageFormat::Png).expect("failed to create test PNG");
 }
 
 // ---------------------------------------------------------------------------
@@ -117,20 +115,14 @@ async fn test_thumbnail_returns_webp_image() {
 
     assert_eq!(response.status(), StatusCode::OK);
 
-    let content_type = response
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap();
+    let content_type =
+        response.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap();
     assert_eq!(content_type, "image/webp");
 
     let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
     assert!(body_bytes.len() > 12, "WebP file too small");
     assert_eq!(&body_bytes[0..4], b"RIFF", "WebP must start with RIFF header");
-    assert_eq!(
-        &body_bytes[8..12], b"WEBP",
-        "WebP must contain WEBP identifier at bytes 8-11"
-    );
+    assert_eq!(&body_bytes[8..12], b"WEBP", "WebP must contain WEBP identifier at bytes 8-11");
 }
 
 #[tokio::test]
@@ -180,11 +172,8 @@ async fn test_thumbnail_custom_width() {
 
     assert_eq!(response.status(), StatusCode::OK);
 
-    let content_type = response
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap();
+    let content_type =
+        response.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap();
     assert_eq!(content_type, "image/webp");
 }
 
@@ -222,11 +211,8 @@ async fn test_file_streams_with_correct_content_type() {
 
     assert_eq!(response.status(), StatusCode::OK);
 
-    let content_type = response
-        .headers()
-        .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap();
+    let content_type =
+        response.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap();
     assert_eq!(content_type, "image/png");
 }
 
@@ -279,19 +265,10 @@ async fn test_file_range_request_206() {
     assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
 
     // Verify Content-Range header is present and well-formed
-    let content_range = response
-        .headers()
-        .get(header::CONTENT_RANGE)
-        .and_then(|v| v.to_str().ok())
-        .unwrap();
-    assert!(
-        content_range.starts_with("bytes "),
-        "Content-Range should start with 'bytes '"
-    );
-    assert!(
-        content_range.contains('/'),
-        "Content-Range should contain a slash"
-    );
+    let content_range =
+        response.headers().get(header::CONTENT_RANGE).and_then(|v| v.to_str().ok()).unwrap();
+    assert!(content_range.starts_with("bytes "), "Content-Range should start with 'bytes '");
+    assert!(content_range.contains('/'), "Content-Range should contain a slash");
 }
 
 #[tokio::test]
@@ -360,11 +337,8 @@ async fn test_file_accept_ranges_header() {
 
     assert_eq!(response.status(), StatusCode::OK);
 
-    let accept_ranges = response
-        .headers()
-        .get(header::ACCEPT_RANGES)
-        .and_then(|v| v.to_str().ok())
-        .unwrap();
+    let accept_ranges =
+        response.headers().get(header::ACCEPT_RANGES).and_then(|v| v.to_str().ok()).unwrap();
     assert_eq!(accept_ranges, "bytes");
 }
 
@@ -399,11 +373,7 @@ async fn test_file_etag_header() {
     assert_eq!(response.status(), StatusCode::OK);
 
     // ETag is returned as a quoted string: "{checksum}"
-    let etag = response
-        .headers()
-        .get(header::ETAG)
-        .and_then(|v| v.to_str().ok())
-        .unwrap();
+    let etag = response.headers().get(header::ETAG).and_then(|v| v.to_str().ok()).unwrap();
     assert_eq!(etag, "\"etagchecksum\"");
 }
 
@@ -439,12 +409,8 @@ async fn test_file_304_not_modified() {
 
     assert_eq!(response.status(), StatusCode::OK);
 
-    let etag = response
-        .headers()
-        .get(header::ETAG)
-        .and_then(|v| v.to_str().ok())
-        .unwrap()
-        .to_string();
+    let etag =
+        response.headers().get(header::ETAG).and_then(|v| v.to_str().ok()).unwrap().to_string();
 
     // Second request with matching If-None-Match — expect 304 Not Modified
     let response2 = app

@@ -1,4 +1,10 @@
-use axum::{Router, extract::{Query, State}, http::StatusCode, response::Json, routing::get};
+use axum::{
+    Router,
+    extract::{Query, State},
+    http::StatusCode,
+    response::Json,
+    routing::get,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -75,7 +81,10 @@ async fn update_config(
         let db = state.db.lock().await;
         crate::config::load_config(&db).map_err(|e| {
             tracing::error!(error = %e, "Failed to load config from database");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Failed to load configuration"})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Failed to load configuration"})),
+            )
         })?
     };
 
@@ -84,22 +93,19 @@ async fn update_config(
         let db = state.db.lock().await;
         crate::config::save_config(&db, &config).map_err(|e| {
             tracing::error!(error = %e, "Failed to save config to database");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Failed to save configuration"})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Failed to save configuration"})),
+            )
         })?;
     }
 
     // Diff old vs. new watched folders and update the file watcher.
     {
-        let old_paths: Vec<PathBuf> = old_config
-            .watched_folders
-            .iter()
-            .map(|f| PathBuf::from(&f.path))
-            .collect();
-        let new_paths: Vec<PathBuf> = config
-            .watched_folders
-            .iter()
-            .map(|f| PathBuf::from(&f.path))
-            .collect();
+        let old_paths: Vec<PathBuf> =
+            old_config.watched_folders.iter().map(|f| PathBuf::from(&f.path)).collect();
+        let new_paths: Vec<PathBuf> =
+            config.watched_folders.iter().map(|f| PathBuf::from(&f.path)).collect();
 
         let mut watcher = state.watcher.lock().await;
 
@@ -122,7 +128,9 @@ async fn update_config(
         // notify backend on some platforms may not clean up sub‑directory
         // watches, but the watch handle is released).
         for path in &old_paths {
-            if !new_paths.contains(path) && let Err(e) = watcher.unwatch(path) {
+            if !new_paths.contains(path)
+                && let Err(e) = watcher.unwatch(path)
+            {
                 tracing::warn!(
                     path = %path.display(),
                     error = %e,
@@ -218,11 +226,7 @@ async fn suggest_folders(
         (path.to_path_buf(), String::new())
     } else {
         let parent = path.parent().unwrap_or(Path::new("/"));
-        let prefix = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("")
-            .to_string();
+        let prefix = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
         (parent.to_path_buf(), prefix)
     };
 
@@ -273,20 +277,15 @@ mod tests {
     /// index directory is not removed while `IndexManager` holds open handles.
     fn test_state() -> (Arc<ConfigState>, tempfile::TempDir) {
         let tantivy_dir = tempfile::tempdir().expect("tempdir");
-        let mut conn =
-            crate::db::open_in_memory().expect("Failed to create in-memory database");
-        crate::db::migrations::run_migrations(&mut conn)
-            .expect("Failed to run migrations");
+        let mut conn = crate::db::open_in_memory().expect("Failed to create in-memory database");
+        crate::db::migrations::run_migrations(&mut conn).expect("Failed to run migrations");
 
         let index_manager = Arc::new(
-            crate::search::IndexManager::open_or_create(
-                &tantivy_dir.path().join("tantivy"),
-            )
-            .expect("IndexManager"),
+            crate::search::IndexManager::open_or_create(&tantivy_dir.path().join("tantivy"))
+                .expect("IndexManager"),
         );
 
-        let (watcher, _rx) =
-            crate::watcher::FileWatcher::new(&[]).expect("FileWatcher");
+        let (watcher, _rx) = crate::watcher::FileWatcher::new(&[]).expect("FileWatcher");
 
         let state = Arc::new(ConfigState {
             db: Arc::new(Mutex::new(conn)),
@@ -309,18 +308,15 @@ mod tests {
     /// reached in the error path.
     fn bad_state() -> (Arc<ConfigState>, tempfile::TempDir) {
         let tantivy_dir = tempfile::tempdir().expect("tempdir");
-        let conn = rusqlite::Connection::open_in_memory()
-            .expect("Failed to create in-memory database");
+        let conn =
+            rusqlite::Connection::open_in_memory().expect("Failed to create in-memory database");
 
         let index_manager = Arc::new(
-            crate::search::IndexManager::open_or_create(
-                &tantivy_dir.path().join("tantivy"),
-            )
-            .expect("IndexManager"),
+            crate::search::IndexManager::open_or_create(&tantivy_dir.path().join("tantivy"))
+                .expect("IndexManager"),
         );
 
-        let (watcher, _rx) =
-            crate::watcher::FileWatcher::new(&[]).expect("FileWatcher");
+        let (watcher, _rx) = crate::watcher::FileWatcher::new(&[]).expect("FileWatcher");
 
         let state = Arc::new(ConfigState {
             db: Arc::new(Mutex::new(conn)),
@@ -472,12 +468,7 @@ mod tests {
         let app = Router::new().route("/config/suggest", get(super::suggest_folders));
 
         let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/config/suggest?path=/")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/config/suggest?path=/").body(Body::empty()).unwrap())
             .await
             .unwrap();
 
@@ -488,8 +479,7 @@ mod tests {
         let suggestions = body["suggestions"].as_array().unwrap();
 
         // On any Linux system, /tmp should exist and be a directory
-        let names: Vec<&str> =
-            suggestions.iter().map(|s| s["name"].as_str().unwrap()).collect();
+        let names: Vec<&str> = suggestions.iter().map(|s| s["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"tmp"), "expected 'tmp' in root directory suggestions");
     }
 
@@ -542,8 +532,7 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
         let suggestions = body["suggestions"].as_array().unwrap();
 
-        let names: Vec<&str> =
-            suggestions.iter().map(|s| s["name"].as_str().unwrap()).collect();
+        let names: Vec<&str> = suggestions.iter().map(|s| s["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"visible"), "expected 'visible' in suggestions");
         assert!(!names.contains(&".hidden"), "did not expect '.hidden' in suggestions");
     }

@@ -23,12 +23,7 @@ async fn test_stats_empty_database_returns_zeros() {
 
     let response = app
         .router
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/stats")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::builder().uri("/api/v1/stats").body(Body::empty()).unwrap())
         .await
         .unwrap();
 
@@ -89,12 +84,7 @@ async fn test_stats_with_seeded_data() {
 
     let response = app
         .router
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/stats")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::builder().uri("/api/v1/stats").body(Body::empty()).unwrap())
         .await
         .unwrap();
 
@@ -108,16 +98,8 @@ async fn test_stats_with_seeded_data() {
 
     let by_mime = body["by_mime_type"].as_object().unwrap();
     assert_eq!(by_mime.len(), 2, "should have 2 MIME types");
-    assert_eq!(
-        by_mime.get("image/png").and_then(|v| v.as_u64()),
-        Some(2),
-        "should have 2 PNGs"
-    );
-    assert_eq!(
-        by_mime.get("image/jpeg").and_then(|v| v.as_u64()),
-        Some(1),
-        "should have 1 JPEG"
-    );
+    assert_eq!(by_mime.get("image/png").and_then(|v| v.as_u64()), Some(2), "should have 2 PNGs");
+    assert_eq!(by_mime.get("image/jpeg").and_then(|v| v.as_u64()), Some(1), "should have 1 JPEG");
 
     // last_indexed_at should be set because indexed_at gets DEFAULT datetime('now')
     assert!(

@@ -7,7 +7,7 @@
  * don't interfere with other UI elements like the metadata panel.
  */
 
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import type { MediaItemDetail } from '../../types/media';
 
 interface VideoViewerProps {
@@ -21,6 +21,23 @@ export function VideoViewer({ item }: VideoViewerProps) {
 
   const handleLoadedMetadata = useCallback(() => {
     setIsLoading(false);
+  }, []);
+
+  // Explicitly attempt playback when the video element mounts.
+  // The `autoPlay` attribute alone is unreliable for elements rendered
+  // conditionally (e.g., inside a modal that may not be in the initial
+  // DOM).  Calling `play()` in an effect ensures the browser receives the
+  // play signal even when autoplay policy blocks the declarative attribute.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    // Browsers return a promise from play() that rejects if autoplay is
+    // blocked (e.g. no user gesture, or the video has audio and is not
+    // muted).  We catch the rejection silently since the user can press
+    // the native play button.
+    video.play().catch(() => {
+      /* autoplay blocked — user can press play manually */
+    });
   }, []);
 
   const handleError = useCallback(() => {
@@ -104,7 +121,9 @@ export function VideoViewer({ item }: VideoViewerProps) {
             src={item.file_url}
             poster={item.thumbnail_url}
             controls
-            preload="metadata"
+            autoPlay
+            muted
+            preload="auto"
             onLoadedMetadata={handleLoadedMetadata}
             onError={handleError}
             className="max-w-full max-h-full"

@@ -2,11 +2,11 @@
 // access items from the `search` module (mod.rs) such as IndexManager.
 use super::super::*;
 
+use tantivy::DateTime;
 use tantivy::collector::TopDocs;
+use tantivy::doc;
 use tantivy::query::QueryParser;
 use tantivy::schema::FieldType;
-use tantivy::DateTime;
-use tantivy::doc;
 
 // ---------------------------------------------------------------------------
 // Schema tests
@@ -18,38 +18,14 @@ fn test_schema_has_required_fields() {
 
     // All 8 fields must be present
     let field_names: Vec<&str> = schema.fields().map(|(_, entry)| entry.name()).collect();
-    assert!(
-        field_names.contains(&"id"),
-        "schema should contain 'id'"
-    );
-    assert!(
-        field_names.contains(&"filename"),
-        "schema should contain 'filename'"
-    );
-    assert!(
-        field_names.contains(&"mime_type"),
-        "schema should contain 'mime_type'"
-    );
-    assert!(
-        field_names.contains(&"metadata_json"),
-        "schema should contain 'metadata_json'"
-    );
-    assert!(
-        field_names.contains(&"created_at"),
-        "schema should contain 'created_at'"
-    );
-    assert!(
-        field_names.contains(&"file_size"),
-        "schema should contain 'file_size'"
-    );
-    assert!(
-        field_names.contains(&"width"),
-        "schema should contain 'width'"
-    );
-    assert!(
-        field_names.contains(&"height"),
-        "schema should contain 'height'"
-    );
+    assert!(field_names.contains(&"id"), "schema should contain 'id'");
+    assert!(field_names.contains(&"filename"), "schema should contain 'filename'");
+    assert!(field_names.contains(&"mime_type"), "schema should contain 'mime_type'");
+    assert!(field_names.contains(&"metadata_json"), "schema should contain 'metadata_json'");
+    assert!(field_names.contains(&"created_at"), "schema should contain 'created_at'");
+    assert!(field_names.contains(&"file_size"), "schema should contain 'file_size'");
+    assert!(field_names.contains(&"width"), "schema should contain 'width'");
+    assert!(field_names.contains(&"height"), "schema should contain 'height'");
     assert_eq!(field_names.len(), 8, "schema should have exactly 8 fields");
 
     // --- Type + option assertions ---
@@ -102,8 +78,7 @@ fn test_index_manager_open_or_create() {
     let dir = tempfile::tempdir().expect("tempdir should succeed");
     let index_path = dir.path().join("tantivy");
 
-    let manager = IndexManager::open_or_create(&index_path)
-        .expect("open_or_create should succeed");
+    let manager = IndexManager::open_or_create(&index_path).expect("open_or_create should succeed");
     let schema = manager.schema().clone();
 
     let id = schema.get_field("id").unwrap();
@@ -132,13 +107,10 @@ fn test_index_manager_open_or_create() {
     // Search back for the document
     let reader = manager.reader();
     let searcher = reader.searcher();
-    let query_parser =
-        QueryParser::for_index(manager.index(), vec![filename, metadata_json]);
+    let query_parser = QueryParser::for_index(manager.index(), vec![filename, metadata_json]);
     let query = query_parser.parse_query("hero").expect("query should parse");
     let collector = TopDocs::with_limit(10).order_by_score();
-    let top_docs = searcher
-        .search(&query, &collector)
-        .expect("search should succeed");
+    let top_docs = searcher.search(&query, &collector).expect("search should succeed");
 
     assert_eq!(top_docs.len(), 1, "should find exactly one document");
 }
@@ -150,8 +122,8 @@ fn test_index_manager_reopen() {
 
     // --- First session: create and add a document ---
     {
-        let manager = IndexManager::open_or_create(&index_path)
-            .expect("first open_or_create should succeed");
+        let manager =
+            IndexManager::open_or_create(&index_path).expect("first open_or_create should succeed");
         let schema = manager.schema().clone();
 
         let doc = tantivy::doc!(
@@ -179,18 +151,10 @@ fn test_index_manager_reopen() {
         let reader = manager.reader();
         let searcher = reader.searcher();
         let query_parser = QueryParser::for_index(manager.index(), vec![filename]);
-        let query = query_parser
-            .parse_query("persistent.png")
-            .expect("query should parse");
+        let query = query_parser.parse_query("persistent.png").expect("query should parse");
         let collector = TopDocs::with_limit(10).order_by_score();
-        let top_docs = searcher
-            .search(&query, &collector)
-            .expect("search should succeed");
+        let top_docs = searcher.search(&query, &collector).expect("search should succeed");
 
-        assert_eq!(
-            top_docs.len(),
-            1,
-            "document should persist across IndexManager sessions"
-        );
+        assert_eq!(top_docs.len(), 1, "document should persist across IndexManager sessions");
     }
 }

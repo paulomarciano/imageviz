@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::thumbnails::cache::{get_or_generate_thumbnail, CacheError};
+    use crate::thumbnails::cache::{CacheError, get_or_generate_thumbnail};
     use std::path::Path;
     use tempfile::tempdir;
 
@@ -11,13 +11,11 @@ mod tests {
     /// Create a small solid-colour PNG file for testing.
     fn create_test_png(path: &Path, width: u32, height: u32) {
         let img = image::RgbaImage::new(width, height);
-        img.save_with_format(path, image::ImageFormat::Png)
-            .expect("failed to create test PNG");
+        img.save_with_format(path, image::ImageFormat::Png).expect("failed to create test PNG");
     }
 
     /// A 64-character hex string simulating a SHA-256 checksum.
-    const TEST_CHECKSUM: &str =
-        "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
+    const TEST_CHECKSUM: &str = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
 
     // -----------------------------------------------------------------------
     // Tests
@@ -32,8 +30,14 @@ mod tests {
         create_test_png(&source_path, 100, 100);
 
         // Act
-        let result =
-            get_or_generate_thumbnail(&source_path, TEST_CHECKSUM, 200, cache_dir.path(), "image/png").await;
+        let result = get_or_generate_thumbnail(
+            &source_path,
+            TEST_CHECKSUM,
+            200,
+            cache_dir.path(),
+            "image/png",
+        )
+        .await;
 
         // Assert
         assert!(result.is_ok(), "cache miss should generate: {:?}", result.err());
@@ -57,21 +61,29 @@ mod tests {
         create_test_png(&source_path, 100, 100);
 
         // Act — first call (cache miss)
-        let first =
-            get_or_generate_thumbnail(&source_path, TEST_CHECKSUM, 200, cache_dir.path(), "image/png").await;
+        let first = get_or_generate_thumbnail(
+            &source_path,
+            TEST_CHECKSUM,
+            200,
+            cache_dir.path(),
+            "image/png",
+        )
+        .await;
         assert!(first.is_ok(), "first call should generate: {:?}", first.err());
 
         // Act — second call (cache hit)
-        let second =
-            get_or_generate_thumbnail(&source_path, TEST_CHECKSUM, 200, cache_dir.path(), "image/png").await;
+        let second = get_or_generate_thumbnail(
+            &source_path,
+            TEST_CHECKSUM,
+            200,
+            cache_dir.path(),
+            "image/png",
+        )
+        .await;
 
         // Assert
         assert!(second.is_ok(), "second call should succeed: {:?}", second.err());
-        assert_eq!(
-            first.unwrap(),
-            second.unwrap(),
-            "both calls should return the same cache path"
-        );
+        assert_eq!(first.unwrap(), second.unwrap(), "both calls should return the same cache path");
     }
 
     #[tokio::test]
@@ -83,8 +95,14 @@ mod tests {
         create_test_png(&source_path, 100, 100);
 
         // Act
-        let result =
-            get_or_generate_thumbnail(&source_path, TEST_CHECKSUM, 200, cache_dir.path(), "image/png").await;
+        let result = get_or_generate_thumbnail(
+            &source_path,
+            TEST_CHECKSUM,
+            200,
+            cache_dir.path(),
+            "image/png",
+        )
+        .await;
         assert!(result.is_ok(), "generation should succeed: {:?}", result.err());
         let path = result.unwrap();
 
@@ -110,14 +128,11 @@ mod tests {
 
         // Act
         let result =
-            get_or_generate_thumbnail(&source_path, TEST_CHECKSUM, 200, &cache_subdir, "image/png").await;
+            get_or_generate_thumbnail(&source_path, TEST_CHECKSUM, 200, &cache_subdir, "image/png")
+                .await;
 
         // Assert
-        assert!(
-            result.is_ok(),
-            "should create missing cache directory: {:?}",
-            result.err()
-        );
+        assert!(result.is_ok(), "should create missing cache directory: {:?}", result.err());
         assert!(cache_subdir.exists(), "cache directory should now exist");
         assert!(result.unwrap().exists(), "cached file should exist inside the new directory");
     }
@@ -129,7 +144,14 @@ mod tests {
         let nonexistent = Path::new("/nonexistent/file.png");
 
         // Act
-        let result = get_or_generate_thumbnail(nonexistent, TEST_CHECKSUM, 200, cache_dir.path(), "image/png").await;
+        let result = get_or_generate_thumbnail(
+            nonexistent,
+            TEST_CHECKSUM,
+            200,
+            cache_dir.path(),
+            "image/png",
+        )
+        .await;
 
         // Assert
         assert!(result.is_err(), "non-existent source should produce an error");
@@ -150,8 +172,14 @@ mod tests {
         create_test_png(&source_path, 100, 100);
 
         // Act — width below minimum
-        let result =
-            get_or_generate_thumbnail(&source_path, TEST_CHECKSUM, 50, cache_dir.path(), "image/png").await;
+        let result = get_or_generate_thumbnail(
+            &source_path,
+            TEST_CHECKSUM,
+            50,
+            cache_dir.path(),
+            "image/png",
+        )
+        .await;
 
         // Assert
         assert!(result.is_err(), "width=50 should be rejected");
@@ -171,7 +199,8 @@ mod tests {
 
         // Act — generate from corrupt/non-image file
         let result =
-            get_or_generate_thumbnail(&bad_path, TEST_CHECKSUM, 200, cache_dir.path(), "image/png").await;
+            get_or_generate_thumbnail(&bad_path, TEST_CHECKSUM, 200, cache_dir.path(), "image/png")
+                .await;
 
         // Assert
         assert!(result.is_err(), "corrupt source should produce an error");
@@ -190,10 +219,22 @@ mod tests {
         create_test_png(&source_path, 100, 100);
 
         // Act
-        let w200 =
-            get_or_generate_thumbnail(&source_path, TEST_CHECKSUM, 200, cache_dir.path(), "image/png").await;
-        let w300 =
-            get_or_generate_thumbnail(&source_path, TEST_CHECKSUM, 300, cache_dir.path(), "image/png").await;
+        let w200 = get_or_generate_thumbnail(
+            &source_path,
+            TEST_CHECKSUM,
+            200,
+            cache_dir.path(),
+            "image/png",
+        )
+        .await;
+        let w300 = get_or_generate_thumbnail(
+            &source_path,
+            TEST_CHECKSUM,
+            300,
+            cache_dir.path(),
+            "image/png",
+        )
+        .await;
 
         // Assert
         assert!(w200.is_ok(), "200px thumbnail should succeed: {:?}", w200.err());
@@ -202,10 +243,7 @@ mod tests {
         let path200 = w200.unwrap();
         let path300 = w300.unwrap();
 
-        assert_ne!(
-            path200, path300,
-            "different widths must produce different cache entries"
-        );
+        assert_ne!(path200, path300, "different widths must produce different cache entries");
         assert!(path200.exists(), "200px cached file should exist");
         assert!(path300.exists(), "300px cached file should exist");
     }

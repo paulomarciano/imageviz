@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use tokio::signal;
 use tokio::sync::Mutex;
 use tower_http::cors::CorsLayer;
 
@@ -81,17 +82,10 @@ async fn main() {
         db: Arc::clone(&db),
         thumbnail_cache_dir: settings.thumbnail_cache_dir.clone(),
     });
-    let search_state = Arc::new(SearchState {
-        index_manager: Arc::clone(&index_manager),
-        db: Arc::clone(&db),
-    });
-    let stats_state = Arc::new(StatsState {
-        db: Arc::clone(&db),
-        progress: Arc::clone(&progress),
-    });
-    let events_state = Arc::new(EventsState {
-        sse_tx: sse_tx.clone(),
-    });
+    let search_state =
+        Arc::new(SearchState { index_manager: Arc::clone(&index_manager), db: Arc::clone(&db) });
+    let stats_state = Arc::new(StatsState { db: Arc::clone(&db), progress: Arc::clone(&progress) });
+    let events_state = Arc::new(EventsState { sse_tx: sse_tx.clone() });
 
     spawn_background_indexing(
         Arc::clone(&db),
@@ -114,7 +108,63 @@ async fn main() {
     tracing::info!("Server running on http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .unwrap();
+
+    tracing::info!("Shutting down gracefully...");
+
+    let cleanup_timeout = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        cleanup_resources(&index_manager),
+    )
+    .await;
+
+    if cleanup_timeout.is_err() {
+        tracing::warn!("Cleanup timed out after 30s, forcing exit");
+    }
+
+    tracing::info!("Shutdown complete");
+}
+
+/// Listen for SIGINT (Ctrl+C) or SIGTERM and return when either is received.
+///
+/// This triggers [`axum::serve::with_graceful_shutdown`] to stop accepting
+/// new connections and drain in-flight requests.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        signal::ctrl_c().await.expect("Failed to install Ctrl+C handler");
+        tracing::info!("Received Ctrl+C, shutting down gracefully...");
+    };
+
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("Failed to install SIGTERM handler")
+            .recv()
+            .await;
+        tracing::info!("Received SIGTERM, shutting down gracefully...");
+    };
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+}
+
+/// Commit Tantivy index and flush any pending writes before exit.
+///
+/// This runs after the HTTP server has stopped accepting new connections
+/// and drained in-flight requests. The 30-second timeout in `main`
+/// prevents the process from hanging indefinitely.
+async fn cleanup_resources(index_manager: &Arc<IndexManager>) {
+    if let Err(e) = index_manager.commit() {
+        tracing::warn!(error = %e, "Failed to commit Tantivy index");
+    } else {
+        tracing::info!("Tantivy index committed");
+    }
+    tracing::info!("Resources cleaned up");
 }
 
 /// Spawn a background task that scans watched folders and populates indexes.
@@ -154,19 +204,16 @@ fn spawn_background_indexing(
         );
 
         // Phase 1: scan files and populate SQLite
-        let stats = match imageviz_backend::indexer::full_index(
-            db.as_ref(),
-            &config,
-            progress.as_ref(),
-        )
-        .await
-        {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!(error = %e, "Initial file scan failed");
-                return;
-            }
-        };
+        let stats =
+            match imageviz_backend::indexer::full_index(db.as_ref(), &config, progress.as_ref())
+                .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!(error = %e, "Initial file scan failed");
+                    return;
+                }
+            };
 
         tracing::info!(
             created = stats.created,
@@ -239,17 +286,16 @@ fn start_file_watcher(
     sse_tx: tokio::sync::broadcast::Sender<SseEvent>,
     config: &AppConfig,
 ) -> FileWatcher {
-    let paths: Vec<PathBuf> = config
-        .watched_folders
-        .iter()
-        .map(|f| PathBuf::from(&f.path))
-        .collect();
+    let paths: Vec<PathBuf> =
+        config.watched_folders.iter().map(|f| PathBuf::from(&f.path)).collect();
 
-    let (watcher, rx) =
-        FileWatcher::new(&paths).expect("Failed to create file watcher");
+    let (watcher, rx) = FileWatcher::new(&paths).expect("Failed to create file watcher");
 
     tokio::spawn(imageviz_backend::watcher::handler::run_event_handler(
-        rx, db, index_manager, sse_tx,
+        rx,
+        db,
+        index_manager,
+        sse_tx,
     ));
 
     tracing::info!(

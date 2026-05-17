@@ -157,11 +157,9 @@ pub fn incremental_index(
 ) -> Result<ReindexStats, Box<dyn std::error::Error>> {
     // 1. Read the last-indexed timestamp from config
     let last_indexed: Option<String> = db
-        .query_row(
-            "SELECT value FROM config WHERE key = 'search_last_indexed_at'",
-            [],
-            |row| row.get(0),
-        )
+        .query_row("SELECT value FROM config WHERE key = 'search_last_indexed_at'", [], |row| {
+            row.get(0)
+        })
         .optional()?;
 
     // 2. If no prior index exists, do a full rebuild
@@ -301,9 +299,9 @@ mod tests {
     use super::*;
     use crate::db;
     use crate::search::IndexManager;
+    use tantivy::DateTime;
     use tantivy::collector::TopDocs;
     use tantivy::query::QueryParser;
-    use tantivy::DateTime;
 
     // -----------------------------------------------------------------------
     // Helpers
@@ -353,11 +351,7 @@ mod tests {
     fn count_tantivy_docs(manager: &IndexManager) -> u64 {
         let reader = manager.reader();
         let searcher = reader.searcher();
-        searcher
-            .segment_readers()
-            .iter()
-            .map(|sr| sr.num_docs() as u64)
-            .sum()
+        searcher.segment_readers().iter().map(|sr| sr.num_docs() as u64).sum()
     }
 
     // -----------------------------------------------------------------------
@@ -461,13 +455,10 @@ mod tests {
 
         let reader = manager.reader();
         let searcher = reader.searcher();
-        let query_parser =
-            QueryParser::for_index(manager.index(), vec![filename, metadata_json]);
+        let query_parser = QueryParser::for_index(manager.index(), vec![filename, metadata_json]);
         let query = query_parser.parse_query("dragon").expect("parse query");
         let collector = TopDocs::with_limit(10).order_by_score();
-        let top_docs = searcher
-            .search(&query, &collector)
-            .expect("search should succeed");
+        let top_docs = searcher.search(&query, &collector).expect("search should succeed");
 
         assert_eq!(top_docs.len(), 1, "should find exactly one dragon document");
     }
@@ -487,26 +478,17 @@ mod tests {
 
         let dt = parse_iso8601_to_tantivy("2026-01-15T12:30:00Z")
             .expect("should parse Z-suffixed timestamp");
-        assert_eq!(
-            dt, expected,
-            "Z-suffixed timestamp should match chrono-derived value"
-        );
+        assert_eq!(dt, expected, "Z-suffixed timestamp should match chrono-derived value");
 
         // RFC 3339 with explicit UTC offset
         let dt_offset = parse_iso8601_to_tantivy("2026-01-15T12:30:00+00:00")
             .expect("should parse +00:00 timestamp");
-        assert_eq!(
-            dt, dt_offset,
-            "Z and +00:00 should produce identical DateTime"
-        );
+        assert_eq!(dt, dt_offset, "Z and +00:00 should produce identical DateTime");
 
         // Non-UTC timezone (should convert to UTC correctly)
         let dt_non_utc = parse_iso8601_to_tantivy("2026-01-15T14:30:00+02:00")
             .expect("should parse non-UTC timezone");
-        assert_eq!(
-            dt, dt_non_utc,
-            "14:30+02:00 should equal 12:30Z"
-        );
+        assert_eq!(dt, dt_non_utc, "14:30+02:00 should equal 12:30Z");
     }
 
     #[test]

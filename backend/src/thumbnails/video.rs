@@ -18,14 +18,9 @@ pub enum VideoThumbnailError {
     /// ffmpeg binary was not found on the system PATH.
     FfmpegNotFound,
     /// ffmpeg exited with a non-zero status.
-    FfmpegFailed {
-        exit_code: Option<i32>,
-        stderr: String,
-    },
+    FfmpegFailed { exit_code: Option<i32>, stderr: String },
     /// ffmpeg did not complete within the timeout.
-    Timeout {
-        duration: Duration,
-    },
+    Timeout { duration: Duration },
     /// The source video file does not exist.
     SourceNotFound(PathBuf),
     /// ffmpeg ran successfully but did not produce the expected output file.
@@ -168,10 +163,7 @@ async fn run_ffmpeg_frame(
             // Read stderr from the pipe (best effort)
             let stderr = read_stderr(&mut stderr_pipe).await;
             if !status.success() {
-                return Err(VideoThumbnailError::FfmpegFailed {
-                    exit_code: status.code(),
-                    stderr,
-                });
+                return Err(VideoThumbnailError::FfmpegFailed { exit_code: status.code(), stderr });
             }
             Ok(())
         }

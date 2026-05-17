@@ -340,15 +340,12 @@ async fn test_index_stores_raw_text_entries_without_prompt() {
         )
         .unwrap();
 
-    let metadata_str =
-        row.0.expect("metadata_json should be Some even without prompt/workflow");
+    let metadata_str = row.0.expect("metadata_json should be Some even without prompt/workflow");
     let parsed: serde_json::Value =
         serde_json::from_str(&metadata_str).expect("metadata_json should be valid JSON");
 
     // Verify the raw_text_entries contain the Description
-    assert_eq!(
-        parsed["raw_text_entries"]["Description"], "@michiking's image"
-    );
+    assert_eq!(parsed["raw_text_entries"]["Description"], "@michiking's image");
     drop(conn);
 }
 

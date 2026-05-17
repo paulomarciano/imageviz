@@ -23,20 +23,12 @@ async fn test_sse_content_type_is_text_event_stream() {
 
     let response = app
         .router
-        .oneshot(
-            Request::builder()
-                .uri("/api/v1/events")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::builder().uri("/api/v1/events").body(Body::empty()).unwrap())
         .await
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response.headers().get("content-type").unwrap(),
-        "text/event-stream"
-    );
+    assert_eq!(response.headers().get("content-type").unwrap(), "text/event-stream");
 }
 
 // ---------------------------------------------------------------------------
@@ -48,9 +40,7 @@ async fn test_sse_receives_connected_event() {
     let app = common::create_test_app_with_search();
 
     // Bind to a random port so multiple test runs don't conflict.
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
     tokio::spawn(async move {
@@ -60,26 +50,15 @@ async fn test_sse_receives_connected_event() {
     // Give the server a moment to start.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .unwrap();
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(5)).build().unwrap();
 
-    let response = client
-        .get(&format!("http://{}/api/v1/events", addr))
-        .send()
-        .await
-        .unwrap();
+    let response = client.get(&format!("http://{}/api/v1/events", addr)).send().await.unwrap();
 
-    assert_eq!(
-        response.headers().get("content-type").unwrap(),
-        "text/event-stream"
-    );
+    assert_eq!(response.headers().get("content-type").unwrap(), "text/event-stream");
 
     // Read the first chunk — the "connected" event is sent immediately.
     let mut stream = response.bytes_stream();
-    let first_chunk =
-        tokio::time::timeout(Duration::from_secs(3), stream.next()).await;
+    let first_chunk = tokio::time::timeout(Duration::from_secs(3), stream.next()).await;
 
     match first_chunk {
         Ok(Some(Ok(bytes))) => {
@@ -109,9 +88,7 @@ async fn test_sse_receives_connected_event() {
 async fn test_sse_receives_broadcast_event() {
     let app = common::create_test_app_with_search();
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let sse_tx = app.sse_tx.clone();
 
@@ -121,16 +98,9 @@ async fn test_sse_receives_broadcast_event() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .unwrap();
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(5)).build().unwrap();
 
-    let response = client
-        .get(&format!("http://{}/api/v1/events", addr))
-        .send()
-        .await
-        .unwrap();
+    let response = client.get(&format!("http://{}/api/v1/events", addr)).send().await.unwrap();
 
     let mut stream = response.bytes_stream();
 
@@ -153,8 +123,7 @@ async fn test_sse_receives_broadcast_event() {
     sse_tx.send(sse_event).unwrap();
 
     // Read the event from the SSE stream.
-    let event_chunk =
-        tokio::time::timeout(Duration::from_secs(3), stream.next()).await;
+    let event_chunk = tokio::time::timeout(Duration::from_secs(3), stream.next()).await;
 
     match event_chunk {
         Ok(Some(Ok(bytes))) => {
@@ -178,9 +147,7 @@ async fn test_sse_receives_broadcast_event() {
 async fn test_sse_multiple_event_types_propagate() {
     let app = common::create_test_app_with_search();
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let sse_tx = app.sse_tx.clone();
 
@@ -190,16 +157,9 @@ async fn test_sse_multiple_event_types_propagate() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .unwrap();
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(5)).build().unwrap();
 
-    let response = client
-        .get(&format!("http://{}/api/v1/events", addr))
-        .send()
-        .await
-        .unwrap();
+    let response = client.get(&format!("http://{}/api/v1/events", addr)).send().await.unwrap();
 
     let mut stream = response.bytes_stream();
 
@@ -243,9 +203,7 @@ async fn test_sse_multiple_event_types_propagate() {
 async fn test_sse_client_disconnect_does_not_crash_server() {
     let app = common::create_test_app_with_search();
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
     let handle = tokio::spawn(async move {
@@ -254,16 +212,9 @@ async fn test_sse_client_disconnect_does_not_crash_server() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .unwrap();
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(5)).build().unwrap();
 
-    let _response = client
-        .get(&format!("http://{}/api/v1/events", addr))
-        .send()
-        .await
-        .unwrap();
+    let _response = client.get(&format!("http://{}/api/v1/events", addr)).send().await.unwrap();
 
     // Drop the connection immediately without reading.
     // The server should not panic — the stream drop is handled gracefully.

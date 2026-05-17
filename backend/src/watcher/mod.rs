@@ -3,13 +3,14 @@ pub mod handler;
 pub use handler::SseEvent;
 
 use notify::RecursiveMode;
-use notify_debouncer_mini::{new_debouncer, DebounceEventResult, Debouncer};
+use notify_debouncer_mini::{DebounceEventResult, Debouncer, new_debouncer};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
 /// Result type returned by [`FileWatcher::new`].
-type WatcherResult = Result<(FileWatcher, mpsc::Receiver<Vec<FileEvent>>), Box<dyn std::error::Error>>;
+type WatcherResult =
+    Result<(FileWatcher, mpsc::Receiver<Vec<FileEvent>>), Box<dyn std::error::Error>>;
 
 #[derive(Debug, Clone)]
 pub enum FileEvent {
@@ -62,15 +63,12 @@ impl FileWatcher {
     ///
     /// Returns an error if the underlying notify watcher fails to initialise
     /// (e.g., when a watched path does not exist).
-    pub fn new(
-        watched_paths: &[PathBuf],
-    ) -> WatcherResult {
+    pub fn new(watched_paths: &[PathBuf]) -> WatcherResult {
         let (tx, rx) = mpsc::channel(256);
         let tx_clone = tx.clone();
 
-        let mut debouncer = new_debouncer(
-            Duration::from_millis(500),
-            move |result: DebounceEventResult| {
+        let mut debouncer =
+            new_debouncer(Duration::from_millis(500), move |result: DebounceEventResult| {
                 match result {
                     Ok(debounced_events) => {
                         let file_events: Vec<FileEvent> = debounced_events
@@ -104,13 +102,10 @@ impl FileWatcher {
                         tracing::warn!("File watcher error: {:?}", error);
                     }
                 }
-            },
-        )?;
+            })?;
 
         for path in watched_paths {
-            debouncer
-                .watcher()
-                .watch(path, RecursiveMode::Recursive)?;
+            debouncer.watcher().watch(path, RecursiveMode::Recursive)?;
         }
 
         Ok((Self { debouncer }, rx))
@@ -125,9 +120,7 @@ impl FileWatcher {
     /// Returns an error if the path does not exist or the OS-level
     /// watcher cannot be configured for it.
     pub fn watch(&mut self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-        self.debouncer
-            .watcher()
-            .watch(path, RecursiveMode::Recursive)?;
+        self.debouncer.watcher().watch(path, RecursiveMode::Recursive)?;
         Ok(())
     }
 
@@ -165,8 +158,7 @@ fn is_supported_media(path: &Path) -> bool {
 /// Return `true` if any component of the path starts with a dot (`.`),
 /// indicating a hidden file or directory.
 fn is_hidden(path: &Path) -> bool {
-    path.components()
-        .any(|c| c.as_os_str().to_str().is_some_and(|s| s.starts_with('.')))
+    path.components().any(|c| c.as_os_str().to_str().is_some_and(|s| s.starts_with('.')))
 }
 
 // ---------------------------------------------------------------------------

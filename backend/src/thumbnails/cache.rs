@@ -111,9 +111,7 @@ fn acquire_lock(key: &str) -> Arc<tokio::sync::Mutex<()>> {
             poisoned.into_inner()
         }
     };
-    map.entry(key.to_string())
-        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-        .clone()
+    map.entry(key.to_string()).or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))).clone()
 }
 
 // ---------------------------------------------------------------------------

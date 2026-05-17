@@ -28,9 +28,9 @@ use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tantivy::doc;
 use std::time::SystemTime;
-use tokio::sync::{broadcast, mpsc, Mutex};
+use tantivy::doc;
+use tokio::sync::{Mutex, broadcast, mpsc};
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
@@ -160,15 +160,13 @@ async fn handle_file_created_or_modified(
 
     // Extract ComfyUI metadata for PNG files.
     let metadata_json = if media_info.mime_type == "image/png" {
-        parse_png_metadata(path)
-            .ok()
-            .and_then(|meta| {
-                if meta.prompt.is_some() || meta.workflow.is_some() {
-                    serde_json::to_string(&meta).ok()
-                } else {
-                    None
-                }
-            })
+        parse_png_metadata(path).ok().and_then(|meta| {
+            if meta.prompt.is_some() || meta.workflow.is_some() {
+                serde_json::to_string(&meta).ok()
+            } else {
+                None
+            }
+        })
     } else {
         None
     };
@@ -185,10 +183,7 @@ async fn handle_file_created_or_modified(
         .map(system_time_to_iso)
         .unwrap_or_else(|_| chrono::Utc::now().to_rfc3339());
 
-    let filename = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let filename = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
 
     // Resolve relative path by stripping the watched folder prefix.
     // This requires a brief DB lock to read the config.
@@ -196,10 +191,7 @@ async fn handle_file_created_or_modified(
         let conn = db.lock().await;
         let watched = load_watched_folders(&conn)?;
         resolve_relative_path(path, &watched).ok_or_else(|| {
-            format!(
-                "File {} is not inside any configured watched folder",
-                path.display()
-            )
+            format!("File {} is not inside any configured watched folder", path.display())
         })?
     };
 
@@ -239,10 +231,7 @@ async fn handle_file_created_or_modified(
         if let Some((ref existing_id, Some(ref existing_hash))) = existing
             && existing_hash == &h
         {
-            return Ok(Outcome {
-                id: existing_id.clone(),
-                change: ChangeType::Skipped,
-            });
+            return Ok(Outcome { id: existing_id.clone(), change: ChangeType::Skipped });
         }
 
         // Generate a new UUID for new files; reuse the existing one for updates.
@@ -273,29 +262,42 @@ async fn handle_file_created_or_modified(
                 meta,
                 h,
             ],
-        ).map_err(|e| format!("DB insert/update: {}", e))?;
+        )
+        .map_err(|e| format!("DB insert/update: {}", e))?;
 
         // Update the Tantivy search index:
         //   1. Delete the previous document for this file (if any).
         //   2. Add a new document with the latest data.
-        im_clone.delete_document_by_field("id", &id)
+        im_clone
+            .delete_document_by_field("id", &id)
             .map_err(|e| format!("Tantivy delete: {}", e))?;
 
         let schema = im_clone.schema();
         let id_field = schema.get_field("id").map_err(|e| format!("Schema field id: {}", e))?;
-        let filename_field = schema.get_field("filename").map_err(|e| format!("Schema field filename: {}", e))?;
-        let mime_type_field = schema.get_field("mime_type").map_err(|e| format!("Schema field mime_type: {}", e))?;
-        let metadata_json_field = schema.get_field("metadata_json").map_err(|e| format!("Schema field metadata_json: {}", e))?;
-        let created_at_field = schema.get_field("created_at").map_err(|e| format!("Schema field created_at: {}", e))?;
-        let file_size_field = schema.get_field("file_size").map_err(|e| format!("Schema field file_size: {}", e))?;
-        let width_field = schema.get_field("width").map_err(|e| format!("Schema field width: {}", e))?;
-        let height_field = schema.get_field("height").map_err(|e| format!("Schema field height: {}", e))?;
+        let filename_field =
+            schema.get_field("filename").map_err(|e| format!("Schema field filename: {}", e))?;
+        let mime_type_field =
+            schema.get_field("mime_type").map_err(|e| format!("Schema field mime_type: {}", e))?;
+        let metadata_json_field = schema
+            .get_field("metadata_json")
+            .map_err(|e| format!("Schema field metadata_json: {}", e))?;
+        let created_at_field = schema
+            .get_field("created_at")
+            .map_err(|e| format!("Schema field created_at: {}", e))?;
+        let file_size_field =
+            schema.get_field("file_size").map_err(|e| format!("Schema field file_size: {}", e))?;
+        let width_field =
+            schema.get_field("width").map_err(|e| format!("Schema field width: {}", e))?;
+        let height_field =
+            schema.get_field("height").map_err(|e| format!("Schema field height: {}", e))?;
 
         // Parse created_at to Tantivy DateTime for the date field.
         let created_ts = created
             .parse::<chrono::DateTime<chrono::Utc>>()
             .map(|dt| tantivy::DateTime::from_timestamp_secs(dt.timestamp()))
-            .unwrap_or_else(|_| tantivy::DateTime::from_timestamp_secs(chrono::Utc::now().timestamp()));
+            .unwrap_or_else(|_| {
+                tantivy::DateTime::from_timestamp_secs(chrono::Utc::now().timestamp())
+            });
 
         let doc = tantivy::doc!(
             id_field => id.as_str(),
@@ -308,8 +310,7 @@ async fn handle_file_created_or_modified(
             height_field => img_height.unwrap_or(0) as u64,
         );
 
-        im_clone.add_document(doc)
-            .map_err(|e| format!("Tantivy add_document: {}", e))?;
+        im_clone.add_document(doc).map_err(|e| format!("Tantivy add_document: {}", e))?;
 
         Ok(Outcome { id, change })
     })
@@ -335,11 +336,7 @@ async fn handle_file_created_or_modified(
                 }),
             };
             let _ = sse_tx.send(event);
-            tracing::debug!(
-                "Broadcasted file_created for {} (id={})",
-                relative_path,
-                outcome.id
-            );
+            tracing::debug!("Broadcasted file_created for {} (id={})", relative_path, outcome.id);
         }
         ChangeType::Updated => {
             let event = SseEvent {
@@ -350,17 +347,10 @@ async fn handle_file_created_or_modified(
                 }),
             };
             let _ = sse_tx.send(event);
-            tracing::debug!(
-                "Broadcasted file_modified for {} (id={})",
-                relative_path,
-                outcome.id
-            );
+            tracing::debug!("Broadcasted file_modified for {} (id={})", relative_path, outcome.id);
         }
         ChangeType::Skipped => {
-            tracing::debug!(
-                "File {} unchanged (same hash) — skipping broadcast",
-                path.display()
-            );
+            tracing::debug!("File {} unchanged (same hash) — skipping broadcast", path.display());
         }
     }
 
@@ -403,11 +393,9 @@ async fn handle_file_deleted(
 
         // Find the media item by relative path.
         let row: Option<(String,)> = conn
-            .query_row(
-                "SELECT id FROM media_items WHERE relative_path = ?1",
-                params![rel],
-                |r| Ok((r.get(0)?,)),
-            )
+            .query_row("SELECT id FROM media_items WHERE relative_path = ?1", params![rel], |r| {
+                Ok((r.get(0)?,))
+            })
             .optional()
             .map_err(|e| format!("DB query for existing file on delete: {}", e))?;
 
@@ -421,7 +409,8 @@ async fn handle_file_deleted(
             .map_err(|e| format!("DB delete: {}", e))?;
 
         // Remove from Tantivy index.
-        im_clone.delete_document_by_field("id", &id)
+        im_clone
+            .delete_document_by_field("id", &id)
             .map_err(|e| format!("Tantivy delete: {}", e))?;
 
         Ok(Some(id))
@@ -442,10 +431,7 @@ async fn handle_file_deleted(
         let _ = sse_tx.send(event);
         tracing::debug!("Broadcasted file_deleted for {} (id={})", relative_path, id);
     } else {
-        tracing::debug!(
-            "Delete event for unknown file {} — already removed",
-            path.display()
-        );
+        tracing::debug!("Delete event for unknown file {} — already removed", path.display());
     }
 
     Ok(())
@@ -461,22 +447,18 @@ fn system_time_to_iso(time: SystemTime) -> String {
     let duration = time.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
     let secs = duration.as_secs() as i64;
     let nsecs = duration.subsec_nanos();
-    chrono::DateTime::from_timestamp(secs, nsecs)
-        .unwrap_or_default()
-        .to_rfc3339()
+    chrono::DateTime::from_timestamp(secs, nsecs).unwrap_or_default().to_rfc3339()
 }
 
 /// Load watched folder paths from the database `config` table.
 ///
 /// Reads the `watched_folders` JSON blob and returns a list of absolute paths.
 /// Returns an empty list when no config entry exists.
-fn load_watched_folders(conn: &Connection) -> Result<Vec<PathBuf>, Box<dyn std::error::Error + Send + Sync + 'static>> {
+fn load_watched_folders(
+    conn: &Connection,
+) -> Result<Vec<PathBuf>, Box<dyn std::error::Error + Send + Sync + 'static>> {
     let config = crate::config::load_config(conn)?;
-    Ok(config
-        .watched_folders
-        .iter()
-        .map(|f| PathBuf::from(&f.path))
-        .collect())
+    Ok(config.watched_folders.iter().map(|f| PathBuf::from(&f.path)).collect())
 }
 
 /// Resolve a file's relative path by stripping the longest-matching watched
@@ -534,8 +516,8 @@ mod tests {
         .expect("seed config");
 
         let tantivy_dir = tempfile::tempdir().expect("tempdir");
-        let im =
-            IndexManager::open_or_create(&tantivy_dir.path().join("tantivy")).expect("IndexManager");
+        let im = IndexManager::open_or_create(&tantivy_dir.path().join("tantivy"))
+            .expect("IndexManager");
 
         let (sse_tx, sse_rx) = broadcast::channel(256);
 
@@ -551,8 +533,7 @@ mod tests {
 
     fn create_test_png(path: &Path) {
         let img = image::RgbaImage::new(64, 48);
-        img.save_with_format(path, image::ImageFormat::Png)
-            .expect("create test PNG");
+        img.save_with_format(path, image::ImageFormat::Png).expect("create test PNG");
     }
 
     // -----------------------------------------------------------------------
@@ -618,8 +599,7 @@ mod tests {
             PathBuf::from("/media/photos"),
             PathBuf::from("/media/photos/vacation"), // more specific
         ];
-        let result =
-            resolve_relative_path(Path::new("/media/photos/vacation/beach.png"), &folders);
+        let result = resolve_relative_path(Path::new("/media/photos/vacation/beach.png"), &folders);
         // The first folder in the list matches first.
         assert_eq!(result.as_deref(), Some("vacation/beach.png"));
     }
@@ -657,32 +637,22 @@ mod tests {
         let file_path = ctx.watched_path.path().join("created.png");
         create_test_png(&file_path);
 
-        let event = FileEvent::Modified {
-            path: file_path.clone(),
-        };
+        let event = FileEvent::Modified { path: file_path.clone() };
 
-        handle_single_event(
-            &event,
-            &ctx.db,
-            &ctx.index_manager,
-            &ctx.sse_tx,
-        )
-        .await
-        .expect("handle single event");
+        handle_single_event(&event, &ctx.db, &ctx.index_manager, &ctx.sse_tx)
+            .await
+            .expect("handle single event");
 
         // Verify the DB has an entry.
         let conn = ctx.db.lock().await;
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0))
-            .expect("count");
+        let count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).expect("count");
         assert_eq!(count, 1, "should have one media item");
 
         let (id, filename, mime): (String, String, String) = conn
-            .query_row(
-                "SELECT id, filename, mime_type FROM media_items LIMIT 1",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
+            .query_row("SELECT id, filename, mime_type FROM media_items LIMIT 1", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
             .expect("query item");
         assert_eq!(filename, "created.png");
         assert_eq!(mime, "image/png");
@@ -724,8 +694,7 @@ mod tests {
         // Read back the ID and clear the SSE channel.
         let first_id: String = {
             let conn = ctx.db.lock().await;
-            conn.query_row("SELECT id FROM media_items", [], |r| r.get(0))
-                .expect("query id")
+            conn.query_row("SELECT id FROM media_items", [], |r| r.get(0)).expect("query id")
         };
         let _ = ctx.sse_rx.try_recv().ok(); // drain the file_created event
 
@@ -733,8 +702,7 @@ mod tests {
         // Create a new image of different size so the hash changes.
         {
             let img = image::RgbaImage::new(128, 96);
-            img.save_with_format(&file_path, image::ImageFormat::Png)
-                .expect("modify PNG");
+            img.save_with_format(&file_path, image::ImageFormat::Png).expect("modify PNG");
         }
 
         handle_single_event(
@@ -748,14 +716,12 @@ mod tests {
 
         // Verify the same ID was reused.
         let conn = ctx.db.lock().await;
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0))
-            .expect("count");
+        let count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).expect("count");
         assert_eq!(count, 1, "should still have only one media item");
 
-        let second_id: String = conn
-            .query_row("SELECT id FROM media_items", [], |r| r.get(0))
-            .expect("query id");
+        let second_id: String =
+            conn.query_row("SELECT id FROM media_items", [], |r| r.get(0)).expect("query id");
         assert_eq!(second_id, first_id, "ID should be preserved across modify");
         drop(conn);
 
@@ -795,11 +761,7 @@ mod tests {
 
         // No SSE event should be emitted for unchanged files.
         let result = ctx.sse_rx.try_recv();
-        assert!(
-            result.is_err(),
-            "unchanged file should not broadcast an SSE event: {:?}",
-            result
-        );
+        assert!(result.is_err(), "unchanged file should not broadcast an SSE event: {:?}", result);
     }
 
     #[tokio::test]
@@ -824,9 +786,7 @@ mod tests {
         std::fs::remove_file(&file_path).expect("remove file");
 
         handle_single_event(
-            &FileEvent::Deleted {
-                path: file_path.clone(),
-            },
+            &FileEvent::Deleted { path: file_path.clone() },
             &ctx.db,
             &ctx.index_manager,
             &ctx.sse_tx,
@@ -836,9 +796,8 @@ mod tests {
 
         // DB should be empty.
         let conn = ctx.db.lock().await;
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0))
-            .expect("count");
+        let count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).expect("count");
         assert_eq!(count, 0, "DB should have no items after delete");
         drop(conn);
 
@@ -863,9 +822,7 @@ mod tests {
         let fake_path = ctx.watched_path.path().join("never_indexed.png");
 
         handle_single_event(
-            &FileEvent::Deleted {
-                path: fake_path.clone(),
-            },
+            &FileEvent::Deleted { path: fake_path.clone() },
             &ctx.db,
             &ctx.index_manager,
             &ctx.sse_tx,
@@ -875,11 +832,7 @@ mod tests {
 
         // No SSE event should be emitted.
         let result = ctx.sse_rx.try_recv();
-        assert!(
-            result.is_err(),
-            "delete of unknown file should not broadcast: {:?}",
-            result
-        );
+        assert!(result.is_err(), "delete of unknown file should not broadcast: {:?}", result);
     }
 
     #[tokio::test]
@@ -914,9 +867,8 @@ mod tests {
 
         // DB should be empty (treated as delete).
         let conn = ctx.db.lock().await;
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0))
-            .expect("count");
+        let count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).expect("count");
         assert_eq!(count, 0, "modified event for missing file should act as delete");
     }
 
@@ -930,9 +882,7 @@ mod tests {
         create_test_png(&file_path);
 
         let result = handle_single_event(
-            &FileEvent::Modified {
-                path: file_path.clone(),
-            },
+            &FileEvent::Modified { path: file_path.clone() },
             &ctx.db,
             &ctx.index_manager,
             &ctx.sse_tx,

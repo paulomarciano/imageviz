@@ -71,14 +71,23 @@ function App() {
     [selectedItem, allItems],
   );
 
+  // When the clicked item is found in allItems, use the full list for navigation.
+  // When it isn't (race condition between infinite-scroll pages), fall back to a
+  // single-item list so the detail view still opens.
+  const detailItems = useMemo(
+    () => (currentIndex >= 0 ? allItems : selectedItem ? [selectedItem] : []),
+    [currentIndex, allItems, selectedItem],
+  );
+  const detailIndex = currentIndex >= 0 ? currentIndex : 0;
+
   const handleNavigate = useCallback(
     (index: number) => {
-      const item = allItems[index];
+      const item = detailItems[index];
       if (item) {
         setSelectedItem(item);
       }
     },
-    [allItems, setSelectedItem],
+    [detailItems, setSelectedItem],
   );
 
   const handleClose = useCallback(() => {
@@ -92,10 +101,10 @@ function App() {
         <ThumbnailGrid onItemClick={handleItemClick} />
       </AppShell>
       <Suspense fallback={null}>
-        {detailOpen && selectedItem && currentIndex >= 0 && (
+        {detailOpen && selectedItem && (
           <DetailView
-            items={allItems}
-            currentIndex={currentIndex}
+            items={detailItems}
+            currentIndex={detailIndex}
             onNavigate={handleNavigate}
             onClose={handleClose}
           />

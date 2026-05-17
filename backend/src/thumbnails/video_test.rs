@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use crate::test_support::fixture_path;
-    use crate::thumbnails::video::{extract_video_thumbnail, VideoThumbnailError};
+    use crate::thumbnails::video::{VideoThumbnailError, extract_video_thumbnail};
     use std::path::Path;
     use tempfile::tempdir;
     use tokio::process::Command;
@@ -38,30 +38,19 @@ mod tests {
 
         let source = fixture_path("sample_video.webm");
         if !source.exists() {
-            eprintln!(
-                "Skipping test_extract_from_webm: fixture not found at {}",
-                source.display()
-            );
+            eprintln!("Skipping test_extract_from_webm: fixture not found at {}", source.display());
             return;
         }
 
         let dir = tempdir().unwrap();
         let result: Result<std::path::PathBuf, VideoThumbnailError> =
             extract_video_thumbnail(&source, dir.path(), 1).await;
-        assert!(
-            result.is_ok(),
-            "Failed to extract webm thumbnail: {:?}",
-            result.err()
-        );
+        assert!(result.is_ok(), "Failed to extract webm thumbnail: {:?}", result.err());
 
         let output = result.unwrap();
         assert!(output.exists(), "Output file does not exist");
         assert!(
-            output
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .contains("sample_video_frame_1"),
+            output.file_name().unwrap().to_string_lossy().contains("sample_video_frame_1"),
             "Unexpected output filename: {:?}",
             output.file_name()
         );
@@ -77,30 +66,19 @@ mod tests {
 
         let source = fixture_path("sample_video.mp4");
         if !source.exists() {
-            eprintln!(
-                "Skipping test_extract_from_mp4: fixture not found at {}",
-                source.display()
-            );
+            eprintln!("Skipping test_extract_from_mp4: fixture not found at {}", source.display());
             return;
         }
 
         let dir = tempdir().unwrap();
         let result: Result<std::path::PathBuf, VideoThumbnailError> =
             extract_video_thumbnail(&source, dir.path(), 1).await;
-        assert!(
-            result.is_ok(),
-            "Failed to extract mp4 thumbnail: {:?}",
-            result.err()
-        );
+        assert!(result.is_ok(), "Failed to extract mp4 thumbnail: {:?}", result.err());
 
         let output = result.unwrap();
         assert!(output.exists(), "Output file does not exist");
         assert!(
-            output
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .contains("sample_video_frame_1"),
+            output.file_name().unwrap().to_string_lossy().contains("sample_video_frame_1"),
             "Unexpected output filename: {:?}",
             output.file_name()
         );
@@ -126,20 +104,12 @@ mod tests {
         let dir = tempdir().unwrap();
         let result: Result<std::path::PathBuf, VideoThumbnailError> =
             extract_video_thumbnail(&source, dir.path(), 2).await;
-        assert!(
-            result.is_ok(),
-            "Failed to extract at timestamp 2: {:?}",
-            result.err()
-        );
+        assert!(result.is_ok(), "Failed to extract at timestamp 2: {:?}", result.err());
 
         let output = result.unwrap();
         assert!(output.exists(), "Output file does not exist");
         assert!(
-            output
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .contains("_frame_2"),
+            output.file_name().unwrap().to_string_lossy().contains("_frame_2"),
             "Expected timestamp 2 in filename, got: {:?}",
             output.file_name()
         );
