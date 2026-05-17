@@ -1,5 +1,6 @@
 pub mod config;
 pub mod db;
+pub mod middleware;
 pub mod indexer;
 pub mod metadata;
 pub mod routes;

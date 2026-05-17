@@ -7,6 +7,7 @@ use tower_http::cors::CorsLayer;
 
 use imageviz_backend::config::AppConfig;
 use imageviz_backend::indexer::progress::ProgressTracker;
+use imageviz_backend::middleware::timeout;
 use imageviz_backend::routes::config::ConfigState;
 use imageviz_backend::routes::events::EventsState;
 use imageviz_backend::routes::media::MediaState;
@@ -96,12 +97,45 @@ async fn main() {
         &settings.database_path,
     );
 
-    let app = imageviz_backend::health_router()
-        .nest("/api/v1", imageviz_backend::routes::config::routes().with_state(config_state))
-        .nest("/api/v1", imageviz_backend::routes::media::routes().with_state(media_state))
-        .nest("/api/v1", imageviz_backend::routes::search::routes().with_state(search_state))
-        .nest("/api/v1", imageviz_backend::routes::stats::routes().with_state(stats_state))
-        .nest("/api/v1", imageviz_backend::routes::events::routes().with_state(events_state))
+    // Build route groups with per-group timeout middleware.
+    //
+    // Most routes use the default timeout (60s, or as configured via
+    // `REQUEST_TIMEOUT_SECS`).  Media routes get 120s because thumbnail
+    // generation is CPU-bound.  SSE events get 3600s (1 h) because the
+    // connection is long-lived.
+    let app = timeout::apply_default_timeout(imageviz_backend::health_router())
+        .nest(
+            "/api/v1",
+            timeout::apply_default_timeout(
+                imageviz_backend::routes::config::routes().with_state(config_state),
+            ),
+        )
+        .nest(
+            "/api/v1",
+            timeout::apply_timeout(
+                imageviz_backend::routes::media::routes().with_state(media_state),
+                120,
+            ),
+        )
+        .nest(
+            "/api/v1",
+            timeout::apply_default_timeout(
+                imageviz_backend::routes::search::routes().with_state(search_state),
+            ),
+        )
+        .nest(
+            "/api/v1",
+            timeout::apply_default_timeout(
+                imageviz_backend::routes::stats::routes().with_state(stats_state),
+            ),
+        )
+        .nest(
+            "/api/v1",
+            timeout::apply_timeout(
+                imageviz_backend::routes::events::routes().with_state(events_state),
+                3600,
+            ),
+        )
         .layer(CorsLayer::permissive());
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], settings.port));
