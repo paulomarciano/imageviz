@@ -68,3 +68,44 @@ pub const MIGRATION_V002: &str = "
     CREATE UNIQUE INDEX IF NOT EXISTS idx_media_folder_path
         ON media_items(folder_id, relative_path);
 ";
+
+/// SQL for migration v003: remove the column-level `UNIQUE` constraint from
+/// `relative_path` that was left behind in the v1 schema.
+///
+/// SQLite does not support `ALTER TABLE ... DROP CONSTRAINT`, so the table
+/// must be rebuilt.  This migration:
+///
+/// 1. Creates a new table without `UNIQUE` on `relative_path`.
+/// 2. Copies all existing rows into it.
+/// 3. Drops the old table.
+/// 4. Renames the new table.
+/// 5. Recreates all indexes.
+///
+/// After v003 the compound `UNIQUE INDEX` on `(folder_id, relative_path)`
+/// (created in v002) is the only uniqueness constraint — two files in
+/// different watched folders **may** share the same relative path.
+pub const MIGRATION_V003: &str = "
+    CREATE TABLE media_items_v003 (
+        id TEXT PRIMARY KEY NOT NULL,
+        filename TEXT NOT NULL,
+        relative_path TEXT NOT NULL,
+        mime_type TEXT NOT NULL,
+        width INTEGER,
+        height INTEGER,
+        file_size INTEGER NOT NULL,
+        thumbnail_path TEXT,
+        file_created_at TEXT NOT NULL,
+        file_modified_at TEXT NOT NULL,
+        indexed_at TEXT NOT NULL DEFAULT (datetime('now')),
+        metadata_json TEXT,
+        checksum TEXT,
+        folder_id TEXT REFERENCES watched_folders(id)
+    );
+    INSERT INTO media_items_v003 SELECT * FROM media_items;
+    DROP TABLE media_items;
+    ALTER TABLE media_items_v003 RENAME TO media_items;
+    CREATE INDEX IF NOT EXISTS idx_media_sort ON media_items(file_created_at DESC, id);
+    CREATE INDEX IF NOT EXISTS idx_media_mime ON media_items(mime_type);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_media_folder_path
+        ON media_items(folder_id, relative_path);
+";

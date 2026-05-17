@@ -28,5 +28,12 @@ pub fn run_migrations(conn: &mut Connection) -> Result<(), rusqlite::Error> {
         tx.commit()?;
     }
 
+    if version < 3 {
+        let tx = conn.transaction()?;
+        tx.execute_batch(super::schema::MIGRATION_V003)?;
+        tx.pragma_update(None, "user_version", 3)?;
+        tx.commit()?;
+    }
+
     Ok(())
 }
