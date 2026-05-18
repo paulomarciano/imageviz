@@ -122,17 +122,120 @@ pub async fn full_index(
     Ok(stats)
 }
 
-/// Run an incremental index (only processes new or modified files).
+/// Run an incremental index — only processes new or modified files.
 ///
-/// Currently delegates to [`full_index`]. A future optimization will skip
-/// files with matching checksums at the scanner level once the initial
-/// index is populated.
+/// Before scanning, loads all existing DB entries to build a map of
+/// `(folder_id, relative_path) → (file_size, file_modified_at)`.  During
+/// scanning, files whose size AND modification time match the DB entry
+/// are skipped entirely (no SHA-256 hashing, no media detection, no DB
+/// write).  New or modified files go through the full pipeline.
+///
+/// This avoids the O(n) hash + detect cost of a full re-scan for the
+/// common case where most files are unchanged.
 pub async fn incremental_index(
     pool: &Pool<SqliteConnectionManager>,
     config: &AppConfig,
     progress: &progress::ProgressTracker,
 ) -> Result<IndexStats, IndexError> {
-    full_index(pool, config, progress).await
+    // Ensure all watched folders have stable UUIDs before scanning.
+    let mut config = config.clone();
+    {
+        let conn = pool.get()?;
+        crate::config::assign_folder_ids(&conn, &mut config)?;
+    }
+
+    // Load existing entries from DB so we can skip unchanged files.
+    let existing: HashMap<(String, String), (i64, String)> = {
+        let conn = pool.get()?;
+        let mut stmt = conn.prepare(
+            "SELECT folder_id, relative_path, file_size, file_modified_at FROM media_items",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                (
+                    row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+                    row.get::<_, String>(1)?,
+                ),
+                (row.get::<_, i64>(2)?, row.get::<_, String>(3)?),
+            ))
+        })?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    let fid_map = folder_id_map(&config);
+    let all_files = scan_all_folders(&config)?;
+    progress.set_total(all_files.len());
+
+    progress.set_status(progress::IndexStatus::Indexing);
+    let mut stats = IndexStats::default();
+
+    if all_files.is_empty() {
+        let conn = pool.get()?;
+        let removed = remove_deleted_items(&conn, &config)?;
+        stats.deleted = removed;
+        progress.set_status(progress::IndexStatus::Complete);
+        return Ok(stats);
+    }
+
+    let folder_file_pairs = resolve_folder_file_pairs(&all_files, &fid_map);
+
+    for chunk in folder_file_pairs.chunks(BATCH_SIZE) {
+        // Phase 1: Async I/O — only for files that appear new or modified
+        let mut batch_results: Vec<ProcessedFile> = Vec::with_capacity(chunk.len());
+        for ff_entry in chunk {
+            progress.increment_processed();
+
+            // Quick check against existing DB metadata — skip if size AND
+            // mtime match (file is extremely likely to be unchanged).
+            let key = (ff_entry.folder_id.clone(), ff_entry.file.relative_path.clone());
+            if let Some((existing_size, existing_mtime)) = existing.get(&key)
+                && *existing_size == ff_entry.file.file_size as i64
+                && *existing_mtime == ff_entry.file.modified_at
+            {
+                stats.skipped += 1;
+                continue;
+            }
+
+            // File is new or modified — run the full pipeline.
+            match process_file_metadata(ff_entry.file, &ff_entry.folder_id).await {
+                Ok(processed) => batch_results.push(processed),
+                Err(e) => {
+                    stats.errors += 1;
+                    progress.add_error(format!("{}: {}", ff_entry.file.relative_path, e));
+                }
+            }
+        }
+
+        // Phase 2: DB writes — batch-transact only if there are changes
+        if !batch_results.is_empty() {
+            let conn = pool.get()?;
+            conn.execute_batch("BEGIN")?;
+            for processed in &batch_results {
+                match store_file(&conn, processed) {
+                    Ok(change) => match change {
+                        IndexChange::Created => stats.created += 1,
+                        IndexChange::Updated => stats.updated += 1,
+                        IndexChange::Skipped => stats.skipped += 1,
+                    },
+                    Err(e) => {
+                        stats.errors += 1;
+                        progress.add_error(format!("{}: {}", processed.file.relative_path, e));
+                    }
+                }
+            }
+            conn.execute_batch("COMMIT")?;
+        }
+    }
+
+    // Clean up: remove DB entries for files no longer on disk.
+    {
+        let conn = pool.get()?;
+        let removed = remove_deleted_items(&conn, &config)?;
+        stats.deleted = removed;
+    }
+
+    progress.set_status(progress::IndexStatus::Complete);
+    Ok(stats)
 }
 
 // ---------------------------------------------------------------------------
