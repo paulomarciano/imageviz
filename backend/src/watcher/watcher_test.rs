@@ -12,7 +12,8 @@ use tempfile::TempDir;
 /// directory" (e.g. `.hidden/`) and "inside any path with a dot
 /// component".
 fn setup_temp_dir() -> (TempDir, PathBuf) {
-    let dir = tempfile::Builder::new().prefix("imgviz_").tempdir().expect("failed to create temp dir");
+    let dir =
+        tempfile::Builder::new().prefix("imgviz_").tempdir().expect("failed to create temp dir");
     let path = dir.path().to_path_buf();
     (dir, path)
 }
@@ -212,5 +213,3 @@ fn test_is_supported_extension_rejects_txt() {
 fn test_is_supported_extension_rejects_no_extension() {
     assert!(!is_supported_extension(Path::new("Makefile")));
 }
-
-
