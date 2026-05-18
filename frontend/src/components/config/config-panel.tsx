@@ -48,6 +48,15 @@ export function ConfigPanel({ onClose }: ConfigPanelProps) {
 
   useFocusTrap(panelRef);
 
+  // Close panel on Escape key.
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [onClose]);
+
   // Fetch current config
   const configQuery = useQuery<AppConfig, Error>({
     queryKey: ['config'],

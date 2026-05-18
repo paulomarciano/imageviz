@@ -80,12 +80,16 @@ test.describe('Basic Navigation', () => {
     await page.keyboard.press('?');
 
     // Shortcuts panel should be visible
-    await expect(page.getByText('Keyboard Shortcuts')).toBeVisible({ timeout: 5000 });
+    await expect(
+      page.getByRole('heading', { name: 'Keyboard Shortcuts' }),
+    ).toBeVisible({ timeout: 5000 });
     await expect(page.getByText('Global')).toBeVisible();
     await expect(page.getByText('Grid')).toBeVisible();
 
     // Close with Escape
     await page.keyboard.press('Escape');
-    await expect(page.getByText('Keyboard Shortcuts')).not.toBeVisible({ timeout: 3000 });
+    await expect(
+      page.getByRole('heading', { name: 'Keyboard Shortcuts' }),
+    ).not.toBeVisible({ timeout: 3000 });
   });
 });
