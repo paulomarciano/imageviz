@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import { ImageViewer } from '../image-viewer';
 import { createMockMediaItem } from '../../../test-utils/render-utils';
 import type { MediaItemDetail } from '../../../types/media';
@@ -143,9 +143,10 @@ describe('ImageViewer', () => {
 
   /* ---------- Zoom indicator ---------- */
 
-  it('shows zoom percentage indicator when zoomed in', () => {
+  it('shows zoom percentage indicator when zoomed in', async () => {
     // Arrange
     const item = createMockDetail();
+    vi.useFakeTimers();
 
     // Act
     render(<ImageViewer item={item} />);
@@ -153,8 +154,14 @@ describe('ImageViewer', () => {
     // Simulate wheel zoom (deltaY < 0 = zoom in, factor 1.1)
     fireEvent.wheel(container, { deltaY: -100 });
 
-    // Assert — zoom is 1.1 → shows "110%" (the number and % sign are
-    // sibling text nodes, so we match the numeric portion)
+    // Zoom state is debounced at 50ms — flush the timer.
+    await act(async () => {
+      vi.advanceTimersByTime(60);
+    });
+
+    // Assert — zoom is 1.1 → shows "110%"
     expect(screen.getByText(/110/)).toBeInTheDocument();
+
+    vi.useRealTimers();
   });
 });
