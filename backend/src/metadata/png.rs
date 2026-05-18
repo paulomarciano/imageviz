@@ -118,23 +118,19 @@ fn extract_itext_chunks(chunks: &[ITXtChunk], metadata: &mut Metadata) {
 /// the content is not valid JSON.
 fn handle_metadata_key(key: &str, value: &str, metadata: &mut Metadata) {
     match key {
-        "prompt" | "parameters" => {
-            if metadata.prompt.is_none() {
-                metadata.prompt = match serde_json::from_str(value) {
-                    Ok(json) => Some(json),
-                    Err(_) => {
-                        // Some ComfyUI prompts are plain text, not JSON
-                        Some(serde_json::Value::String(value.to_owned()))
-                    }
-                };
-            }
-        }
-        "workflow" => {
-            if metadata.workflow.is_none() {
-                // Only store if valid JSON, silently skip otherwise
-                if let Ok(json) = serde_json::from_str(value) {
-                    metadata.workflow = Some(json);
+        "prompt" | "parameters" if metadata.prompt.is_none() => {
+            metadata.prompt = match serde_json::from_str(value) {
+                Ok(json) => Some(json),
+                Err(_) => {
+                    // Some ComfyUI prompts are plain text, not JSON
+                    Some(serde_json::Value::String(value.to_owned()))
                 }
+            };
+        }
+        "workflow" if metadata.workflow.is_none() => {
+            // Only store if valid JSON, silently skip otherwise
+            if let Ok(json) = serde_json::from_str(value) {
+                metadata.workflow = Some(json);
             }
         }
         _ => {}
