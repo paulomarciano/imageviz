@@ -90,10 +90,14 @@ pub(super) async fn serve_thumbnail(
         tracing::error!(error = %e, "Failed to open thumbnail file");
         (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
     })?;
-    let content_length = file.metadata().await.map_err(|e| {
-        tracing::error!(error = %e, "Failed to read thumbnail metadata");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
-    })?.len();
+    let content_length = file
+        .metadata()
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to read thumbnail metadata");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
+        })?
+        .len();
     let stream = ReaderStream::new(file);
     let body = Body::from_stream(stream);
 

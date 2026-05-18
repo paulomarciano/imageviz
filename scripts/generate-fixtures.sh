@@ -95,6 +95,7 @@ png = "0.18"
 serde_json = "1"
 TOML
 
+mkdir -p "$TMP_DIR/src"
 cat > "$TMP_DIR/src/main.rs" << 'RUST'
 use std::path::Path;
 

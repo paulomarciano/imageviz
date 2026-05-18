@@ -43,8 +43,17 @@ function BrowseGrid({ onItemClick }: ThumbnailGridProps) {
   const mediaTypeFilter = useAtomValue(mediaTypeFilterAtom);
   const mimeType = mimeTypePattern(mediaTypeFilter);
 
-  const { allItems, isLoading, isError, error, fetchNextPage, hasNextPage, isFetchingNextPage, refetch, totalCount } =
-    useInfiniteMedia(100, mimeType, true);
+  const {
+    allItems,
+    isLoading,
+    isError,
+    error,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+    refetch,
+    totalCount,
+  } = useInfiniteMedia(100, mimeType, true);
 
   return (
     <MediaGrid
@@ -74,8 +83,18 @@ function SearchGrid({ onItemClick }: ThumbnailGridProps) {
   const mimeType = mimeTypePattern(mediaTypeFilter);
   const sort = useAtomValue(searchSortAtom);
 
-  const { results, totalCount, isLoading, isError, error, fetchNextPage, hasNextPage, isFetchingNextPage, refetch, noResults } =
-    useSearch(searchQuery, 100, mimeType, sort);
+  const {
+    results,
+    totalCount,
+    isLoading,
+    isError,
+    error,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+    refetch,
+    noResults,
+  } = useSearch(searchQuery, 100, mimeType, sort);
 
   // Search-specific: show no-results state before the grid
   if (noResults) {

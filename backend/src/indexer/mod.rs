@@ -152,10 +152,7 @@ pub async fn incremental_index(
         )?;
         let rows = stmt.query_map([], |row| {
             Ok((
-                (
-                    row.get::<_, Option<String>>(0)?.unwrap_or_default(),
-                    row.get::<_, String>(1)?,
-                ),
+                (row.get::<_, Option<String>>(0)?.unwrap_or_default(), row.get::<_, String>(1)?),
                 (row.get::<_, i64>(2)?, row.get::<_, String>(3)?),
             ))
         })?;
