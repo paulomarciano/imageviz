@@ -343,7 +343,7 @@ async fn test_search_pagination_has_more_flag() {
 
     let data = body["data"].as_array().unwrap();
     assert_eq!(data.len(), 10, "should return exactly limit items");
-    assert_eq!(body["meta"]["total"], 10);
+    assert_eq!(body["meta"]["total"], 15, "total should reflect all 15 matching docs");
     assert_eq!(body["meta"]["has_more"], true);
     assert!(body["meta"]["next_cursor"].is_string());
     assert!(body["meta"]["next_cursor_id"].is_string());
@@ -435,7 +435,7 @@ async fn test_search_limit_capped_at_500() {
 
     let data = body["data"].as_array().unwrap();
     assert_eq!(data.len(), 500, "limit=500 should return 500 items");
-    assert_eq!(body["meta"]["total"], 500);
+    assert_eq!(body["meta"]["total"], 600, "total should reflect all 600 matching docs");
     assert_eq!(body["meta"]["has_more"], true);
     assert!(body["meta"]["next_cursor"].is_string());
     assert!(body["meta"]["next_cursor_id"].is_string());

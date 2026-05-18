@@ -92,6 +92,7 @@ pub fn create_test_app_with_search() -> TestApp {
         thumbnail_limiter: Arc::new(imageviz_backend::thumbnails::limiter::ThumbnailLimiter::new(
             16,
         )),
+        total_count_cache: Arc::new(std::sync::Mutex::new(None)),
     });
     let search_state = Arc::new(imageviz_backend::routes::search::SearchState {
         index_manager: Arc::clone(&index_manager),

@@ -33,6 +33,7 @@ use tantivy::schema::Value as TantivyValue;
 
 use crate::middleware::validation;
 use crate::search::IndexManager;
+use tantivy::collector::Count;
 
 // ---------------------------------------------------------------------------
 // State
@@ -49,16 +50,23 @@ pub struct SearchState {
 // ---------------------------------------------------------------------------
 
 /// Search query parameters.
+///
+/// `cursor` and `cursor_id` are accepted for API compatibility with the media
+/// listing endpoint, but are **not** applied to the Tantivy query (Tantivy
+/// score ordering is inherently versioned and does not support cursor-based
+/// pagination across score-ordered results).  These fields are returned in
+/// the response as `next_cursor` / `next_cursor_id` for client-side offset
+/// tracking (see [`getNextPageParam`] in the frontend).
 #[derive(Deserialize, Default)]
-#[allow(dead_code)]
 struct SearchParams {
     q: Option<String>,
     /// Maximum items per page (default 100, max 500).
     #[serde(default = "default_limit")]
     limit: u32,
-    /// Opaque cursor for pagination (ISO 8601 date of last item).
+    /// Opaque cursor for pagination — accepted but not applied to Tantivy
+    /// (score ordering is versioned).  Reserved for client-side tracking.
     cursor: Option<String>,
-    /// Tiebreaker cursor: UUID of the last item.
+    /// Tiebreaker cursor: UUID of the last item — accepted but not applied.
     cursor_id: Option<String>,
     /// MIME type filter (e.g. `image/%`, `video/%`) — SQL LIKE pattern.
     mime_type: Option<String>,
@@ -125,6 +133,19 @@ async fn search_handler(
             return Err((
                 StatusCode::BAD_REQUEST,
                 Json(json!({"error": format!("Invalid query: {}", e)})),
+            ));
+        }
+    };
+
+    // Run Count collector (fast, no scoring) to get the accurate total,
+    // then TopDocs for the actual result set.
+    let total_hits: usize = match searcher.search(&query, &Count) {
+        Ok(count) => count,
+        Err(e) => {
+            tracing::error!(error = %e, "Tantivy count query failed");
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Search failed"})),
             ));
         }
     };
@@ -196,7 +217,7 @@ async fn search_handler(
             "next_cursor": next_cursor,
             "next_cursor_id": next_cursor_id,
             "has_more": has_more,
-            "total": media_items.len() as u64,
+            "total": total_hits as u64,
             "query": query_str,
         }
     })))
