@@ -1,15 +1,23 @@
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { test, expect, type Page } from '@playwright/test';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+/** Absolute path to the project root's test-fixtures directory. */
+const FIXTURES_DIR = path.resolve(__dirname, '../../test-fixtures');
 
 /**
  * Helper: configure a watched folder pointing to test fixtures and trigger indexing.
  * Sends requests directly to the API for fast setup.
+ * Uses an absolute path to avoid the path-traversal validator (rejects '..').
  */
 async function setupTestData(page: Page) {
   const response = await page.request.put('http://localhost:3001/api/v1/config', {
     data: {
       watched_folders: [
         {
-          path: '../test-fixtures',
+          path: FIXTURES_DIR,
           label: 'Test Fixtures',
         },
       ],

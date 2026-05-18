@@ -1,11 +1,17 @@
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { test, expect, type Page } from '@playwright/test';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const FIXTURES_DIR = path.resolve(__dirname, '../../test-fixtures');
 
 async function setupTestData(page: Page) {
   const response = await page.request.put('http://localhost:3001/api/v1/config', {
     data: {
       watched_folders: [
         {
-          path: '../test-fixtures',
+          path: FIXTURES_DIR,
           label: 'Test Fixtures',
         },
       ],
