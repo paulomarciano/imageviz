@@ -112,11 +112,14 @@ pub fn store_media(
     .map_err(|e| format!("DB insert/update: {}", e))?;
 
     // Update the Tantivy search index:
-    //   1. Delete the previous document for this file (if any).
+    //   1. Delete the previous document for this file (updates only — for new
+    //      files the id is fresh so the delete would be a wasteful no-op).
     //   2. Add a new document with the latest data.
-    index_manager
-        .delete_document_by_field("id", &id)
-        .map_err(|e| format!("Tantivy delete: {}", e))?;
+    if change == ChangeType::Updated {
+        index_manager
+            .delete_document_by_field("id", &id)
+            .map_err(|e| format!("Tantivy delete: {}", e))?;
+    }
 
     let schema = index_manager.schema();
     let id_field = schema.get_field("id").map_err(|e| format!("Schema field id: {}", e))?;
