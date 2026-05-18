@@ -1,4 +1,5 @@
 use axum::{
+    body::Body,
     extract::{Path, Query, State},
     http::{StatusCode, header},
     response::{IntoResponse, Json},
@@ -6,6 +7,7 @@ use axum::{
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio_util::io::ReaderStream;
 
 use crate::middleware::validation;
 use crate::thumbnails::cache::CacheError;
@@ -83,18 +85,24 @@ pub(super) async fn serve_thumbnail(
         tracing::warn!(error = %e, id = %id, "Failed to persist thumbnail_path");
     }
 
-    // Read the thumbnail file into memory
-    let data = tokio::fs::read(&thumbnail).await.map_err(|e| {
-        tracing::error!(error = %e, "Failed to read thumbnail file");
+    // Stream the thumbnail file instead of reading it entirely into memory.
+    let file = tokio::fs::File::open(&thumbnail).await.map_err(|e| {
+        tracing::error!(error = %e, "Failed to open thumbnail file");
         (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
     })?;
+    let content_length = file.metadata().await.map_err(|e| {
+        tracing::error!(error = %e, "Failed to read thumbnail metadata");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
+    })?.len();
+    let stream = ReaderStream::new(file);
+    let body = Body::from_stream(stream);
 
     Ok((
         [
             (header::CONTENT_TYPE, "image/webp".to_string()),
-            (header::CONTENT_LENGTH, data.len().to_string()),
+            (header::CONTENT_LENGTH, content_length.to_string()),
             (header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_string()),
         ],
-        data,
+        body,
     ))
 }
