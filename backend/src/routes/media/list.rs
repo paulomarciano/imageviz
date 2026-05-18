@@ -70,7 +70,9 @@ pub(super) async fn list_media(
         (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "Service temporarily unavailable"})))
     })?;
 
-    // Compute total count (fast COUNT with or without mime_type filter)
+    // Total count — cached for 30s for unfiltered queries to avoid a full
+    // index scan on every page load.  MIME-filtered counts are queried
+    // directly since the filter pattern varies per user.
     let total: i64 = if let Some(ref mime_type) = params.mime_type {
         conn.query_row(
             "SELECT COUNT(*) FROM media_items WHERE mime_type LIKE ?1",
@@ -79,7 +81,18 @@ pub(super) async fn list_media(
         )
         .unwrap_or(0)
     } else {
-        conn.query_row("SELECT COUNT(*) FROM media_items", [], |row| row.get(0)).unwrap_or(0)
+        let mut cache = state.total_count_cache.lock().unwrap();
+        let now = std::time::Instant::now();
+        match *cache {
+            Some((count, ts)) if ts.elapsed() < std::time::Duration::from_secs(30) => count,
+            _ => {
+                let count = conn
+                    .query_row("SELECT COUNT(*) FROM media_items", [], |row| row.get(0))
+                    .unwrap_or(0);
+                *cache = Some((count, now));
+                count
+            }
+        }
     };
 
     // Build SQL dynamically for cursor-based pagination

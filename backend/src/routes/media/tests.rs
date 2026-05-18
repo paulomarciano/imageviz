@@ -29,6 +29,7 @@ fn test_state() -> (Arc<MediaState>, tempfile::TempDir) {
         db: pool,
         thumbnail_cache_dir: cache_dir.path().to_path_buf(),
         thumbnail_limiter: Arc::new(ThumbnailLimiter::new(16)), // generous for tests
+        total_count_cache: Arc::new(Mutex::new(None)),
     });
     (state, cache_dir)
 }
