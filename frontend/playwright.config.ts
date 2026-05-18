@@ -25,7 +25,7 @@ export default defineConfig({
       cwd: '../backend',
       port: 3001,
       reuseExistingServer: true,
-      timeout: 60000,
+      timeout: 300000, // 5 min for first-time crate download + build
     },
     {
       command: 'npm run dev',
