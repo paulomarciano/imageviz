@@ -15,8 +15,9 @@ const DEFAULT_POOL_SIZE: u32 = 10;
 
 /// Connection manager for rusqlite connections.
 ///
-/// Opens file-backed or in-memory SQLite databases with WAL mode, foreign
-/// keys, and a busy timeout enabled on every new connection.
+/// Opens file-backed or in-memory SQLite databases with foreign keys enabled
+/// on every new connection.  File-backed connections additionally use WAL
+/// journal mode and a 5-second busy timeout for better concurrent access.
 pub struct SqliteConnectionManager {
     db_path: Option<std::path::PathBuf>,
     in_memory: bool,
@@ -71,7 +72,7 @@ impl ManageConnection for SqliteConnectionManager {
     }
 }
 
-// Safety: `SqliteConnectionManager` contains only a `PathBuf` and a `bool`,
+// Safety: `SqliteConnectionManager` contains only an `Option<PathBuf>` and a `bool`,
 // both of which are `Send + Sync`.
 unsafe impl Send for SqliteConnectionManager {}
 unsafe impl Sync for SqliteConnectionManager {}

@@ -90,8 +90,10 @@ async fn main() {
     let (watcher, mut file_events_rx) = start_file_watcher(&config_clone);
     let watcher = Arc::new(Mutex::new(watcher));
 
-    // Keep a reference alive for the server lifetime — dropping the
-    // _watcher_guard would stop file system monitoring.
+    // Keep a reference alive for the server lifetime — the watcher must not
+    // be dropped while the server is running.  `config_state.watcher` holds
+    // another reference, so `_watcher_guard` alone is not strictly required,
+    // but the binding documents the intent explicitly.
     let _watcher_guard = Arc::clone(&watcher);
 
     let config_state = Arc::new(ConfigState {

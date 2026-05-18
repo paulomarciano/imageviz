@@ -71,7 +71,7 @@ impl From<std::io::Error> for CacheError {
 // Eviction configuration
 // ---------------------------------------------------------------------------
 
-/// Default maximum cache size in bytes (2 GB).
+/// Default maximum cache size in bytes (~1.86 GiB / 2 GB decimal).
 const DEFAULT_MAX_CACHE_SIZE: u64 = 2_000_000_000;
 /// Default minimum free disk space in bytes (500 MB).
 const DEFAULT_MIN_FREE_SPACE: u64 = 500_000_000;
@@ -258,8 +258,6 @@ pub async fn get_or_generate_thumbnail(
     // `spawn_cache_eviction_timer` in main.rs).  This inline spawn is an
     // extra safety net for unusually large cache bursts.
     let cache_dir = cache_dir.to_path_buf();
-    // Fire-and-forget: the background timer in main.rs is the primary eviction
-    // mechanism. This spawn is an extra safety net for large caches.
     std::mem::drop(tokio::spawn(async move {
         if let Err(e) = evict_if_needed(&cache_dir, max_cache_size(), min_free_disk_space()) {
             tracing::warn!(error = %e, "Cache eviction check failed");

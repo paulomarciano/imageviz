@@ -61,13 +61,6 @@ pub enum ChangeType {
     Skipped,
 }
 
-/// Result of processing a single file event in the blocking phase.
-#[allow(dead_code)]
-pub(crate) struct Outcome {
-    id: String,
-    change: ChangeType,
-}
-
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------

@@ -6,8 +6,9 @@
 //! # Architecture
 //!
 //! The indexer separates async I/O (hashing, ffprobe) from synchronous DB writes.
-//! Async work runs without holding the database lock; DB operations are batched
-//! in transactions of [`BATCH_SIZE`] files for write throughput.
+//! Async work runs without holding a database connection from the pool; DB
+//! operations are batched in transactions of [`BATCH_SIZE`] files for write
+//! throughput.
 
 use crate::config::AppConfig;
 use crate::config::folder_id_map;
