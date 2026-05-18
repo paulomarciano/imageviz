@@ -23,7 +23,7 @@ import type { MediaItem } from './types/media';
  * Inner component that only mounts hooks for the active view mode.
  * Fully unmounted when switching modes, so only one hook observer is alive.
  */
-function ActiveViewContent({ onItemClick }: { onItemClick: (item: MediaItem) => void }) {
+function ActiveViewContent() {
   const viewMode = useAtomValue(mediaViewModeAtom);
   const searchQuery = useAtomValue(searchQueryAtom);
   const [selectedItem, setSelectedItem] = useAtom(selectedMediaItemAtom);
@@ -38,9 +38,8 @@ function ActiveViewContent({ onItemClick }: { onItemClick: (item: MediaItem) => 
     (item: MediaItem) => {
       setSelectedItem(item);
       setDetailOpen(true);
-      onItemClick(item);
     },
-    [setSelectedItem, setDetailOpen, onItemClick],
+    [setSelectedItem, setDetailOpen],
   );
 
   const currentIndex = useMemo(
@@ -115,14 +114,10 @@ function App() {
   // Wire SSE events → TanStack Query cache
   useSseGridUpdates();
 
-  const handleItemClick = useCallback((_item: MediaItem) => {
-    // Detail view logic lives in ActiveViewContent
-  }, []);
-
   return (
     <DndProvider backend={HTML5Backend}>
       <AppShell>
-        <ActiveViewContent onItemClick={handleItemClick} />
+        <ActiveViewContent />
       </AppShell>
       <ShortcutsPanel isOpen={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
       <Suspense fallback={null}>
