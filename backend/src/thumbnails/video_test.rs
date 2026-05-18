@@ -103,14 +103,14 @@ mod tests {
 
         let dir = tempdir().unwrap();
         let result: Result<std::path::PathBuf, VideoThumbnailError> =
-            extract_video_thumbnail(&source, dir.path(), 2).await;
-        assert!(result.is_ok(), "Failed to extract at timestamp 2: {:?}", result.err());
+            extract_video_thumbnail(&source, dir.path(), 0).await;
+        assert!(result.is_ok(), "Failed to extract at timestamp 0: {:?}", result.err());
 
         let output = result.unwrap();
         assert!(output.exists(), "Output file does not exist");
         assert!(
-            output.file_name().unwrap().to_string_lossy().contains("_frame_2"),
-            "Expected timestamp 2 in filename, got: {:?}",
+            output.file_name().unwrap().to_string_lossy().contains("_frame_0"),
+            "Expected timestamp 0 in filename, got: {:?}",
             output.file_name()
         );
         assert!(is_valid_png(&output), "Output is not a valid PNG");
