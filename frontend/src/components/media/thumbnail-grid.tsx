@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useMemo, useState, useEffect, type HTMLAttributes } from 'react';
+import { forwardRef, useCallback, useState, useEffect, type HTMLAttributes } from 'react';
 import { VirtuosoGrid } from 'react-virtuoso';
 import { useAtomValue } from 'jotai';
 import {
@@ -35,54 +35,104 @@ const ItemContainer = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement>>
   <div ref={ref} {...props} className="w-full" />
 ));
 
-export function ThumbnailGrid({ onItemClick }: ThumbnailGridProps) {
+/**
+ * Browse mode inner component — only mounts useInfiniteMedia.
+ * Fully unmounted when switching to search mode, so no wasted query observer.
+ */
+function BrowseGrid({ onItemClick }: ThumbnailGridProps) {
+  const mediaTypeFilter = useAtomValue(mediaTypeFilterAtom);
+  const mimeType = mimeTypePattern(mediaTypeFilter);
+
+  const { allItems, isLoading, isError, error, fetchNextPage, hasNextPage, isFetchingNextPage, refetch, totalCount } =
+    useInfiniteMedia(100, mimeType, true);
+
+  return (
+    <MediaGrid
+      items={allItems}
+      totalCount={totalCount}
+      isLoading={isLoading}
+      isError={isError}
+      error={error}
+      fetchNextPage={fetchNextPage}
+      hasNextPage={hasNextPage}
+      isFetchingNextPage={isFetchingNextPage}
+      refetch={refetch}
+      onItemClick={onItemClick}
+      searchQuery=""
+      searchTotal={0}
+    />
+  );
+}
+
+/**
+ * Search mode inner component — only mounts useSearch.
+ * Fully unmounted when switching to browse mode, so no wasted query observer.
+ */
+function SearchGrid({ onItemClick }: ThumbnailGridProps) {
   const searchQuery = useAtomValue(searchQueryAtom);
-  const viewMode = useAtomValue(mediaViewModeAtom);
   const mediaTypeFilter = useAtomValue(mediaTypeFilterAtom);
   const mimeType = mimeTypePattern(mediaTypeFilter);
   const sort = useAtomValue(searchSortAtom);
 
-  const browseEnabled = viewMode !== 'search';
+  const { results, totalCount, isLoading, isError, error, fetchNextPage, hasNextPage, isFetchingNextPage, refetch, noResults } =
+    useSearch(searchQuery, 100, mimeType, sort);
 
-  const browseData = useInfiniteMedia(100, mimeType, browseEnabled);
-  const searchData = useSearch(searchQuery, 100, mimeType, sort);
+  // Search-specific: show no-results state before the grid
+  if (noResults) {
+    return (
+      <div className="p-6">
+        <p className="text-gray-400 text-sm mb-1">0 results for &ldquo;{searchQuery}&rdquo;</p>
+        <EmptyState message="No media matches your search. Try different keywords." />
+      </div>
+    );
+  }
 
-  const {
-    allItems: browseItems,
-    isLoading: browseLoading,
-    isError: browseIsError,
-    error: browseError,
-    fetchNextPage: browseFetchNext,
-    hasNextPage: browseHasNext,
-    isFetchingNextPage: browseFetchingNext,
-    refetch: browseRefetch,
-  } = browseData;
-
-  const {
-    results: searchResults,
-    totalCount: searchTotal,
-    isLoading: searchLoading,
-    isError: searchIsError,
-    error: searchError,
-    fetchNextPage: searchFetchNext,
-    hasNextPage: searchHasNext,
-    isFetchingNextPage: searchFetchingNext,
-    refetch: searchRefetch,
-    noResults,
-  } = searchData;
-
-  const items = useMemo(
-    () => (viewMode === 'search' ? searchResults : browseItems),
-    [viewMode, searchResults, browseItems],
+  return (
+    <MediaGrid
+      items={results}
+      totalCount={totalCount}
+      isLoading={isLoading}
+      isError={isError}
+      error={error}
+      fetchNextPage={fetchNextPage}
+      hasNextPage={hasNextPage}
+      isFetchingNextPage={isFetchingNextPage}
+      refetch={refetch}
+      onItemClick={onItemClick}
+      searchQuery={searchQuery}
+      searchTotal={totalCount}
+    />
   );
-  const isLoading = viewMode === 'search' ? searchLoading : browseLoading;
-  const isError = viewMode === 'search' ? searchIsError : browseIsError;
-  const error = viewMode === 'search' ? searchError : browseError;
-  const fetchNextPage = viewMode === 'search' ? searchFetchNext : browseFetchNext;
-  const hasNextPage = viewMode === 'search' ? searchHasNext : browseHasNext;
-  const isFetchingNextPage = viewMode === 'search' ? searchFetchingNext : browseFetchingNext;
-  const refetch = viewMode === 'search' ? searchRefetch : browseRefetch;
+}
 
+/** Shared grid rendering logic used by both browse and search modes. */
+function MediaGrid({
+  items,
+  totalCount,
+  isLoading,
+  isError,
+  error,
+  fetchNextPage,
+  hasNextPage,
+  isFetchingNextPage,
+  refetch,
+  onItemClick,
+  searchQuery,
+  searchTotal,
+}: {
+  items: readonly MediaItem[];
+  totalCount: number;
+  isLoading: boolean;
+  isError: boolean;
+  error: Error | null;
+  fetchNextPage: () => void;
+  hasNextPage: boolean;
+  isFetchingNextPage: boolean;
+  refetch: () => void;
+  onItemClick: (item: MediaItem) => void;
+  searchQuery: string;
+  searchTotal: number;
+}) {
   const loadMore = useCallback(() => {
     if (hasNextPage && !isFetchingNextPage) {
       fetchNextPage();
@@ -113,7 +163,7 @@ export function ThumbnailGrid({ onItemClick }: ThumbnailGridProps) {
   const { focusIndex, containerRef, handleKeyDown } = useKeyboardNav({
     itemCount: items.length,
     columns,
-    onSelect: () => {}, // Future multi-select
+    onSelect: () => {},
     onOpen: (index) => {
       const item = items[index];
       if (item) onItemClick(item);
@@ -148,20 +198,13 @@ export function ThumbnailGrid({ onItemClick }: ThumbnailGridProps) {
     );
   }
 
-  if (viewMode === 'search' && noResults) {
-    return (
-      <div className="p-6">
-        <p className="text-gray-400 text-sm mb-1">0 results for &ldquo;{searchQuery}&rdquo;</p>
-        <EmptyState message="No media matches your search. Try different keywords." />
-      </div>
-    );
-  }
-
   if (items.length === 0) {
     return (
       <EmptyState message="No media found. Configure watched folders in Settings to start browsing." />
     );
   }
+
+  const inSearchMode = !!searchQuery;
 
   return (
     <div
@@ -173,7 +216,7 @@ export function ThumbnailGrid({ onItemClick }: ThumbnailGridProps) {
       aria-busy={isFetchingNextPage}
     >
       {/* Search results count */}
-      {viewMode === 'search' && (
+      {inSearchMode && (
         <div className="px-3 pt-2 pb-1 text-sm text-gray-400">
           {searchTotal > 0
             ? `${searchTotal} result${searchTotal !== 1 ? 's' : ''} for "${searchQuery}"`
@@ -183,9 +226,9 @@ export function ThumbnailGrid({ onItemClick }: ThumbnailGridProps) {
 
       {/* Screen reader live region */}
       <div aria-live="polite" aria-atomic="true" className="sr-only">
-        {viewMode === 'search'
+        {inSearchMode
           ? `${searchTotal} result${searchTotal !== 1 ? 's' : ''} for "${searchQuery}"`
-          : `Showing ${items.length} of ${browseData.totalCount} media items`}
+          : `Showing ${items.length} of ${totalCount} media items`}
       </div>
 
       <VirtuosoGrid
@@ -210,4 +253,16 @@ export function ThumbnailGrid({ onItemClick }: ThumbnailGridProps) {
       )}
     </div>
   );
+}
+
+export function ThumbnailGrid({ onItemClick }: ThumbnailGridProps) {
+  const viewMode = useAtomValue(mediaViewModeAtom);
+
+  // Conditionally render only the active mode's component so that the
+  // unused hook (useInfiniteMedia or useSearch) is fully unmounted.
+  // This eliminates wasted TanStack Query observer bookkeeping.
+  if (viewMode === 'search') {
+    return <SearchGrid onItemClick={onItemClick} />;
+  }
+  return <BrowseGrid onItemClick={onItemClick} />;
 }
