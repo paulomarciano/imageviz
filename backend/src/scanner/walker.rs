@@ -14,7 +14,7 @@ pub struct FileEntry {
     pub modified_at: String,
 }
 
-use crate::media_types::is_supported_extension;
+use crate::media_types::{is_hidden_path, is_supported_extension};
 
 /// Scan a folder recursively and return all supported media files.
 ///
@@ -31,7 +31,7 @@ pub fn scan_folder(root: &Path) -> Result<Vec<FileEntry>, WalkerError> {
     for entry in WalkDir::new(root)
         .follow_links(false)
         .into_iter()
-        .filter_entry(|e| e.depth() == 0 || !is_hidden(e))
+        .filter_entry(|e| e.depth() == 0 || !is_hidden_path(e.path()))
     {
         let entry = match entry {
             Ok(e) => e,
@@ -89,11 +89,6 @@ pub fn scan_folder(root: &Path) -> Result<Vec<FileEntry>, WalkerError> {
     }
 
     Ok(entries)
-}
-
-/// Check if a directory entry is hidden (name starts with `.`).
-fn is_hidden(entry: &walkdir::DirEntry) -> bool {
-    entry.file_name().to_str().is_some_and(|s| s.starts_with('.'))
 }
 
 /// Convert a SystemTime to ISO 8601 string with sub-second precision.

@@ -1,4 +1,4 @@
-use crate::media_types::{SUPPORTED_EXTENSIONS, is_supported_extension};
+use crate::media_types::{SUPPORTED_EXTENSIONS, is_hidden_path, is_supported_extension};
 use std::path::Path;
 
 #[test]
@@ -58,4 +58,25 @@ fn test_is_supported_extension_rejects_no_extension() {
 #[test]
 fn test_is_supported_extension_empty_extension() {
     assert!(!is_supported_extension(Path::new("file.")));
+}
+
+// -----------------------------------------------------------------------
+// is_hidden_path tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_is_hidden_path_dotfile() {
+    assert!(is_hidden_path(Path::new(".hidden.png")));
+}
+
+#[test]
+fn test_is_hidden_path_dot_directory() {
+    assert!(is_hidden_path(Path::new(".hidden/file.png")));
+    assert!(is_hidden_path(Path::new("dir/.hidden/file.png")));
+}
+
+#[test]
+fn test_is_hidden_path_normal_file() {
+    assert!(!is_hidden_path(Path::new("normal.png")));
+    assert!(!is_hidden_path(Path::new("dir/normal.png")));
 }

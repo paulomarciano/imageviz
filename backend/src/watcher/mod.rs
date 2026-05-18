@@ -79,7 +79,7 @@ impl FileWatcher {
                                 if !is_supported_extension(&de.path) {
                                     return None;
                                 }
-                                if is_hidden(&de.path) {
+                                if is_hidden_path(&de.path) {
                                     return None;
                                 }
 
@@ -146,13 +146,7 @@ impl std::fmt::Debug for FileWatcher {
 // Helper functions
 // ---------------------------------------------------------------------------
 
-use crate::media_types::is_supported_extension;
-
-/// Return `true` if any component of the path starts with a dot (`.`),
-/// indicating a hidden file or directory.
-fn is_hidden(path: &Path) -> bool {
-    path.components().any(|c| c.as_os_str().to_str().is_some_and(|s| s.starts_with('.')))
-}
+use crate::media_types::{is_hidden_path, is_supported_extension};
 
 // ---------------------------------------------------------------------------
 // Tests

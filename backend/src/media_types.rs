@@ -30,6 +30,31 @@ pub fn is_supported_extension(path: &std::path::Path) -> bool {
         .is_some_and(|e| SUPPORTED_EXTENSIONS.contains(&e.to_lowercase().as_str()))
 }
 
+/// Return `true` if any component of `path` starts with a dot (`.`),
+/// indicating a hidden file or directory.
+///
+/// This is the single source of truth for hidden-file detection used by
+/// both the scanner and the file watcher.  Checking all path components
+/// (not just the file name) ensures consistent behaviour: files inside
+/// hidden directories are correctly ignored regardless of whether they
+/// are discovered via a directory walk or an inotify/FSEvent.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::Path;
+/// use imageviz_backend::media_types::is_hidden_path;
+///
+/// assert!(is_hidden_path(Path::new(".hidden.png")));
+/// assert!(is_hidden_path(Path::new(".hidden/file.png")));
+/// assert!(is_hidden_path(Path::new("dir/.hidden/file.png")));
+/// assert!(!is_hidden_path(Path::new("normal.png")));
+/// assert!(!is_hidden_path(Path::new("dir/normal.png")));
+/// ```
+pub fn is_hidden_path(path: &std::path::Path) -> bool {
+    path.components().any(|c| c.as_os_str().to_str().is_some_and(|s| s.starts_with('.')))
+}
+
 #[cfg(test)]
 #[path = "media_types_test.rs"]
 mod tests;

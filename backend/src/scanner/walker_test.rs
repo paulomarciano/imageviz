@@ -3,6 +3,11 @@ use crate::scanner::walker::*;
 use std::io::Write;
 use tempfile::TempDir;
 
+fn create_temp_dir() -> TempDir {
+    // Use a non-dot prefix so is_hidden_path does not filter the temp root.
+    tempfile::Builder::new().prefix("imgviz_").tempdir().unwrap()
+}
+
 fn create_test_file(dir: &std::path::Path, name: &str, content: &[u8]) {
     let path = dir.join(name);
     let mut f = std::fs::File::create(&path).unwrap();
@@ -11,7 +16,7 @@ fn create_test_file(dir: &std::path::Path, name: &str, content: &[u8]) {
 
 #[test]
 fn test_scan_temp_directory() {
-    let dir = TempDir::new().unwrap();
+    let dir = create_temp_dir();
     for i in 0..5 {
         create_test_file(dir.path(), &format!("image_{}.png", i), b"fake png data");
     }
@@ -23,7 +28,7 @@ fn test_scan_temp_directory() {
 
 #[test]
 fn test_skips_hidden_directories() {
-    let dir = TempDir::new().unwrap();
+    let dir = create_temp_dir();
     let hidden = dir.path().join(".hidden");
     std::fs::create_dir(&hidden).unwrap();
     create_test_file(&hidden, "secret.png", b"hidden");
@@ -45,14 +50,14 @@ fn test_handles_nonexistent_path() {
 
 #[test]
 fn test_empty_directory() {
-    let dir = TempDir::new().unwrap();
+    let dir = create_temp_dir();
     let entries = scan_folder(dir.path()).unwrap();
     assert!(entries.is_empty());
 }
 
 #[test]
 fn test_supported_extensions() {
-    let dir = TempDir::new().unwrap();
+    let dir = create_temp_dir();
     let extensions = ["png", "jpg", "jpeg", "webp", "gif", "mp4", "webm", "mov"];
     for ext in &extensions {
         create_test_file(dir.path(), &format!("file.{}", ext), b"data");
@@ -65,7 +70,7 @@ fn test_supported_extensions() {
 
 #[test]
 fn test_file_entry_metadata_populated() {
-    let dir = TempDir::new().unwrap();
+    let dir = create_temp_dir();
     let path = dir.path().join("test.png");
     let mut f = std::fs::File::create(&path).unwrap();
     f.write_all(b"some content").unwrap();

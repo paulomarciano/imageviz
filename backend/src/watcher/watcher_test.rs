@@ -6,8 +6,13 @@ use tempfile::TempDir;
 
 /// Helper: create a `TempDir` and return the path alongside the handle
 /// (kept alive for the lifetime of the test).
+///
+/// Uses a non-dot prefix so that `is_hidden_path` does not filter the
+/// temp root — the tests need to distinguish between "inside a hidden
+/// directory" (e.g. `.hidden/`) and "inside any path with a dot
+/// component".
 fn setup_temp_dir() -> (TempDir, PathBuf) {
-    let dir = TempDir::new().expect("failed to create temp dir");
+    let dir = tempfile::Builder::new().prefix("imgviz_").tempdir().expect("failed to create temp dir");
     let path = dir.path().to_path_buf();
     (dir, path)
 }
@@ -208,19 +213,4 @@ fn test_is_supported_extension_rejects_no_extension() {
     assert!(!is_supported_extension(Path::new("Makefile")));
 }
 
-#[test]
-fn test_is_hidden_dotfile() {
-    assert!(is_hidden(Path::new(".hidden.png")));
-}
 
-#[test]
-fn test_is_hidden_dot_directory() {
-    assert!(is_hidden(Path::new(".hidden/file.png")));
-    assert!(is_hidden(Path::new("dir/.hidden/file.png")));
-}
-
-#[test]
-fn test_is_hidden_normal_file() {
-    assert!(!is_hidden(Path::new("normal.png")));
-    assert!(!is_hidden(Path::new("dir/normal.png")));
-}

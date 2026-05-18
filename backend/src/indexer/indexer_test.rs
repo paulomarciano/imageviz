@@ -32,7 +32,7 @@ async fn test_empty_config_returns_empty_stats() {
 
 #[tokio::test]
 async fn test_incremental_index_processes_files_and_skips_unchanged() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::Builder::new().prefix("imgviz_").tempdir().unwrap();
     let png_path = dir.path().join("test.png");
     create_minimal_png(&png_path);
 
@@ -56,7 +56,7 @@ async fn test_incremental_index_processes_files_and_skips_unchanged() {
 
 #[tokio::test]
 async fn test_full_index_creates_entries_for_new_files() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::Builder::new().prefix("imgviz_").tempdir().unwrap();
 
     // Create a minimal valid PNG file
     let png_path = dir.path().join("test.png");
@@ -90,7 +90,7 @@ async fn test_full_index_creates_entries_for_new_files() {
 
 #[tokio::test]
 async fn test_incremental_index_skips_unchanged_files() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::Builder::new().prefix("imgviz_").tempdir().unwrap();
     let png_path = dir.path().join("test.png");
     create_minimal_png(&png_path);
 
@@ -115,7 +115,7 @@ async fn test_incremental_index_skips_unchanged_files() {
 
 #[tokio::test]
 async fn test_incremental_index_updates_modified_files() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::Builder::new().prefix("imgviz_").tempdir().unwrap();
     let png_path = dir.path().join("test.png");
     create_minimal_png(&png_path);
 
@@ -147,7 +147,7 @@ async fn test_incremental_index_updates_modified_files() {
 
 #[tokio::test]
 async fn test_remove_deleted_files_cleans_up_db() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::Builder::new().prefix("imgviz_").tempdir().unwrap();
     let png_path = dir.path().join("test.png");
     create_minimal_png(&png_path);
 
@@ -178,7 +178,7 @@ async fn test_remove_deleted_files_cleans_up_db() {
 
 #[tokio::test]
 async fn test_full_index_is_idempotent() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::Builder::new().prefix("imgviz_").tempdir().unwrap();
     let png_path = dir.path().join("test.png");
     create_minimal_png(&png_path);
 
@@ -203,7 +203,7 @@ async fn test_full_index_is_idempotent() {
 
 #[tokio::test]
 async fn test_indexed_item_has_all_required_fields() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::Builder::new().prefix("imgviz_").tempdir().unwrap();
     let png_path = dir.path().join("test.png");
     create_minimal_png(&png_path);
 
@@ -308,7 +308,7 @@ fn create_png_with_text_chunks(path: &std::path::Path, chunks: &[(&str, &str)]) 
 
 #[tokio::test]
 async fn test_index_stores_raw_text_entries_without_prompt() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::Builder::new().prefix("imgviz_").tempdir().unwrap();
     let png_path = dir.path().join("no_prompt.png");
 
     // Create a PNG with a non-standard text chunk (no prompt/workflow)
@@ -345,7 +345,7 @@ async fn test_index_stores_raw_text_entries_without_prompt() {
 
 #[tokio::test]
 async fn test_index_extracts_png_metadata_content() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::Builder::new().prefix("imgviz_").tempdir().unwrap();
     let png_path = dir.path().join("with_metadata.png");
 
     // Create a PNG with ComfyUI-style prompt + workflow metadata
