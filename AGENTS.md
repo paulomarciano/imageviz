@@ -35,7 +35,8 @@ Frontend package manager is **npm** (not pnpm/yarn).
 
 **Prettier** (`frontend/.prettierrc`): `singleQuote`, `trailingComma: "all"`, `semi`, `printWidth: 100`, `tabWidth: 2`.
 
-**ESLint** (`frontend/eslint.config.mjs`): `typescript-eslint` recommended. `no-unused-vars` is error, `no-explicit-any` is warn.
+**ESLint** (`frontend/eslint.config.mjs`): `typescript-eslint` recommended. `no-unused-vars` is error, `no-explicit-any` is warn. Ignores `dist/`, `node_modules/`, `*.config.*`.
+**TypeScript** (`frontend/tsconfig.json`): `strict: true` with `noUncheckedIndexedAccess` — array access returns `T | undefined`.
 
 ## Environment Variables
 
@@ -51,8 +52,10 @@ Where `{data_dir}` = `$XDG_DATA_HOME/imageviz` (Linux), `~/Library/Application S
 ## Architecture Notes
 
 - **Route assembly**: `backend/src/lib.rs::health_router()` builds a minimal router with only the health endpoint. `main.rs` nests stateful routes (config, media, search, events, stats) on top of it. All routes are under `/api/v1`. Integration tests reuse `health_router()` + the same nesting pattern.
-- **DB lock strategy**: Write-heavy operations use `Arc<Mutex<Connection>>` with explicit lock-and-release cycles. The Tantivy reindex opens a **separate read-only connection** (WAL allows concurrent readers) so the API stays responsive during startup.
+- **DB lock strategy**: Uses an `r2d2` connection pool (max 10 connections, WAL-compatible, 5s busy timeout). The Tantivy reindex opens a **separate read-only connection** (WAL allows concurrent readers) so the API stays responsive during startup.
 - **Thumbnail generation**: `spawn_blocking` for CPU-bound image work. Never blocks the async runtime.
+- **Thumbnail concurrency**: A `DashMap` of per-key mutexes prevents duplicate generation when the same thumbnail is requested concurrently.
+- **Cache eviction**: Background timer runs every 5 minutes. An inline fire-and-forget spawn handles cache bursts.
 - **File serving**: `tokio::fs::File` + streaming — never loads a full file into memory. Range requests supported for video seeking.
 - **File watcher**: `notify` + `notify-debouncer-mini` with 500ms debounce. In-memory `mpsc` channel decouples watcher from indexer. Must be kept alive (bind to `let _watcher = ...`).
 
@@ -67,7 +70,7 @@ Where `{data_dir}` = `$XDG_DATA_HOME/imageviz` (Linux), `~/Library/Application S
 - **Frontend path alias**: `@/` maps to `./src/` (configured in both `vite.config.ts` and `tsconfig.json`). Use `import { ... } from '@/...'`.
 - **Fixture generation**: Run `./scripts/generate-fixtures.sh` before running fixture-dependent tests (`cargo test -- --ignored`). Requires **ffmpeg** on PATH. Generates PNGs with ComfyUI-style tEXt chunks and short video files.
 - **Test fixture files** (`.png`, `.webm`, `.mp4`, `.jpg`) are gitignored — only `.gitkeep` is committed.
-- **E2E tests** (Playwright): in `frontend/e2e/`. Run with `npx playwright test` from `frontend/`. Requires `npx playwright install chromium` once. Playwright auto-starts both servers via `webServer` config in `playwright.config.ts`.
+- **E2E tests** (Playwright): in `frontend/e2e/`. Run with `npx playwright test` from `frontend/`. Requires `npx playwright install chromium` once. Playwright auto-starts both servers via `webServer` config in `playwright.config.ts`. Uses `workers: 1` (serial execution, shared backend state) with `retries: 1`.
 
 ## TDD Workflow (Mandatory)
 
@@ -80,11 +83,12 @@ Per task, in order:
 
 ## CI Pipeline (GitHub Actions)
 
-Runs on push and PR to `main`. Four parallel jobs (15-min timeout each):
-1. **backend-lint**: `cargo fmt --check` → `cargo clippy -- -D warnings`
-2. **backend-test**: `cargo test` (actions-rust-lang/setup-rust-toolchain, Swatinem/rust-cache)
-3. **frontend-lint**: `npm ci` → `npx prettier --check .` → `npx eslint .`
-4. **frontend-test**: `npm ci` → `npx tsc --noEmit` → `npx vitest run`
+Runs on push and PR to `main`. Five parallel jobs:
+1. **backend-lint** (15m): `cargo fmt --check` → `cargo clippy -- -D warnings`
+2. **backend-test** (15m): `cargo test` (ffmpeg installed via apt)
+3. **frontend-lint** (15m): `npm ci` → `npx prettier --check .` → `npx eslint .`
+4. **frontend-test** (15m): `npm ci` → `npx tsc --noEmit` → `npx vitest run`
+5. **frontend-e2e** (30m): `npm ci` → `cd ../scripts && bash generate-fixtures.sh` → `npx playwright install chromium` → `npx playwright test` (Playwright auto-starts backend via webServer)
 
 ## Git Conventions
 
