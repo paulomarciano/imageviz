@@ -29,6 +29,7 @@ notify-debouncer-mini = "0.7"
 r2d2 = "0.8"
 dashmap = "6"
 fs2 = "0.4"
+console-subscriber = "0.4"
 
 [profile.release]
 lto = "fat"

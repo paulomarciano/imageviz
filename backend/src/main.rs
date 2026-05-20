@@ -2,10 +2,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 
+use console_subscriber::ConsoleLayer;
 use tokio::signal;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tower_http::cors::CorsLayer;
+use tracing_subscriber::{layer::SubscriberExt, prelude::*};
 
 use r2d2::Pool;
 
@@ -29,13 +31,29 @@ use imageviz_backend::watcher::handler::SseEvent;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "imageviz_backend=info,tower_http=info".into()),
-        )
-        .compact()
-        .init();
+    // Register tokio-console subscriber before the runtime starts so that
+    // every task spawned from this point on is instrumented.
+    // This is a no-op when TOKIO_CONSOLE_ADDR is not set (zero overhead at rest).
+    let (console_layer, console_server) = ConsoleLayer::new();
+
+    // The console server must be kept alive for the duration of the program.
+    // We spawn it on the runtime so it runs independently of the main task.
+    tokio::spawn(async move {
+        if let Err(e) = console_server.serve().await {
+            tracing::warn!(error = %e, "tokio-console server error");
+        }
+    });
+
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "imageviz_backend=info,tower_http=info".into());
+
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stdout)
+        .with_ansi(true)
+        .with_target(false)
+        .compact();
+
+    tracing_subscriber::registry().with(env_filter).with(fmt_layer).with(console_layer).init();
 
     let settings = imageviz_backend::config::settings::Settings::from_env();
 
