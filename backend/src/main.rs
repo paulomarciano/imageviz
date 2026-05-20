@@ -18,6 +18,7 @@ use imageviz_backend::indexer::progress::ProgressTracker;
 use imageviz_backend::middleware::logging::logging_layer;
 use imageviz_backend::middleware::security::apply_security_headers;
 use imageviz_backend::middleware::timeout;
+use imageviz_backend::profiler::ProfilerState;
 use imageviz_backend::routes::config::ConfigState;
 use imageviz_backend::routes::events::EventsState;
 use imageviz_backend::routes::media::MediaState;
@@ -205,6 +206,7 @@ async fn main() {
                 3600,
             ),
         )
+        .nest("/debug/pprof", ProfilerState::new().router())
         .layer(logging_layer())
         .layer(CorsLayer::permissive());
 

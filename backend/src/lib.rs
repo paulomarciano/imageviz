@@ -4,6 +4,7 @@ pub mod indexer;
 pub mod media_types;
 pub mod metadata;
 pub mod middleware;
+pub mod profiler;
 pub mod routes;
 pub mod scanner;
 pub mod search;

@@ -30,6 +30,7 @@ r2d2 = "0.8"
 dashmap = "6"
 fs2 = "0.4"
 console-subscriber = "0.4"
+pprof = { version = "0.15", default-features = false, features = ["prost-codec", "flamegraph"] }
 
 [profile.release]
 lto = "fat"
