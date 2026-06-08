@@ -346,7 +346,7 @@ async fn test_search_pagination_has_more_flag() {
     assert_eq!(body["meta"]["total"], 15, "total should reflect all 15 matching docs");
     assert_eq!(body["meta"]["has_more"], true);
     assert!(body["meta"]["next_cursor"].is_string());
-    assert!(body["meta"]["next_cursor_id"].is_string());
+    assert!(body["meta"]["next_cursor_id"].is_null());
 }
 
 #[tokio::test]
@@ -438,7 +438,7 @@ async fn test_search_limit_capped_at_500() {
     assert_eq!(body["meta"]["total"], 600, "total should reflect all 600 matching docs");
     assert_eq!(body["meta"]["has_more"], true);
     assert!(body["meta"]["next_cursor"].is_string());
-    assert!(body["meta"]["next_cursor_id"].is_string());
+    assert!(body["meta"]["next_cursor_id"].is_null());
 }
 
 // ---------------------------------------------------------------------------
@@ -524,6 +524,191 @@ async fn test_search_invalid_query_syntax_does_not_crash() {
         response.status() == StatusCode::OK || response.status() == StatusCode::BAD_REQUEST,
         "malformed query should return either 200 or 400, never 500"
     );
+}
+
+// ---------------------------------------------------------------------------
+// AND vs OR: conjunction behaviour by sort mode
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_search_and_semantics_in_recency_mode() {
+    let app = common::create_test_app_with_search();
+
+    // Item A: contains "dragon" but NOT "castle"
+    seed_item(
+        &app,
+        "uuid-dragon-only",
+        "dragon.png",
+        "fantasy/dragon.png",
+        "image/png",
+        r#"{"prompt":"a majestic dragon flying over mountains"}"#,
+        Some(1024),
+        Some(768),
+        20480,
+        "2026-03-01T10:00:00Z",
+    )
+    .await;
+
+    // Item B: contains "castle" but NOT "dragon"
+    seed_item(
+        &app,
+        "uuid-castle-only",
+        "castle.png",
+        "fantasy/castle.png",
+        "image/png",
+        r#"{"prompt":"a medieval castle at sunset"}"#,
+        Some(800),
+        Some(600),
+        15360,
+        "2026-03-02T10:00:00Z",
+    )
+    .await;
+
+    app.index_manager.commit().expect("commit Tantivy");
+
+    let response = app
+        .router
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/search?q=dragon+castle&sort=recency")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    let data = body["data"].as_array().unwrap();
+    assert!(
+        data.is_empty(),
+        "AND semantics in recency mode: no doc contains both 'dragon' AND 'castle'"
+    );
+}
+
+#[tokio::test]
+async fn test_search_or_semantics_in_score_mode() {
+    let app = common::create_test_app_with_search();
+
+    // Item A: contains "dragon" but NOT "castle"
+    seed_item(
+        &app,
+        "uuid-dragon-only",
+        "dragon.png",
+        "fantasy/dragon.png",
+        "image/png",
+        r#"{"prompt":"a majestic dragon flying over mountains"}"#,
+        Some(1024),
+        Some(768),
+        20480,
+        "2026-03-01T10:00:00Z",
+    )
+    .await;
+
+    // Item B: contains "castle" but NOT "dragon"
+    seed_item(
+        &app,
+        "uuid-castle-only",
+        "castle.png",
+        "fantasy/castle.png",
+        "image/png",
+        r#"{"prompt":"a medieval castle at sunset"}"#,
+        Some(800),
+        Some(600),
+        15360,
+        "2026-03-02T10:00:00Z",
+    )
+    .await;
+
+    app.index_manager.commit().expect("commit Tantivy");
+
+    let response = app
+        .router
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/search?q=dragon+castle&sort=score")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    let data = body["data"].as_array().unwrap();
+    assert_eq!(
+        data.len(),
+        2,
+        "OR semantics in score mode: both 'dragon' and 'castle' docs should match"
+    );
+}
+
+#[tokio::test]
+async fn test_search_and_semantics_with_matching_document() {
+    let app = common::create_test_app_with_search();
+
+    // Item with BOTH terms in its metadata
+    seed_item(
+        &app,
+        "uuid-dragon-castle",
+        "dragon_castle.png",
+        "fantasy/dragon_castle.png",
+        "image/png",
+        r#"{"prompt":"a dragon flying over a castle at sunset"}"#,
+        Some(1024),
+        Some(768),
+        20480,
+        "2026-03-01T10:00:00Z",
+    )
+    .await;
+
+    // Item with only one term
+    seed_item(
+        &app,
+        "uuid-dragon-only",
+        "dragon.png",
+        "fantasy/dragon.png",
+        "image/png",
+        r#"{"prompt":"a majestic dragon"}"#,
+        Some(800),
+        Some(600),
+        15360,
+        "2026-03-02T10:00:00Z",
+    )
+    .await;
+
+    app.index_manager.commit().expect("commit Tantivy");
+
+    let response = app
+        .router
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/search?q=dragon+castle&sort=recency")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    let data = body["data"].as_array().unwrap();
+    assert_eq!(
+        data.len(),
+        1,
+        "AND semantics: only doc with both 'dragon' AND 'castle' should match"
+    );
+    assert_eq!(data[0]["id"], "uuid-dragon-castle");
+    assert_eq!(body["meta"]["total"], 1);
 }
 
 #[tokio::test]

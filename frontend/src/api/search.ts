@@ -10,12 +10,11 @@
 import { get } from './client.ts';
 import type { MediaItem, PaginatedResponse, SearchParams } from '../types/index.ts';
 
-/** Execute a full-text search with cursor-based pagination. */
+/** Execute a full-text search with offset-based pagination. */
 export function searchMedia(params: SearchParams): Promise<PaginatedResponse<MediaItem>> {
   return get('/search', {
     q: params.q,
     cursor: params.cursor,
-    cursor_id: params.cursor_id,
     limit: params.limit,
     mime_type: params.mime_type,
     sort: params.sort,

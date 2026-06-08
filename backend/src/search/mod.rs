@@ -9,6 +9,10 @@ use std::sync::Mutex;
 use tantivy::schema::Schema;
 use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term};
 
+/// Schema version — bump this when the Tantivy schema changes.
+/// Old indices with a different version are deleted and rebuilt from SQLite.
+const SCHEMA_VERSION: u32 = 1;
+
 // ---------------------------------------------------------------------------
 // IndexManager – public API
 // ---------------------------------------------------------------------------
@@ -32,6 +36,11 @@ impl IndexManager {
     /// is already present (detected by `meta.json`) it is opened; otherwise a
     /// fresh index is initialised.
     ///
+    /// A `.schema_version` file is maintained alongside the index.  When the
+    /// schema version changes, the old index directory is removed and a fresh
+    /// index is created.  The data is rebuilt from SQLite on the next full
+    /// reindex.
+    ///
     /// `writer_memory` controls the Tantivy writer memory budget in bytes.
     /// Use larger values (e.g. 200 MB) during full reindex for fewer segments
     /// and faster indexing, and smaller values (e.g. 50 MB) during incremental
@@ -45,6 +54,19 @@ impl IndexManager {
         // Ensure the directory exists before opening the index.
         std::fs::create_dir_all(path)?;
 
+        let version_file = path.join(".schema_version");
+        let needs_recreate = Self::read_schema_version(&version_file) != Some(SCHEMA_VERSION);
+
+        if needs_recreate {
+            // Remove the old index (if any) — it will be rebuilt from SQLite.
+            if path.join("meta.json").exists() {
+                tracing::info!("Tantivy schema version changed → removing old index at {:?}", path);
+                std::fs::remove_dir_all(path)?;
+                std::fs::create_dir_all(path)?;
+            }
+            Self::write_schema_version(&version_file, SCHEMA_VERSION)?;
+        }
+
         let index = if path.join("meta.json").exists() {
             Index::open_in_dir(path)?
         } else {
@@ -57,6 +79,15 @@ impl IndexManager {
         let writer = Some(index.writer(writer_memory)?);
 
         Ok(Self { index, schema, reader, writer: Mutex::new(writer) })
+    }
+
+    fn read_schema_version(path: &Path) -> Option<u32> {
+        std::fs::read_to_string(path).ok().and_then(|s| s.trim().parse().ok())
+    }
+
+    fn write_schema_version(path: &Path, version: u32) -> Result<(), Box<dyn std::error::Error>> {
+        std::fs::write(path, version.to_string())?;
+        Ok(())
     }
 
     /// Add a document to the index.

@@ -84,6 +84,22 @@ pub fn validate_cursor_id(cursor_id: Option<&str>) -> Result<(), ValidationError
     Ok(())
 }
 
+/// Validate a numeric `cursor` query parameter for offset-based pagination.
+///
+/// Used by the search endpoint.  The cursor represents the number of items
+/// already shown (cumulative offset).  Must be a non-negative integer.
+pub fn validate_numeric_cursor(cursor: Option<&str>) -> Result<(), ValidationError> {
+    if let Some(c) = cursor
+        && !c.is_empty()
+        && c.parse::<u32>().is_err()
+    {
+        return Err(ValidationError::new(
+            "cursor must be a non-negative integer (cumulative offset)",
+        ));
+    }
+    Ok(())
+}
+
 /// Validate the search query `q` parameter.
 pub fn validate_search_query(q: &Option<String>) -> Result<(), ValidationError> {
     match q {
@@ -210,6 +226,26 @@ mod tests {
     #[test]
     fn test_validate_cursor_id_none() {
         assert!(validate_cursor_id(None).is_ok());
+    }
+
+    #[test]
+    fn test_validate_numeric_cursor_valid() {
+        assert!(validate_numeric_cursor(Some("0")).is_ok());
+        assert!(validate_numeric_cursor(Some("10")).is_ok());
+        assert!(validate_numeric_cursor(Some("999999")).is_ok());
+    }
+
+    #[test]
+    fn test_validate_numeric_cursor_empty_or_none() {
+        assert!(validate_numeric_cursor(Some("")).is_ok());
+        assert!(validate_numeric_cursor(None).is_ok());
+    }
+
+    #[test]
+    fn test_validate_numeric_cursor_invalid() {
+        assert!(validate_numeric_cursor(Some("-1")).is_err());
+        assert!(validate_numeric_cursor(Some("abc")).is_err());
+        assert!(validate_numeric_cursor(Some("3.14")).is_err());
     }
 
     #[test]

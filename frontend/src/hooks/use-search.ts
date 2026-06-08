@@ -39,7 +39,6 @@ export function useSearch(
         q: query,
         limit,
         cursor: cursor?.cursor,
-        cursor_id: cursor?.cursor_id,
         mime_type: mimeType,
         sort,
       });

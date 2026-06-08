@@ -382,7 +382,7 @@ async fn test_search_limit_capped_at_500() {
     );
     assert_eq!(body["meta"]["has_more"], true);
     assert!(body["meta"]["next_cursor"].is_string());
-    assert!(body["meta"]["next_cursor_id"].is_string());
+    assert!(body["meta"]["next_cursor_id"].is_null());
 }
 
 // -----------------------------------------------------------------------
@@ -432,8 +432,120 @@ async fn test_search_pagination_has_more() {
         "total should reflect all 15 matching docs, not page size"
     );
     assert_eq!(body["meta"]["has_more"], true);
-    assert!(body["meta"]["next_cursor"].is_string());
-    assert!(body["meta"]["next_cursor_id"].is_string());
+    assert_eq!(body["meta"]["next_cursor"], "10", "next_cursor should be the numeric offset");
+    assert!(body["meta"]["next_cursor_id"].is_null());
+}
+
+/// Verify that offset-based pagination returns distinct, non-overlapping pages.
+#[tokio::test]
+async fn test_search_cursor_pagination_distinct_pages() {
+    let (_dir, state) = test_state();
+
+    // Insert 25 items with distinct created_at timestamps so recency sort
+    // produces a deterministic order for pagination to work correctly.
+    for i in 0..25 {
+        let id = format!("uuid-distinct-{i:04}");
+        seed_item(
+            &state,
+            &id,
+            &format!("item_{i}.png"),
+            &format!("items/item_{i}.png"),
+            "image/png",
+            r#"{"tag":"distinct"}"#,
+            None,
+            None,
+            1024,
+            &format!("2026-01-{:02}T10:00:00Z", i + 1), // distinct dates
+        )
+        .await;
+    }
+
+    let app = routes().with_state(state);
+
+    // Page 1: first 10 items (newest first → dates 25 through 16)
+    let response = app
+        .clone()
+        .clone()
+        .oneshot(Request::builder().uri("/search?q=distinct&limit=10").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+    let page1_ids: std::collections::HashSet<String> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(page1_ids.len(), 10);
+    assert_eq!(body["meta"]["has_more"], true);
+    let cursor = body["meta"]["next_cursor"].as_str().unwrap().to_string();
+
+    // Page 2: items 11–20
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&format!("/search?q=distinct&limit=10&cursor={cursor}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+    let page2_ids: std::collections::HashSet<String> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(page2_ids.len(), 10);
+    assert_eq!(body["meta"]["has_more"], true);
+    assert_eq!(body["meta"]["next_cursor"], "20");
+
+    // No overlap between pages
+    let overlap: Vec<_> = page1_ids.intersection(&page2_ids).collect();
+    assert!(
+        overlap.is_empty(),
+        "Pages must not overlap, but found {} duplicate IDs: {:?}",
+        overlap.len(),
+        overlap
+    );
+
+    // Page 3: remaining 5 items
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(&format!("/search?q=distinct&limit=10&cursor=20"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+    let page3_ids: std::collections::HashSet<String> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(page3_ids.len(), 5, "page 3 should have 5 remaining items");
+    assert_eq!(body["meta"]["has_more"], false);
+    assert!(body["meta"]["next_cursor"].is_null());
+
+    // No overlap with page 1 or 2
+    let overlap: Vec<_> = page3_ids.intersection(&page1_ids).collect();
+    assert!(overlap.is_empty(), "Page 3 should not overlap with page 1");
+    let overlap: Vec<_> = page3_ids.intersection(&page2_ids).collect();
+    assert!(overlap.is_empty(), "Page 3 should not overlap with page 2");
 }
 
 // -----------------------------------------------------------------------
@@ -897,6 +1009,226 @@ async fn test_search_sort_by_score_preserves_bm25_order() {
     assert_eq!(data.len(), 2);
     assert_eq!(data[0]["id"], "uuid-high-score", "score sort should put higher BM25 score first");
     assert_eq!(data[1]["id"], "uuid-low-score", "score sort puts lower score second");
+}
+
+// -----------------------------------------------------------------------
+// AND vs OR: conjunction behaviour by sort mode
+// -----------------------------------------------------------------------
+
+/// When sort=recency (Newest), multi-term queries use AND semantics —
+/// only documents containing ALL terms should match.
+#[tokio::test]
+async fn test_search_and_semantics_in_recency_mode() {
+    let (_dir, state) = test_state();
+
+    // Item A: contains "dragon" but NOT "castle"
+    seed_item(
+        &state,
+        "uuid-dragon-only",
+        "dragon.png",
+        "fantasy/dragon.png",
+        "image/png",
+        r#"{"prompt":"a majestic dragon flying over mountains"}"#,
+        Some(1024),
+        Some(768),
+        20480,
+        "2026-03-01T10:00:00Z",
+    )
+    .await;
+
+    // Item B: contains "castle" but NOT "dragon"
+    seed_item(
+        &state,
+        "uuid-castle-only",
+        "castle.png",
+        "fantasy/castle.png",
+        "image/png",
+        r#"{"prompt":"a medieval castle at sunset"}"#,
+        Some(800),
+        Some(600),
+        15360,
+        "2026-03-02T10:00:00Z",
+    )
+    .await;
+
+    let app = routes().with_state(state);
+
+    // AND semantics: no single document contains BOTH "dragon" AND "castle".
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/search?q=dragon+castle&sort=recency")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    let data = body["data"].as_array().unwrap();
+    assert!(
+        data.is_empty(),
+        "AND semantics in recency mode: no doc contains both 'dragon' AND 'castle'"
+    );
+}
+
+/// When sort=score (Relevance), multi-term queries keep the default OR semantics —
+/// documents containing ANY of the terms should match.
+#[tokio::test]
+async fn test_search_or_semantics_in_score_mode() {
+    let (_dir, state) = test_state();
+
+    // Item A: contains "dragon" but NOT "castle"
+    seed_item(
+        &state,
+        "uuid-dragon-only",
+        "dragon.png",
+        "fantasy/dragon.png",
+        "image/png",
+        r#"{"prompt":"a majestic dragon flying over mountains"}"#,
+        Some(1024),
+        Some(768),
+        20480,
+        "2026-03-01T10:00:00Z",
+    )
+    .await;
+
+    // Item B: contains "castle" but NOT "dragon"
+    seed_item(
+        &state,
+        "uuid-castle-only",
+        "castle.png",
+        "fantasy/castle.png",
+        "image/png",
+        r#"{"prompt":"a medieval castle at sunset"}"#,
+        Some(800),
+        Some(600),
+        15360,
+        "2026-03-02T10:00:00Z",
+    )
+    .await;
+
+    let app = routes().with_state(state);
+
+    // OR semantics: documents containing either term should match.
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/search?q=dragon+castle&sort=score")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    let data = body["data"].as_array().unwrap();
+    assert_eq!(
+        data.len(),
+        2,
+        "OR semantics in score mode: both 'dragon' and 'castle' docs should match"
+    );
+}
+
+/// When sort=recency, the default mode (no explicit sort param) should also
+/// use AND semantics.
+#[tokio::test]
+async fn test_search_and_semantics_in_default_recency_mode() {
+    let (_dir, state) = test_state();
+
+    // Item A: contains "dragon" but NOT "castle"
+    seed_item(
+        &state,
+        "uuid-dragon-only",
+        "dragon.png",
+        "fantasy/dragon.png",
+        "image/png",
+        r#"{"prompt":"a dragon"}"#,
+        None,
+        None,
+        1024,
+        "2026-01-01T00:00:00Z",
+    )
+    .await;
+
+    // Item B: contains "castle" but NOT "dragon"
+    seed_item(
+        &state,
+        "uuid-castle-only",
+        "castle.png",
+        "fantasy/castle.png",
+        "image/png",
+        r#"{"prompt":"a castle"}"#,
+        None,
+        None,
+        1024,
+        "2026-01-02T00:00:00Z",
+    )
+    .await;
+
+    let app = routes().with_state(state);
+
+    // No sort param → defaults to recency → AND semantics
+    let response = app
+        .oneshot(Request::builder().uri("/search?q=dragon+castle").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    let data = body["data"].as_array().unwrap();
+    assert!(data.is_empty(), "default sort (=recency) should use AND: no doc contains both terms");
+}
+
+/// A single-term query should behave identically regardless of sort mode —
+/// AND vs OR makes no difference for one term.
+#[tokio::test]
+async fn test_search_single_term_unaffected_by_sort_mode() {
+    let (_dir, state) = test_state();
+
+    seed_item(
+        &state,
+        "uuid-dragon",
+        "dragon.png",
+        "fantasy/dragon.png",
+        "image/png",
+        r#"{"prompt":"a dragon"}"#,
+        None,
+        None,
+        1024,
+        "2026-01-01T00:00:00Z",
+    )
+    .await;
+
+    let app = routes().with_state(state);
+
+    // Single-term query with recency → should still match (same as OR)
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder().uri("/search?q=dragon&sort=recency").body(Body::empty()).unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(body["data"].as_array().unwrap().len(), 1);
+    assert_eq!(body["meta"]["total"], 1);
+    assert_eq!(body["meta"]["query"], "dragon");
 }
 
 // -----------------------------------------------------------------------

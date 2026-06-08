@@ -5,14 +5,17 @@
 //! enriched with full records from SQLite and returned in the same list-view
 //! format as the media listing endpoint.
 //!
-//! # Cursor Pagination
+//! # Offset-based Pagination
 //!
-//! Tantivy score ordering is inherently versioned, so cursors are best-effort:
-//! we fetch `limit + 1` documents and return the last item's `created_at` /
-//! `id` as the cursor.  Subsequent requests that include these cursors are
-//! **not** re-applied to the Tantivy query (Tantivy does not natively support
-//! cursor-based pagination across score-ordered results); the cursors are
-//! provided so that the caller can implement client-side offset if needed.
+//! The `cursor` parameter is a numeric offset (cumulative count of items shown).
+//! The backend uses Tantivy's `and_offset` to skip past already-seen results.
+//! `has_more` is determined by requesting `limit + 1` items: if the +1 item
+//! exists, there are more pages.  `next_cursor` is `offset + returned_count`.
+//!
+//! Sort order:
+//! - `"recency"` (default): `order_by_fast_field("created_at", Desc)` +
+//!   tiebreaker re-sort by `(created_at DESC, id DESC)` after SQLite enrichment.
+//! - `"score"`: Tantivy BM25 relevance with `order_by_score`.
 
 use axum::{
     Router,
@@ -27,6 +30,7 @@ use crate::db::SqliteConnectionManager;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
+use tantivy::SegmentReader;
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema::Value as TantivyValue;
@@ -51,23 +55,17 @@ pub struct SearchState {
 
 /// Search query parameters.
 ///
-/// `cursor` and `cursor_id` are accepted for API compatibility with the media
-/// listing endpoint, but are **not** applied to the Tantivy query (Tantivy
-/// score ordering is inherently versioned and does not support cursor-based
-/// pagination across score-ordered results).  These fields are returned in
-/// the response as `next_cursor` / `next_cursor_id` for client-side offset
-/// tracking (see [`getNextPageParam`] in the frontend).
+/// `cursor` is a numeric offset representing the cumulative count of items
+/// already shown.  The backend uses Tantivy's `and_offset` to skip past
+/// already-seen results.  When absent, defaults to 0 (first page).
 #[derive(Deserialize, Default)]
 struct SearchParams {
     q: Option<String>,
     /// Maximum items per page (default 100, max 500).
     #[serde(default = "default_limit")]
     limit: u32,
-    /// Opaque cursor for pagination — accepted but not applied to Tantivy
-    /// (score ordering is versioned).  Reserved for client-side tracking.
+    /// Numeric cursor (cumulative offset) for pagination.
     cursor: Option<String>,
-    /// Tiebreaker cursor: UUID of the last item — accepted but not applied.
-    cursor_id: Option<String>,
     /// MIME type filter (e.g. `image/%`, `video/%`) — SQL LIKE pattern.
     mime_type: Option<String>,
     /// Sort order — `"recency"` (newest first, default) or `"score"` (BM25 relevance).
@@ -95,18 +93,22 @@ pub fn routes() -> Router<Arc<SearchState>> {
 // Handler
 // ---------------------------------------------------------------------------
 
-/// GET /api/v1/search?q=<query>&limit=<n>&cursor=<cursor>&cursor_id=<id>
+/// GET /api/v1/search?q=<query>&limit=<n>&cursor=<offset>&mime_type=<type>&sort=<order>
 async fn search_handler(
     State(state): State<Arc<SearchState>>,
     Query(params): Query<SearchParams>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     validation::validate_search_query(&params.q)?;
     validation::validate_limit(params.limit)?;
-    validation::validate_cursor(params.cursor.as_deref())?;
-    validation::validate_cursor_id(params.cursor_id.as_deref())?;
+    validation::validate_numeric_cursor(params.cursor.as_deref())?;
 
     let query_str = params.q.as_ref().unwrap().trim().to_string();
     let limit = params.limit as usize;
+    let offset: usize = params
+        .cursor
+        .as_deref()
+        .and_then(|c| if c.is_empty() { None } else { c.parse().ok() })
+        .unwrap_or(0);
 
     // ---- Search Tantivy ----
     let schema = state.index_manager.schema();
@@ -122,10 +124,18 @@ async fn search_handler(
         (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
     })?;
 
-    let query_parser = QueryParser::for_index(
+    let mut query_parser = QueryParser::for_index(
         state.index_manager.index(),
         vec![metadata_json_field, filename_field],
     );
+
+    // When sorting by recency (newest first, the default), use AND semantics
+    // so that multi-term queries require ALL terms to match.  Score-based
+    // relevance ranking keeps the default OR semantics because BM25 scoring
+    // benefits from broader matching.
+    if params.sort != "score" {
+        query_parser.set_conjunction_by_default();
+    }
 
     let query = match query_parser.parse_query(&query_str) {
         Ok(q) => q,
@@ -137,8 +147,9 @@ async fn search_handler(
         }
     };
 
-    // Run Count collector (fast, no scoring) to get the accurate total,
-    // then TopDocs for the actual result set.
+    let id_field = schema.get_field("id").unwrap();
+
+    // Run Count collector (fast, no scoring) to get the accurate total.
     let total_hits: usize = match searcher.search(&query, &Count) {
         Ok(count) => count,
         Err(e) => {
@@ -150,15 +161,41 @@ async fn search_handler(
         }
     };
 
-    let collector = TopDocs::with_limit(limit + 1).order_by_score();
-    let top_docs = match searcher.search(&query, &collector) {
-        Ok(docs) => docs,
-        Err(e) => {
-            tracing::error!(error = %e, "Tantivy search failed");
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Search failed"})),
-            ));
+    // Build the collector: offset-based pagination with appropriate ordering.
+    // Both branches return Vec<(f32, DocAddress)> so we can share a single code path.
+    let collector: TopDocs = TopDocs::with_limit(limit + 1).and_offset(offset);
+
+    let top_docs: Vec<(f32, tantivy::DocAddress)> = if params.sort == "score" {
+        match searcher.search(&query, &collector.order_by_score()) {
+            Ok(docs) => docs,
+            Err(e) => {
+                tracing::error!(error = %e, "Tantivy search failed");
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": "Search failed"})),
+                ));
+            }
+        }
+    } else {
+        // Default: recency — custom scoring = created_at timestamp (µs).
+        let score_fn = move |segment_reader: &SegmentReader| {
+            let date_reader = segment_reader
+                .fast_fields()
+                .date("created_at")
+                .expect("created_at not a fast field; add FAST to schema");
+            move |doc_id: tantivy::DocId| {
+                date_reader.first(doc_id).map(|dt| dt.into_timestamp_micros() as f32).unwrap_or(0.0)
+            }
+        };
+        match searcher.search(&query, &collector.order_by(score_fn)) {
+            Ok(docs) => docs,
+            Err(e) => {
+                tracing::error!(error = %e, "Tantivy search failed");
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": "Search failed"})),
+                ));
+            }
         }
     };
 
@@ -166,21 +203,18 @@ async fn search_handler(
     let has_more = top_docs.len() > limit;
     let docs = &top_docs[..top_docs.len().min(limit)];
 
-    let id_field = schema.get_field("id").unwrap();
-
     // Collect IDs from Tantivy hits.
     let item_ids: Vec<String> = docs
         .iter()
         .filter_map(|(_score, doc_address)| {
-            let tantivy_doc: tantivy::TantivyDocument = match searcher.doc(*doc_address) {
+            let doc: tantivy::TantivyDocument = match searcher.doc(*doc_address) {
                 Ok(d) => d,
                 Err(_) => return None,
             };
-            let item_id = match tantivy_doc.get_first(id_field).and_then(|v| v.as_str()) {
-                Some(id) if !id.is_empty() => id.to_string(),
-                _ => return None,
-            };
-            Some(item_id)
+            doc.get_first(id_field)
+                .and_then(|v| v.as_str())
+                .filter(|id| !id.is_empty())
+                .map(String::from)
         })
         .collect();
 
@@ -197,25 +231,21 @@ async fn search_handler(
         })?;
 
     // ---- Sort results ----
-    if params.sort == "recency" {
+    // For recency: re-sort by (created_at DESC, id DESC) for the tiebreaker
+    // (Tantivy's order_by_fast_field does not guarantee id ordering for equal
+    // timestamps).  For score: keep Tantivy BM25 ordering.
+    if params.sort != "score" {
         media_items.sort_by(|a, b| b.created_at.cmp(&a.created_at).then_with(|| b.id.cmp(&a.id)));
     }
 
-    let (next_cursor, next_cursor_id) = if has_more {
-        if let Some(last) = media_items.last() {
-            (Some(last.created_at.clone()), Some(last.id.clone()))
-        } else {
-            (None, None)
-        }
-    } else {
-        (None, None)
-    };
+    // ---- Pagination metadata ----
+    let next_cursor = if has_more { Some((offset + media_items.len()).to_string()) } else { None };
 
     Ok(Json(json!({
         "data": media_items,
         "meta": {
             "next_cursor": next_cursor,
-            "next_cursor_id": next_cursor_id,
+            "next_cursor_id": null,
             "has_more": has_more,
             "total": total_hits as u64,
             "query": query_str,

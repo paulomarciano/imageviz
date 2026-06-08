@@ -12,7 +12,7 @@ pub fn build_schema() -> Schema {
     builder.add_text_field("filename", STRING | STORED);
     builder.add_text_field("mime_type", STRING);
     builder.add_text_field("metadata_json", TEXT);
-    builder.add_date_field("created_at", INDEXED);
+    builder.add_date_field("created_at", INDEXED | FAST);
     builder.add_u64_field("file_size", INDEXED);
     builder.add_u64_field("width", STORED);
     builder.add_u64_field("height", STORED);
