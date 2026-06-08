@@ -524,7 +524,12 @@ mod tests {
         let s1 = incremental_index(&conn, &manager).expect("first incremental");
         assert_eq!(s1.indexed_count, 3);
 
-        // Add a new item with a later modification time
+        // record_indexed_at stores Utc::now(), so we need a timestamp
+        // that is strictly after that point.  Add a generous 10-second
+        // buffer to avoid any sub-second race.
+        let after_indexed_at = (chrono::Utc::now() + chrono::Duration::seconds(10)).to_rfc3339();
+
+        // Add a new item with a modification time after the recorded timestamp
         conn.execute(
             "INSERT INTO media_items
                 (id, filename, relative_path, mime_type, file_size,
@@ -536,8 +541,8 @@ mod tests {
                 "new/new_file.png",
                 "image/png",
                 4096,
-                "2026-06-01T10:00:00Z",
-                "2026-06-01T10:00:00Z", // after the indexed_at config timestamp
+                after_indexed_at,
+                after_indexed_at,
             ],
         )
         .expect("insert new item");
