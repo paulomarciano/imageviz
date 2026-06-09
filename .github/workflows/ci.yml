@@ -83,6 +83,12 @@ jobs:
     defaults:
       run:
         working-directory: frontend
+    env:
+      # Must include --cfg tokio_unstable (set in .cargo/config.toml) because
+      # the console-subscriber crate panics at runtime without it.
+      # The setup-rust-toolchain action only sets RUSTFLAGS if unset, so this
+      # job-level value is preserved through all steps.
+      RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
