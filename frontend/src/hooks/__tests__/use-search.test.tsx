@@ -10,6 +10,11 @@ import { renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useSearch } from '../use-search';
 import * as searchApi from '../../api/search';
+import {
+  createCursorPage,
+  createCursorPages,
+  createMockMediaItem,
+} from '../../test-utils/infinite-query-mocks';
 import type { PaginatedResponse, MediaItem } from '../../types';
 
 // Mock the search API module.
@@ -26,29 +31,11 @@ function createWrapper() {
 }
 
 /** Shared mock response for non-empty queries. */
-const mockSearchResult: PaginatedResponse<MediaItem> = {
-  data: [
-    {
-      id: '1',
-      filename: 'result.png',
-      path: '2025/result.png',
-      mime_type: 'image/png',
-      thumbnail_url: '/api/v1/media/1/thumbnail',
-      width: 896,
-      height: 1216,
-      file_size: 245_760,
-      created_at: '2025-01-01T00:00:00Z',
-      modified_at: '2025-01-01T00:00:00Z',
-    },
-  ],
-  meta: {
-    next_cursor: null,
-    next_cursor_id: null,
-    has_more: false,
-    total: 1,
-    query: 'test',
-  },
-};
+const mockSearchResult: PaginatedResponse<MediaItem> = createCursorPage({
+  data: [createMockMediaItem({ filename: 'result.png', path: '2025/result.png' })],
+  total: 1,
+  query: 'test',
+});
 
 describe('useSearch', () => {
   beforeEach(() => {
@@ -122,17 +109,8 @@ describe('useSearch', () => {
     // Arrange — 12 pages of 1 result each; a maxPages=10 config would evict
     // the oldest 2 pages and permanently drop results 1-2 from the cache.
     const totalPages = 12;
-    for (let i = 0; i < totalPages; i++) {
-      const isLast = i === totalPages - 1;
-      vi.mocked(searchApi.searchMedia).mockResolvedValueOnce({
-        data: [{ ...mockSearchResult.data[0]!, id: String(i + 1), filename: `p${i + 1}.png` }],
-        meta: {
-          next_cursor: isLast ? null : `c${i}`,
-          next_cursor_id: isLast ? null : `id${i}`,
-          has_more: !isLast,
-          total: totalPages,
-        },
-      });
+    for (const page of createCursorPages(totalPages, { query: 'test' })) {
+      vi.mocked(searchApi.searchMedia).mockResolvedValueOnce(page);
     }
 
     // Act
@@ -143,6 +121,9 @@ describe('useSearch', () => {
       timeout: 1000,
     });
 
+    // fetchNextPage is intentionally NOT awaited: awaiting consumes the
+    // microtask in which the hook would re-render, leaving result.current
+    // stale. waitFor handles the propagation instead.
     for (let i = 1; i < totalPages; i++) {
       result.current.fetchNextPage();
       await waitFor(() => expect(result.current.results).toHaveLength(i + 1));

@@ -12,7 +12,7 @@
  */
 
 import { useCallback, useEffect, useRef } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { useSetAtom } from 'jotai';
 import { useSse } from './use-sse';
 import { sseStatusAtom, recentSseEventsAtom, newFileCountAtom } from '../store/sse-atoms';
@@ -26,6 +26,26 @@ const MAX_RECENT_EVENTS = 50;
 
 /** Accumulate SSE mutations for this many ms before flushing to the cache. */
 const BATCH_WINDOW_MS = 50;
+
+/**
+ * Truncate a cached infinite query to its first page.
+ *
+ * Invalidating an infinite query refetches every accumulated page
+ * sequentially. Truncating first bounds the subsequent refetch to a single
+ * page — the v5-recommended pattern since `refetchPage` was removed.
+ * Single-page or absent cache entries are left untouched.
+ */
+function truncateToFirstPage(queryClient: QueryClient, queryKey: readonly unknown[]): void {
+  queryClient.setQueriesData({ queryKey }, (oldData: unknown) => {
+    if (!oldData || typeof oldData !== 'object') return oldData;
+    const typed = oldData as { pages?: unknown[]; pageParams?: unknown[] };
+    if (!typed.pages || typed.pages.length <= 1) return oldData;
+    return {
+      pages: typed.pages.slice(0, 1),
+      pageParams: typed.pageParams?.slice(0, 1) ?? [],
+    };
+  });
+}
 
 type TimedEvent = SseEvent & { _timestamp: number };
 
@@ -154,11 +174,18 @@ export function useSseGridUpdates() {
 
         case 'indexing_complete':
         case 'lagged': {
-          // Flush any pending mutations first, then full invalidation
+          // Flush any pending mutations first, then invalidate.
           if (flushTimerRef.current) {
             clearTimeout(flushTimerRef.current);
             flushBatch();
           }
+          // Truncate infinite query caches to the first page BEFORE
+          // invalidating, so the refetch fetches one page instead of every
+          // accumulated page (a deep-scrolled session could otherwise fire
+          // hundreds of sequential requests). The view resets to the top,
+          // which is acceptable after a full reindex or a lag event.
+          truncateToFirstPage(queryClient, ['media', 'list']);
+          truncateToFirstPage(queryClient, ['search']);
           queryClient.invalidateQueries({ queryKey: ['media', 'list'] });
           queryClient.invalidateQueries({ queryKey: ['search'] });
           setNewFileCount(0);

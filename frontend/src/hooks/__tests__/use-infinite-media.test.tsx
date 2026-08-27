@@ -10,6 +10,7 @@ import { renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useInfiniteMedia } from '../use-infinite-media';
 import * as mediaApi from '../../api/media';
+import { createCursorPages, createMockMediaItem } from '../../test-utils/infinite-query-mocks';
 import type { PaginatedResponse, MediaItem } from '../../types';
 
 // Mock the media API module — all exports become vi.fn() automatically.
@@ -30,20 +31,7 @@ function createMockPage(
   overrides?: Partial<PaginatedResponse<MediaItem>>,
 ): PaginatedResponse<MediaItem> {
   return {
-    data: [
-      {
-        id: '1',
-        filename: 'test.png',
-        path: '2025/test.png',
-        mime_type: 'image/png',
-        thumbnail_url: '/api/v1/media/1/thumbnail',
-        width: 896,
-        height: 1216,
-        file_size: 245_760,
-        created_at: '2025-01-01T00:00:00Z',
-        modified_at: '2025-01-01T00:00:00Z',
-      },
-    ],
+    data: [createMockMediaItem()],
     meta: {
       next_cursor: null,
       next_cursor_id: null,
@@ -146,19 +134,8 @@ describe('useInfiniteMedia', () => {
     // Arrange — 12 pages of 1 item each; a maxPages=10 config would evict the
     // oldest 2 pages and permanently drop items 1-2 from the cache.
     const totalPages = 12;
-    for (let i = 0; i < totalPages; i++) {
-      const isLast = i === totalPages - 1;
-      vi.mocked(mediaApi.fetchMediaList).mockResolvedValueOnce(
-        createMockPage({
-          data: [{ ...createMockPage().data[0]!, id: String(i + 1), filename: `p${i + 1}.png` }],
-          meta: {
-            next_cursor: isLast ? null : `c${i}`,
-            next_cursor_id: isLast ? null : `id${i}`,
-            has_more: !isLast,
-            total: totalPages,
-          },
-        }),
-      );
+    for (const page of createCursorPages(totalPages)) {
+      vi.mocked(mediaApi.fetchMediaList).mockResolvedValueOnce(page);
     }
 
     // Act
@@ -167,6 +144,9 @@ describe('useInfiniteMedia', () => {
     });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
 
+    // fetchNextPage is intentionally NOT awaited: awaiting consumes the
+    // microtask in which the hook would re-render, leaving result.current
+    // stale. waitFor handles the propagation instead.
     for (let i = 1; i < totalPages; i++) {
       result.current.fetchNextPage();
       await waitFor(() => expect(result.current.allItems).toHaveLength(i + 1));
