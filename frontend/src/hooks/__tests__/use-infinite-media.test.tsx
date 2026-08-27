@@ -142,6 +142,43 @@ describe('useInfiniteMedia', () => {
     expect(result.current.totalCount).toBe(2);
   });
 
+  it('retains all fetched pages (no maxPages eviction)', async () => {
+    // Arrange — 12 pages of 1 item each; a maxPages=10 config would evict the
+    // oldest 2 pages and permanently drop items 1-2 from the cache.
+    const totalPages = 12;
+    for (let i = 0; i < totalPages; i++) {
+      const isLast = i === totalPages - 1;
+      vi.mocked(mediaApi.fetchMediaList).mockResolvedValueOnce(
+        createMockPage({
+          data: [{ ...createMockPage().data[0]!, id: String(i + 1), filename: `p${i + 1}.png` }],
+          meta: {
+            next_cursor: isLast ? null : `c${i}`,
+            next_cursor_id: isLast ? null : `id${i}`,
+            has_more: !isLast,
+            total: totalPages,
+          },
+        }),
+      );
+    }
+
+    // Act
+    const { result } = renderHook(() => useInfiniteMedia(1), {
+      wrapper: createWrapper(),
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    for (let i = 1; i < totalPages; i++) {
+      result.current.fetchNextPage();
+      await waitFor(() => expect(result.current.allItems).toHaveLength(i + 1));
+    }
+
+    // Assert — every page is still in the cache (no oldest-page eviction).
+    expect(result.current.allItems).toHaveLength(totalPages);
+    expect(result.current.allItems.map((item) => item.id)).toEqual(
+      Array.from({ length: totalPages }, (_, i) => String(i + 1)),
+    );
+  });
+
   it('shows empty state when no items', async () => {
     // Arrange
     vi.mocked(mediaApi.fetchMediaList).mockResolvedValue(

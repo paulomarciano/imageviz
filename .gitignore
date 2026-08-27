@@ -57,3 +57,9 @@ test-fixtures/*.jpg
 test-fixtures/*.jpeg
 # Keep .gitkeep so the directory is always present after clone
 !test-fixtures/.gitkeep
+
+# scripts
+scripts/start.sh
+
+#documents
+documents/

@@ -22,7 +22,6 @@ export function useInfiniteMedia(limit = 100, mimeType?: string, enabled = true)
     staleTime: 5 * 60 * 1000,
     gcTime: 30 * 60 * 1000,
     refetchOnWindowFocus: false,
-    maxPages: 10,
   });
 
   const allItems = useMemo(

@@ -50,7 +50,6 @@ export function useSearch(
     // Search results change less often than the media list.
     staleTime: 2 * 60 * 1000, // 2 minutes
     gcTime: 10 * 60 * 1000, // 10 minutes
-    maxPages: 10, // Keep at most 10 pages in memory (aligned with useInfiniteMedia).
   });
 
   // Flatten pages into a single results array for convenience.

@@ -12,10 +12,13 @@ v0.7.0 — all 8 development waves complete. Browser-based image/video viewer fo
 
 | Action | Backend | Frontend |
 |--------|---------|----------|
-| Dev server | `cargo run` (port 3001) | `npm run dev` (proxies `/api` → :3001) |
+| Dev server | `cargo run` (port 3001) | `npm run dev` (port 5173, proxies `/api` → :3001) |
+| Both at once | `./scripts/dev.sh` | |
 | Test all | `cargo test` | `npm test` (= `vitest run`) |
 | Single test | `cargo test test_name` | `npx vitest run -t "test name"` |
-| Lint + format | `cargo clippy -- -D warnings` + `cargo fmt --check` | `npm run lint` + `npm run format:check` |
+| Lint | `cargo clippy -- -D warnings` | `npm run lint` (= `eslint .`) |
+| Format check | `cargo fmt --check` | `npm run format:check` (= `prettier --check .`) |
+| Format fix | `cargo fmt` | `npm run format` (= `prettier --write .`) |
 | Type check | `cargo check` | `npm run typecheck` (= `tsc --noEmit`) |
 | Build | `cargo build --release` | `npm run build` (= `tsc -b && vite build`) |
 
@@ -43,11 +46,13 @@ Frontend package manager is **npm**. Path alias `@/` → `./src/`.
 - **Thumbnails**: Content-addressed WebP cache (key = `{sha256[:16]}_{width}.webp`). `spawn_blocking` for CPU-bound work. `DashMap` of per-key `Mutex` prevents duplicate generation for concurrent requests.
 - **Thumbnail generation concurrency**: A `ThumbnailLimiter` (tokio-semaphore, env `THUMBNAIL_CONCURRENCY`) bounds concurrent ffmpeg/image operations.
 - **File serving**: `tokio::fs::File` + streaming (never loads full file into memory). Range requests for video seeking. ETag/304 for caching.
-- **File watcher**: `notify` + `notify-debouncer-mini` (500ms debounce). `mpsc` channel decouples watcher from indexer. **Must bind to `let _watcher = ...`** to keep alive.
+- **File watcher**: `notify` + `notify-debouncer-mini` (500ms debounce). `mpsc` channel decouples watcher from indexer. Watcher is held in `Arc<Mutex<FileWatcher>>`; `_watcher_guard` in `main.rs:116` keeps an `Arc::clone()` alive for server lifetime.
 - **Security**: CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy applied as outermost Axum middleware layer.
 - **Input validation at route boundary**: limit [1–500], cursor ISO 8601, cursor_id UUID v4, search max 1000 chars, path max 4096 chars, no `..` traversal.
-- **`.cargo/config.toml`**: builds with `-D warnings` and `--cfg tokio_unstable` (needed for tokio-console).
+- **`.cargo/config.toml`**: sets `-D warnings` + `--cfg tokio_unstable` for `x86_64-unknown-linux-gnu` **only** (not macOS). The CI `frontend-e2e` job explicitly sets `RUSTFLAGS` env to cover all platforms. On macOS you must set `RUSTFLAGS="--cfg tokio_unstable"` manually or `console-subscriber` panics.
 - **Supported media extensions**: PNG, JPG/JPEG, WebP, GIF, MP4, WebM, MOV (shared constant in `backend/src/media_types.rs`).
+- **Hidden files/dirs**: `is_hidden_path()` in `media_types.rs` ignores any path whose component starts with `.` — applied consistently by both scanner and watcher.
+- **Debug tooling**: `GET /debug/pprof/profile?seconds=5&format=svg` (dev-only, mounted **outside** `/api/v1`) for CPU flamegraphs via `backend/src/profiler.rs`. Backend logging is filtered via `RUST_LOG` (`EnvFilter::try_from_default_env()`); tokio-console is registered as a tracing layer — requires `--cfg tokio_unstable`.
 
 ## Test Conventions
 
@@ -56,7 +61,7 @@ Frontend package manager is **npm**. Path alias `@/` → `./src/`.
 - **Test support**: `backend/src/test_support.rs` provides `fixture_path(name)` → `test-fixtures/{name}` (only under `cfg(test)`). Use `crate::test_support::fixture_path` in unit tests, `imageviz_backend::test_support::fixture_path` in integration tests.
 - **Fixture-dependent Rust tests** are `#[ignore]` — run with `cargo test -- --ignored` after `./scripts/generate-fixtures.sh` (requires **ffmpeg** on PATH). Fixture files are **gitignored** — only `.gitkeep` committed.
 - **Frontend tests**: co-located `__tests__/` dirs. Vitest + jsdom + @testing-library/react. `setup-tests.ts` globally mocks `EventSource` (jsdom doesn't implement it) and `VirtuosoGrid` — any test rendering `<App />` or `ThumbnailGrid` needs these.
-- **Frontend integration tests**: MSW handlers at `src/test-utils/msw-handlers.ts`. Render helpers at `test-utils/render-utils.tsx` wrap QueryClient + Jotai Provider.
+- **Frontend integration tests**: MSW handlers at `src/test-utils/msw-handlers.ts`. Render helpers at `src/test-utils/render-utils.tsx` wrap QueryClient + Jotai Provider.
 - **E2E** (Playwright): `npx playwright test` from `frontend/`. Requires `npx playwright install chromium` once. Auto-starts both servers via `webServer` config. `workers: 1` (serial, shared backend state), `retries: 1`.
 
 ## TDD Workflow (Mandatory)
