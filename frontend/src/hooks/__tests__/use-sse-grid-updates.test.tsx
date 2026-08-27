@@ -10,9 +10,8 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, useInfiniteQuery } from '@tanstack/react-query';
 import { useSseGridUpdates } from '../use-sse-grid-updates';
-import { useInfiniteQuery } from '@tanstack/react-query';
 import { INITIAL_PAGE_PARAM, getNextPageParam } from '../use-cursor-pagination';
 import type { CursorPageParam } from '../use-cursor-pagination';
 import { createCursorPages } from '../../test-utils/infinite-query-mocks';
@@ -81,8 +80,13 @@ describe('useSseGridUpdates', () => {
     });
 
     // Assert — the refetch fetches ONLY the first page (1 extra call, not 3).
-    await waitFor(() => expect(queryFn).toHaveBeenCalledTimes(4));
-    expect(listHook.result.current.data?.pages).toHaveLength(1);
+    // Assert the settled state: wait for the truncated refetch to complete,
+    // then give any (buggy) additional page fetches a chance to fire before
+    // pinning the exact call count. A regression would end at 6 calls / 3
+    // pages; the correct implementation stays at 4 calls / 1 page.
+    await waitFor(() => expect(listHook.result.current.data?.pages).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(queryFn).toHaveBeenCalledTimes(4);
     expect(listHook.result.current.data?.pages[0]!.data[0]!.id).toBe('1');
   });
 

@@ -39,10 +39,13 @@ function truncateToFirstPage(queryClient: QueryClient, queryKey: readonly unknow
   queryClient.setQueriesData({ queryKey }, (oldData: unknown) => {
     if (!oldData || typeof oldData !== 'object') return oldData;
     const typed = oldData as { pages?: unknown[]; pageParams?: unknown[] };
-    if (!typed.pages || typed.pages.length <= 1) return oldData;
+    // Require both arrays: truncating pages without a matching pageParams
+    // entry would corrupt pagination state (fetchNextPage derives the next
+    // param from the last pageParams entry).
+    if (!typed.pages || !typed.pageParams || typed.pages.length <= 1) return oldData;
     return {
       pages: typed.pages.slice(0, 1),
-      pageParams: typed.pageParams?.slice(0, 1) ?? [],
+      pageParams: typed.pageParams.slice(0, 1),
     };
   });
 }
@@ -183,7 +186,10 @@ export function useSseGridUpdates() {
           // invalidating, so the refetch fetches one page instead of every
           // accumulated page (a deep-scrolled session could otherwise fire
           // hundreds of sequential requests). The view resets to the top,
-          // which is acceptable after a full reindex or a lag event.
+          // which is acceptable after a full reindex or a lag event. This
+          // includes the search cache: a user deep in search results also
+          // resets to the top, even for a reindex unrelated to their query —
+          // acceptable since reindexed results may have shifted arbitrarily.
           truncateToFirstPage(queryClient, ['media', 'list']);
           truncateToFirstPage(queryClient, ['search']);
           queryClient.invalidateQueries({ queryKey: ['media', 'list'] });

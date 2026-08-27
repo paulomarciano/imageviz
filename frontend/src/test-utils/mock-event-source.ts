@@ -37,7 +37,9 @@ export class MockEventSource {
 
   triggerEvent(type: string, data: unknown) {
     const listeners = this.listeners.get(type) ?? [];
-    const event = new MessageEvent('message', { data: JSON.stringify(data) });
+    // Use the SSE event type as the MessageEvent type so listeners that
+    // inspect event.type see a realistic value.
+    const event = new MessageEvent(type, { data: JSON.stringify(data) });
     for (const listener of listeners) {
       listener(event);
     }
