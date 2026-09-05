@@ -277,8 +277,9 @@ async fn cleanup_resources(index_manager: &Arc<IndexManager>) {
 ///
 /// # Pipeline
 ///
-/// 1. **Phase 1** — `full_index`: scan watched folders, compute hashes, detect
-///    media types, extract PNG metadata, and upsert into SQLite.
+/// 1. **Phase 1** — `incremental_index`: scan watched folders and upsert into
+///    SQLite, skipping files whose size+mtime are unchanged (no re-hash, no
+///    ffprobe). New/modified files go through hash + detect + metadata.
 /// 2. **Phase 2** — `full_reindex`: read all SQLite rows and rebuild the Tantivy
 ///    full-text search index.
 ///
@@ -315,9 +316,12 @@ fn spawn_background_indexing(
             "Starting initial file scan and indexing"
         );
 
-        // Phase 1: scan files and populate SQLite
+        // Phase 1: scan files and populate SQLite (incremental — unchanged
+        // files are skipped without hashing, keeping warm starts fast).
         let stats =
-            match imageviz_backend::indexer::full_index(&pool, &config, progress.as_ref()).await {
+            match imageviz_backend::indexer::incremental_index(&pool, &config, progress.as_ref())
+                .await
+            {
                 Ok(s) => s,
                 Err(e) => {
                     tracing::error!(error = %e, "Initial file scan failed");
@@ -331,7 +335,7 @@ fn spawn_background_indexing(
             skipped = stats.skipped,
             deleted = stats.deleted,
             errors = stats.errors,
-            "File scan complete"
+            "Startup file scan complete (incremental)"
         );
 
         // Phase 2: populate Tantivy full-text index from SQLite.
