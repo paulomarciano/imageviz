@@ -8,7 +8,9 @@
 //! The indexer separates async I/O (hashing, ffprobe) from synchronous DB writes.
 //! Async work runs without holding a database connection from the pool; DB
 //! operations are batched in transactions of [`BATCH_SIZE`] files for write
-//! throughput.
+//! throughput. Within a batch, Phase-1 file processing runs concurrently —
+//! bounded by [`index_concurrency()`] (env `INDEX_CONCURRENCY`, default:
+//! available CPU cores capped at 8) — while DB writes stay sequential.
 
 use crate::config::AppConfig;
 use crate::config::folder_id_map;
@@ -16,6 +18,7 @@ use crate::metadata::detect::{MediaInfo, detect_media};
 use crate::metadata::png::parse_png_metadata;
 use crate::scanner::hasher::compute_file_hash;
 use crate::scanner::walker::{FileEntry, scan_folder};
+use futures_util::stream::{self, StreamExt};
 use r2d2::Pool;
 
 use crate::db::SqliteConnectionManager;
@@ -33,6 +36,26 @@ pub mod progress;
 /// preventing a single long-running transaction from holding the WAL checkpoint
 /// for too long.
 const BATCH_SIZE: usize = 100;
+
+/// Cap applied to the *default* Phase-1 processing concurrency.
+///
+/// The hash + ffprobe pipeline saturates disk I/O well before 8 workers, so
+/// the core-derived default is clamped to this value.
+const MAX_DEFAULT_INDEX_CONCURRENCY: usize = 8;
+
+/// Resolve Phase-1 (hash + detect + metadata) processing concurrency.
+///
+/// Reads `INDEX_CONCURRENCY` from the environment: a valid value (> 0) is
+/// honored as-is. When unset or invalid, falls back to the number of available
+/// CPU cores capped at [`MAX_DEFAULT_INDEX_CONCURRENCY`].
+fn index_concurrency() -> usize {
+    match std::env::var("INDEX_CONCURRENCY").ok().and_then(|v| v.parse::<usize>().ok()) {
+        Some(n) if n > 0 => n,
+        _ => std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .min(MAX_DEFAULT_INDEX_CONCURRENCY),
+    }
+}
 
 /// Run a full index of all watched folders.
 ///
@@ -77,12 +100,21 @@ pub async fn full_index(
     let folder_file_pairs = resolve_folder_file_pairs(&all_files, &fid_map);
 
     // Process files in batches to limit transaction size
-    for chunk in folder_file_pairs.chunks(BATCH_SIZE) {
-        // Phase 1: Async I/O — compute hashes and metadata without DB lock
-        let mut batch_results: Vec<ProcessedFile> = Vec::with_capacity(chunk.len());
-        for ff_entry in chunk {
+    let mut remaining = folder_file_pairs;
+    while !remaining.is_empty() {
+        let chunk: Vec<FolderFileEntry> =
+            remaining.drain(..BATCH_SIZE.min(remaining.len())).collect();
+
+        // Phase 1: Async I/O — hash + detect + metadata, concurrently bounded
+        // by `index_concurrency()` (no DB connection held)
+        for _ in 0..chunk.len() {
             progress.increment_processed();
-            match process_file_metadata(ff_entry.file, &ff_entry.folder_id).await {
+        }
+        let results = process_chunk_concurrent(chunk, index_concurrency()).await;
+
+        let mut batch_results: Vec<ProcessedFile> = Vec::with_capacity(results.len());
+        for (ff_entry, result) in results {
+            match result {
                 Ok(processed) => batch_results.push(processed),
                 Err(e) => {
                     stats.errors += 1;
@@ -177,9 +209,14 @@ pub async fn incremental_index(
 
     let folder_file_pairs = resolve_folder_file_pairs(&all_files, &fid_map);
 
-    for chunk in folder_file_pairs.chunks(BATCH_SIZE) {
-        // Phase 1: Async I/O — only for files that appear new or modified
-        let mut batch_results: Vec<ProcessedFile> = Vec::with_capacity(chunk.len());
+    let mut remaining = folder_file_pairs;
+    while !remaining.is_empty() {
+        let chunk: Vec<FolderFileEntry> =
+            remaining.drain(..BATCH_SIZE.min(remaining.len())).collect();
+
+        // Partition the chunk: unchanged files (size AND mtime match the DB)
+        // are skipped outright; new/modified files go through Phase 1.
+        let mut to_process: Vec<FolderFileEntry> = Vec::with_capacity(chunk.len());
         for ff_entry in chunk {
             progress.increment_processed();
 
@@ -191,11 +228,18 @@ pub async fn incremental_index(
                 && *existing_mtime == ff_entry.file.modified_at
             {
                 stats.skipped += 1;
-                continue;
+            } else {
+                to_process.push(ff_entry);
             }
+        }
 
-            // File is new or modified — run the full pipeline.
-            match process_file_metadata(ff_entry.file, &ff_entry.folder_id).await {
+        // Phase 1: Async I/O — hash + detect + metadata, concurrently bounded
+        // by `index_concurrency()` (no DB connection held)
+        let results = process_chunk_concurrent(to_process, index_concurrency()).await;
+
+        let mut batch_results: Vec<ProcessedFile> = Vec::with_capacity(results.len());
+        for (ff_entry, result) in results {
+            match result {
                 Ok(processed) => batch_results.push(processed),
                 Err(e) => {
                     stats.errors += 1;
@@ -241,15 +285,21 @@ pub async fn incremental_index(
 // ---------------------------------------------------------------------------
 
 /// Pair a file entry with its watched folder ID.
+///
+/// Owns the file entry (cloned from the scan results) so chunk items carry no
+/// lifetimes. This keeps the concurrent-processing closure concrete in its
+/// generics — closures over lifetime-carrying items fail the `Send` analysis
+/// when the indexing future is `tokio::spawn`ed ("impl of FnOnce is not
+/// general enough"). The clone (~200 bytes) is negligible next to hashing.
 #[derive(Debug)]
-struct FolderFileEntry<'a> {
+struct FolderFileEntry {
     folder_id: String,
-    file: &'a FileEntry,
+    file: FileEntry,
 }
 
 /// Intermediate result from the async processing phase of a single file.
-struct ProcessedFile<'a> {
-    file: &'a FileEntry,
+struct ProcessedFile {
+    file: FileEntry,
     new_hash: String,
     media_info: MediaInfo,
     metadata_json: Option<String>,
@@ -258,17 +308,17 @@ struct ProcessedFile<'a> {
 
 /// Resolve folder IDs for all scanned files by matching their absolute path
 /// prefix against watched folder paths.
-fn resolve_folder_file_pairs<'a>(
-    files: &'a [FileEntry],
+fn resolve_folder_file_pairs(
+    files: &[FileEntry],
     fid_map: &HashMap<String, String>,
-) -> Vec<FolderFileEntry<'a>> {
+) -> Vec<FolderFileEntry> {
     let mut result = Vec::with_capacity(files.len());
     for file in files {
         let abs_path = Path::new(&file.absolute_path);
         if let Some(folder_id) = fid_map.iter().find_map(|(folder_path, fid)| {
             abs_path.strip_prefix(Path::new(folder_path)).ok().map(|_| fid.clone())
         }) {
-            result.push(FolderFileEntry { folder_id, file });
+            result.push(FolderFileEntry { folder_id, file: file.clone() });
         }
     }
     result
@@ -278,10 +328,11 @@ fn resolve_folder_file_pairs<'a>(
 ///
 /// Runs asynchronously without holding the database lock. This phase handles
 /// all I/O-bound work (SHA-256 via spawn_blocking, ffprobe for videos).
-async fn process_file_metadata<'a>(
-    file: &'a FileEntry,
-    folder_id: &'a str,
-) -> Result<ProcessedFile<'a>, IndexError> {
+/// The result owns a clone of `file`, keeping `ProcessedFile` lifetime-free.
+async fn process_file_metadata(
+    file: &FileEntry,
+    folder_id: &str,
+) -> Result<ProcessedFile, IndexError> {
     let abs_path = Path::new(&file.absolute_path);
 
     let new_hash = compute_file_hash(abs_path).await?;
@@ -302,7 +353,7 @@ async fn process_file_metadata<'a>(
     };
 
     Ok(ProcessedFile {
-        file,
+        file: file.clone(),
         new_hash,
         media_info,
         metadata_json,
@@ -310,12 +361,35 @@ async fn process_file_metadata<'a>(
     })
 }
 
+/// Phase 1 for one chunk: process entries concurrently with bounded parallelism.
+///
+/// Consumes the owned entries and runs [`process_file_metadata`] over them via
+/// `buffer_unordered(concurrency)`, so at most `concurrency` files are in
+/// flight. Results come back as `(entry, result)` pairs, letting callers
+/// attribute errors to files after out-of-order completion. CPU-bound work
+/// (SHA-256, ffprobe) runs through `spawn_blocking` inside
+/// [`process_file_metadata`], so the concurrent futures genuinely use multiple
+/// cores; no database connection is held during this phase.
+async fn process_chunk_concurrent(
+    entries: Vec<FolderFileEntry>,
+    concurrency: usize,
+) -> Vec<(FolderFileEntry, Result<ProcessedFile, IndexError>)> {
+    stream::iter(entries)
+        .map(|ff_entry| async move {
+            let result = process_file_metadata(&ff_entry.file, &ff_entry.folder_id).await;
+            (ff_entry, result)
+        })
+        .buffer_unordered(concurrency)
+        .collect()
+        .await
+}
+
 /// Phase 2: Store a processed file's data in the database.
 ///
 /// Synchronous — must be called while holding a database connection.
 /// Uses `INSERT OR REPLACE` for idempotent upserts. The `(folder_id, relative_path)`
 /// compound unique index prevents duplicates across multiple watched folders.
-fn store_file(conn: &Connection, processed: &ProcessedFile<'_>) -> Result<IndexChange, IndexError> {
+fn store_file(conn: &Connection, processed: &ProcessedFile) -> Result<IndexChange, IndexError> {
     // Check if file already indexed with same hash (skip if unchanged)
     let existing: Option<(String, Option<String>)> = conn
         .query_row(

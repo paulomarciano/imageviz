@@ -32,6 +32,7 @@ Frontend package manager is **npm**. Path alias `@/` → `./src/`.
 | `REQUEST_TIMEOUT_SECS` | `60` | Default request timeout (media: 120s, SSE: 3600s) |
 | `THUMBNAIL_CONCURRENCY` | `4` | Max concurrent thumbnail generations |
 | `THUMBNAIL_CACHE_MAX_MB` | `2000` | Max cache size (0 = unlimited) |
+| `INDEX_CONCURRENCY` | CPU cores capped at `8` | Max concurrent Phase-1 indexing files (hash/ffprobe) |
 | `MIN_FREE_DISK_MB` | `500` | Min free disk before aggressive eviction |
 | `IMAGEVIZ_DB_PATH` | `{data_dir}/imageviz.db` | SQLite database location |
 | `IMAGEVIZ_CACHE_DIR` | `{data_dir}/thumbnails` | Thumbnail cache location |
