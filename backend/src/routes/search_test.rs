@@ -33,6 +33,7 @@ fn parse_date(ts: &str) -> tantivy::DateTime {
 }
 
 /// Seed a media item in both SQLite and the Tantivy index.
+#[allow(clippy::too_many_arguments)]
 async fn seed_item(
     state: &Arc<SearchState>,
     id: &str,
@@ -488,7 +489,7 @@ async fn test_search_cursor_pagination_distinct_pages() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri(&format!("/search?q=distinct&limit=10&cursor={cursor}"))
+                .uri(format!("/search?q=distinct&limit=10&cursor={cursor}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -521,7 +522,7 @@ async fn test_search_cursor_pagination_distinct_pages() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri(&format!("/search?q=distinct&limit=10&cursor=20"))
+                .uri("/search?q=distinct&limit=10&cursor=20")
                 .body(Body::empty())
                 .unwrap(),
         )

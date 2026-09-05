@@ -163,7 +163,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         let client = reqwest::Client::builder().timeout(Duration::from_secs(5)).build().unwrap();
-        let response = client.get(&format!("http://{}/events", addr)).send().await.unwrap();
+        let response = client.get(format!("http://{}/events", addr)).send().await.unwrap();
 
         assert_eq!(response.headers().get("content-type").unwrap(), "text/event-stream");
 
@@ -210,7 +210,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         let client = reqwest::Client::builder().timeout(Duration::from_secs(5)).build().unwrap();
-        let response = client.get(&format!("http://{}/events", addr)).send().await.unwrap();
+        let response = client.get(format!("http://{}/events", addr)).send().await.unwrap();
 
         let mut stream = response.bytes_stream();
 
@@ -267,7 +267,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         let client = reqwest::Client::builder().timeout(Duration::from_secs(5)).build().unwrap();
-        let response = client.get(&format!("http://{}/events", addr)).send().await.unwrap();
+        let response = client.get(format!("http://{}/events", addr)).send().await.unwrap();
 
         let mut stream = response.bytes_stream();
 
@@ -322,7 +322,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         let client = reqwest::Client::builder().timeout(Duration::from_secs(5)).build().unwrap();
-        let _response = client.get(&format!("http://{}/events", addr)).send().await.unwrap();
+        let _response = client.get(format!("http://{}/events", addr)).send().await.unwrap();
 
         // Drop the connection immediately without reading.
         // The server should not panic — the stream drop is handled gracefully.

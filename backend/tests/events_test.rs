@@ -52,7 +52,7 @@ async fn test_sse_receives_connected_event() {
 
     let client = reqwest::Client::builder().timeout(Duration::from_secs(5)).build().unwrap();
 
-    let response = client.get(&format!("http://{}/api/v1/events", addr)).send().await.unwrap();
+    let response = client.get(format!("http://{}/api/v1/events", addr)).send().await.unwrap();
 
     assert_eq!(response.headers().get("content-type").unwrap(), "text/event-stream");
 
@@ -100,7 +100,7 @@ async fn test_sse_receives_broadcast_event() {
 
     let client = reqwest::Client::builder().timeout(Duration::from_secs(5)).build().unwrap();
 
-    let response = client.get(&format!("http://{}/api/v1/events", addr)).send().await.unwrap();
+    let response = client.get(format!("http://{}/api/v1/events", addr)).send().await.unwrap();
 
     let mut stream = response.bytes_stream();
 
@@ -159,7 +159,7 @@ async fn test_sse_multiple_event_types_propagate() {
 
     let client = reqwest::Client::builder().timeout(Duration::from_secs(5)).build().unwrap();
 
-    let response = client.get(&format!("http://{}/api/v1/events", addr)).send().await.unwrap();
+    let response = client.get(format!("http://{}/api/v1/events", addr)).send().await.unwrap();
 
     let mut stream = response.bytes_stream();
 
@@ -214,7 +214,7 @@ async fn test_sse_client_disconnect_does_not_crash_server() {
 
     let client = reqwest::Client::builder().timeout(Duration::from_secs(5)).build().unwrap();
 
-    let _response = client.get(&format!("http://{}/api/v1/events", addr)).send().await.unwrap();
+    let _response = client.get(format!("http://{}/api/v1/events", addr)).send().await.unwrap();
 
     // Drop the connection immediately without reading.
     // The server should not panic — the stream drop is handled gracefully.

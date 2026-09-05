@@ -70,6 +70,7 @@ async fn seed_media_item(
 /// Seed a media item with full fields including dimensions and custom dates.
 /// Used by cursor pagination tests to create items at specific timestamps.
 #[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
 async fn seed_media_item_full(
     state: &Arc<MediaState>,
     id: &str,
@@ -704,7 +705,7 @@ async fn test_media_list_cursor_pagination() {
     let response2 = app
         .oneshot(
             Request::builder()
-                .uri(&format!(
+                .uri(format!(
                     "/media?limit=100&cursor={}&cursor_id={}",
                     next_cursor, next_cursor_id
                 ))

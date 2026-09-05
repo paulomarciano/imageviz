@@ -28,6 +28,7 @@ fn parse_date(ts: &str) -> tantivy::DateTime {
 }
 
 /// Seed a media item in both SQLite and the Tantivy index attached to `app`.
+#[allow(clippy::too_many_arguments)]
 async fn seed_item(
     app: &TestApp,
     id: &str,

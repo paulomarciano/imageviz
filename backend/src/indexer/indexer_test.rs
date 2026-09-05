@@ -201,6 +201,22 @@ async fn test_full_index_is_idempotent() {
     assert_eq!(count, 1, "Should have exactly one entry after 3 index runs");
 }
 
+/// Full column set of a freshly indexed `media_items` row (all 12 columns).
+type FullyIndexedRow = (
+    String,
+    String,
+    String,
+    String,
+    Option<u32>,
+    Option<u32>,
+    i64,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+);
+
 #[tokio::test]
 async fn test_indexed_item_has_all_required_fields() {
     let dir = tempfile::Builder::new().prefix("imgviz_").tempdir().unwrap();
@@ -220,20 +236,7 @@ async fn test_indexed_item_has_all_required_fields() {
 
     // Verify all required columns are populated
     let conn = pool.get().unwrap();
-    let row: (
-        String,
-        String,
-        String,
-        String,
-        Option<u32>,
-        Option<u32>,
-        i64,
-        String,
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-    ) = conn
+    let row: FullyIndexedRow = conn
         .query_row(
             "SELECT id, filename, relative_path, mime_type, width, height, file_size,
                     file_created_at, file_modified_at, indexed_at, metadata_json, checksum

@@ -683,7 +683,7 @@ mod tests {
         // SSE event should be file_deleted.
         let sse = ctx.sse_rx.try_recv().expect("SSE event");
         assert_eq!(sse.event_type, "file_deleted");
-        assert!(sse.data["id"].as_str().unwrap().len() > 0);
+        assert!(!sse.data["id"].as_str().unwrap().is_empty());
         assert!(sse.data["path"].as_str().unwrap().contains("delete_me.png"));
     }
 

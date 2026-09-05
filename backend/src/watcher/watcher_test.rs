@@ -28,7 +28,7 @@ where
     loop {
         match tokio::time::timeout_at(deadline, rx.recv()).await {
             Ok(Some(batch)) => {
-                if batch.iter().any(|e| pred(e)) {
+                if batch.iter().any(&mut pred) {
                     return true;
                 }
             }
@@ -54,7 +54,7 @@ async fn count_events(rx: &mut mpsc::Receiver<Vec<FileEvent>>) -> usize {
 #[ignore]
 async fn test_watcher_detects_new_file() {
     let (_dir, dir_path) = setup_temp_dir();
-    let (watcher, mut rx) = FileWatcher::new(&[dir_path.clone()]).unwrap();
+    let (watcher, mut rx) = FileWatcher::new(std::slice::from_ref(&dir_path)).unwrap();
 
     let file_path = dir_path.join("new_image.png");
     std::fs::write(&file_path, b"test image data").unwrap();
@@ -73,7 +73,7 @@ async fn test_watcher_detects_deletion() {
     let file_path = dir_path.join("to_delete.png");
     std::fs::write(&file_path, b"data").unwrap();
 
-    let (watcher, mut rx) = FileWatcher::new(&[dir_path.clone()]).unwrap();
+    let (watcher, mut rx) = FileWatcher::new(std::slice::from_ref(&dir_path)).unwrap();
 
     // Wait a bit for watcher to initialize
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -93,7 +93,7 @@ async fn test_watcher_ignores_hidden_files() {
     let hidden_dir = dir_path.join(".hidden");
     std::fs::create_dir(&hidden_dir).unwrap();
 
-    let (watcher, mut rx) = FileWatcher::new(&[dir_path.clone()]).unwrap();
+    let (watcher, mut rx) = FileWatcher::new(std::slice::from_ref(&dir_path)).unwrap();
 
     // Wait a bit for watcher to initialize
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -112,7 +112,7 @@ async fn test_watcher_ignores_hidden_files() {
 #[tokio::test]
 async fn test_watcher_filters_non_media() {
     let (_dir, dir_path) = setup_temp_dir();
-    let (watcher, mut rx) = FileWatcher::new(&[dir_path.clone()]).unwrap();
+    let (watcher, mut rx) = FileWatcher::new(std::slice::from_ref(&dir_path)).unwrap();
 
     // Wait for watcher to initialize
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -132,7 +132,7 @@ async fn test_watcher_filters_non_media() {
 #[ignore]
 async fn test_watcher_supports_common_media_types() {
     let (_dir, dir_path) = setup_temp_dir();
-    let (watcher, mut rx) = FileWatcher::new(&[dir_path.clone()]).unwrap();
+    let (watcher, mut rx) = FileWatcher::new(std::slice::from_ref(&dir_path)).unwrap();
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
