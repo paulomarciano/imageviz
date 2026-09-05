@@ -281,6 +281,41 @@ async fn test_pre_existing_tmp_file_does_not_break_generation() {
 }
 
 #[tokio::test]
+#[ignore = "requires test-fixtures/sample_video.webm (run scripts/generate-fixtures.sh)"]
+async fn test_video_generation_leaves_no_temp_or_intermediate_files() {
+    // Arrange
+    let cache_dir = tempdir().unwrap();
+    let source = crate::test_support::fixture_path("sample_video.webm");
+    assert!(source.exists(), "test fixture should exist: {:?}", source);
+
+    // Act
+    let result =
+        get_or_generate_thumbnail(&source, TEST_CHECKSUM, 200, cache_dir.path(), "video/webm")
+            .await;
+    assert!(result.is_ok(), "video thumbnail generation failed: {:?}", result.err());
+    let cached = result.unwrap();
+    assert!(cached.exists(), "final thumbnail should exist");
+
+    // Assert — exactly one file in the cache dir: the final WebP. No
+    // `{key}.frame.png` / `{key}.webp.tmp` residue may remain.
+    let mut entries: Vec<String> = std::fs::read_dir(cache_dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    entries.sort();
+    let expected = vec![format!("{}_200.webp", &TEST_CHECKSUM[..16])];
+    assert_eq!(entries, expected, "cache dir must contain only the final thumbnail");
+
+    // Assert — the legacy OS-temp video frame dir is no longer created.
+    let legacy_video_temp = std::env::temp_dir().join("imageviz-video-thumbs");
+    assert!(
+        !legacy_video_temp.exists(),
+        "legacy video temp dir must not be created: {}",
+        legacy_video_temp.display()
+    );
+}
+
+#[tokio::test]
 async fn test_concurrent_first_requests_generate_once() {
     // Arrange
     let cache_dir = tempdir().unwrap();

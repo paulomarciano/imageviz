@@ -71,9 +71,9 @@ impl From<std::io::Error> for VideoThumbnailError {
 /// `ffmpeg -ss {timestamp} -i {source} -vframes 1 -f image2 {output}`
 ///
 /// The frame is written to the exact `output_path` provided (ffmpeg requires a
-/// file target; the `-f image2` flag forces PNG output regardless of extension).
-/// The function wraps ffmpeg in a 30-second timeout and kills the subprocess if
-/// it exceeds that limit.
+/// file target; the image2 muxer selects the codec from the output filename's
+/// extension, so callers pass a `.png` name). The function wraps ffmpeg in a
+/// 30-second timeout and kills the subprocess if it exceeds that limit.
 ///
 /// # Errors
 ///
@@ -128,6 +128,9 @@ async fn run_ffmpeg_frame(
 ) -> Result<(), VideoThumbnailError> {
     let mut child = Command::new("ffmpeg")
         .args([
+            // Overwrite a stale output file from a crashed generation — ffmpeg
+            // would otherwise prompt on stdin and fail in a daemon context.
+            "-y",
             "-ss",
             &timestamp_secs.to_string(),
             "-i",
