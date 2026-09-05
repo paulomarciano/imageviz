@@ -49,11 +49,21 @@ const MAX_DEFAULT_INDEX_CONCURRENCY: usize = 8;
 /// honored as-is. When unset or invalid, falls back to the number of available
 /// CPU cores capped at [`MAX_DEFAULT_INDEX_CONCURRENCY`].
 fn index_concurrency() -> usize {
-    match std::env::var("INDEX_CONCURRENCY").ok().and_then(|v| v.parse::<usize>().ok()) {
+    let raw = std::env::var("INDEX_CONCURRENCY").ok();
+    let available = std::thread::available_parallelism().map_or(1, |n| n.get());
+    resolve_concurrency(raw.as_deref(), available)
+}
+
+/// Pure core of [`index_concurrency`] — testable without env mutation.
+///
+/// An explicit `raw` value is honored only when it parses to an integer > 0;
+/// anything else (unset, invalid, zero) falls back to `available` capped at
+/// [`MAX_DEFAULT_INDEX_CONCURRENCY`]. Zero must fall back: `buffer_unordered(0)`
+/// never polls the inner stream, so the stream would stall in `Pending` forever.
+fn resolve_concurrency(raw: Option<&str>, available: usize) -> usize {
+    match raw.and_then(|v| v.parse::<usize>().ok()) {
         Some(n) if n > 0 => n,
-        _ => std::thread::available_parallelism()
-            .map_or(1, |n| n.get())
-            .min(MAX_DEFAULT_INDEX_CONCURRENCY),
+        _ => available.min(MAX_DEFAULT_INDEX_CONCURRENCY),
     }
 }
 
@@ -71,6 +81,17 @@ pub async fn full_index(
     pool: &Pool<SqliteConnectionManager>,
     config: &AppConfig,
     progress: &progress::ProgressTracker,
+) -> Result<IndexStats, IndexError> {
+    // Snapshot the concurrency once per run for a consistent execution profile.
+    full_index_with_concurrency(pool, config, progress, index_concurrency()).await
+}
+
+/// [`full_index`] with an injected Phase-1 concurrency (test seam).
+async fn full_index_with_concurrency(
+    pool: &Pool<SqliteConnectionManager>,
+    config: &AppConfig,
+    progress: &progress::ProgressTracker,
+    concurrency: usize,
 ) -> Result<IndexStats, IndexError> {
     // Ensure all watched folders have stable UUIDs before scanning.
     let mut config = config.clone();
@@ -97,7 +118,7 @@ pub async fn full_index(
 
     // Build a list of (folder_id, file) pairs by looking up each file's
     // watched folder from the config.
-    let folder_file_pairs = resolve_folder_file_pairs(&all_files, &fid_map);
+    let folder_file_pairs = resolve_folder_file_pairs(all_files, &fid_map);
 
     // Process files in batches to limit transaction size
     let mut remaining = folder_file_pairs;
@@ -106,11 +127,11 @@ pub async fn full_index(
             remaining.drain(..BATCH_SIZE.min(remaining.len())).collect();
 
         // Phase 1: Async I/O — hash + detect + metadata, concurrently bounded
-        // by `index_concurrency()` (no DB connection held)
+        // by the resolved concurrency (no DB connection held)
         for _ in 0..chunk.len() {
             progress.increment_processed();
         }
-        let results = process_chunk_concurrent(chunk, index_concurrency()).await;
+        let results = process_chunk_concurrent(chunk, concurrency).await;
 
         let mut batch_results: Vec<ProcessedFile> = Vec::with_capacity(results.len());
         for (ff_entry, result) in results {
@@ -170,6 +191,17 @@ pub async fn incremental_index(
     config: &AppConfig,
     progress: &progress::ProgressTracker,
 ) -> Result<IndexStats, IndexError> {
+    // Snapshot the concurrency once per run for a consistent execution profile.
+    incremental_index_with_concurrency(pool, config, progress, index_concurrency()).await
+}
+
+/// [`incremental_index`] with an injected Phase-1 concurrency (test seam).
+async fn incremental_index_with_concurrency(
+    pool: &Pool<SqliteConnectionManager>,
+    config: &AppConfig,
+    progress: &progress::ProgressTracker,
+    concurrency: usize,
+) -> Result<IndexStats, IndexError> {
     // Ensure all watched folders have stable UUIDs before scanning.
     let mut config = config.clone();
     {
@@ -207,7 +239,7 @@ pub async fn incremental_index(
         return Ok(stats);
     }
 
-    let folder_file_pairs = resolve_folder_file_pairs(&all_files, &fid_map);
+    let folder_file_pairs = resolve_folder_file_pairs(all_files, &fid_map);
 
     let mut remaining = folder_file_pairs;
     while !remaining.is_empty() {
@@ -234,8 +266,8 @@ pub async fn incremental_index(
         }
 
         // Phase 1: Async I/O — hash + detect + metadata, concurrently bounded
-        // by `index_concurrency()` (no DB connection held)
-        let results = process_chunk_concurrent(to_process, index_concurrency()).await;
+        // by the resolved concurrency (no DB connection held)
+        let results = process_chunk_concurrent(to_process, concurrency).await;
 
         let mut batch_results: Vec<ProcessedFile> = Vec::with_capacity(results.len());
         for (ff_entry, result) in results {
@@ -286,11 +318,11 @@ pub async fn incremental_index(
 
 /// Pair a file entry with its watched folder ID.
 ///
-/// Owns the file entry (cloned from the scan results) so chunk items carry no
+/// Owns the file entry (moved out of the scan results) so chunk items carry no
 /// lifetimes. This keeps the concurrent-processing closure concrete in its
 /// generics — closures over lifetime-carrying items fail the `Send` analysis
 /// when the indexing future is `tokio::spawn`ed ("impl of FnOnce is not
-/// general enough"). The clone (~200 bytes) is negligible next to hashing.
+/// general enough").
 #[derive(Debug)]
 struct FolderFileEntry {
     folder_id: String,
@@ -307,9 +339,10 @@ struct ProcessedFile {
 }
 
 /// Resolve folder IDs for all scanned files by matching their absolute path
-/// prefix against watched folder paths.
+/// prefix against watched folder paths. Consumes `files`, moving each entry
+/// into the result so the scan snapshot can be dropped before the chunk loop.
 fn resolve_folder_file_pairs(
-    files: &[FileEntry],
+    files: Vec<FileEntry>,
     fid_map: &HashMap<String, String>,
 ) -> Vec<FolderFileEntry> {
     let mut result = Vec::with_capacity(files.len());
@@ -318,7 +351,7 @@ fn resolve_folder_file_pairs(
         if let Some(folder_id) = fid_map.iter().find_map(|(folder_path, fid)| {
             abs_path.strip_prefix(Path::new(folder_path)).ok().map(|_| fid.clone())
         }) {
-            result.push(FolderFileEntry { folder_id, file: file.clone() });
+            result.push(FolderFileEntry { folder_id, file });
         }
     }
     result

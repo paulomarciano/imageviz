@@ -388,77 +388,30 @@ async fn test_index_extracts_png_metadata_content() {
 // Wave 8.2 — Parallel Phase-1 processing
 // ---------------------------------------------------------------------------
 
-/// Serializes tests that mutate `INDEX_CONCURRENCY` (env is process-global).
-static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+// Concurrency resolution is tested through the pure `resolve_concurrency`
+// function (no env mutation: `set_var`/`remove_var` race concurrent
+// `getenv` readers on other test threads). The `full_index_with_concurrency` /
+// `incremental_index_with_concurrency` seams let the index-run tests inject a
+// concurrency value the same way.
 
-/// RAII guard holding `INDEX_CONCURRENCY` at `value`; restores the previous
-/// environment on drop. Holding the `ENV_LOCK` guard prevents concurrent env
-/// tests from racing each other.
-///
-/// Safe to hold across `.await` in tests: `#[tokio::test]` uses a
-/// current-thread runtime, so the test future has no `Send` requirement and no
-/// other task contends on the lock.
-fn set_index_concurrency(value: Option<&str>) -> EnvGuard {
-    let lock = ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    let prev = std::env::var("INDEX_CONCURRENCY").ok();
-    match value {
-        Some(v) => unsafe { std::env::set_var("INDEX_CONCURRENCY", v) },
-        None => unsafe { std::env::remove_var("INDEX_CONCURRENCY") },
-    }
-    EnvGuard { _lock: lock, prev }
-}
-
-struct EnvGuard {
-    _lock: std::sync::MutexGuard<'static, ()>,
-    prev: Option<String>,
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        match &self.prev {
-            Some(v) => unsafe { std::env::set_var("INDEX_CONCURRENCY", v) },
-            None => unsafe { std::env::remove_var("INDEX_CONCURRENCY") },
-        }
-    }
+#[test]
+fn test_resolve_concurrency_honors_explicit_value() {
+    assert_eq!(resolve_concurrency(Some("2"), 4), 2);
+    assert_eq!(resolve_concurrency(Some("16"), 4), 16, "explicit value is not capped");
+    assert_eq!(resolve_concurrency(Some("1"), 8), 1);
 }
 
 #[test]
-fn test_index_concurrency_from_env() {
-    {
-        let _guard = set_index_concurrency(Some("2"));
-        assert_eq!(index_concurrency(), 2);
-    }
-    {
-        let _guard = set_index_concurrency(Some("16"));
-        assert_eq!(index_concurrency(), 16, "explicit env override is not capped");
-    }
+fn test_resolve_concurrency_default_caps_available_parallelism() {
+    assert_eq!(resolve_concurrency(None, 16), 8, "default capped at 8");
+    assert_eq!(resolve_concurrency(None, 4), 4, "below cap: cores used as-is");
+    assert_eq!(resolve_concurrency(None, 1), 1);
 }
 
 #[test]
-fn test_index_concurrency_default_when_unset() {
-    let _guard = set_index_concurrency(None);
-    let n = index_concurrency();
-    assert!(n >= 1, "default must be at least 1, got {}", n);
-    assert!(n <= 8, "default must be capped at 8, got {}", n);
-}
-
-#[test]
-fn test_index_concurrency_invalid_env_falls_back_to_default() {
-    let expected = {
-        let _guard = set_index_concurrency(None);
-        index_concurrency()
-    };
-    {
-        let _guard = set_index_concurrency(Some("not-a-number"));
-        assert_eq!(index_concurrency(), expected, "invalid value must fall back");
-    }
-    {
-        let _guard = set_index_concurrency(Some("0"));
-        assert_eq!(
-            index_concurrency(),
-            expected,
-            "zero must fall back (buffer_unordered(0) is unbounded)"
-        );
+fn test_resolve_concurrency_invalid_falls_back_to_default() {
+    for raw in [None, Some("not-a-number"), Some(""), Some("0"), Some("-1")] {
+        assert_eq!(resolve_concurrency(raw, 16), 8, "{raw:?} must fall back to the capped default");
     }
 }
 
@@ -509,17 +462,17 @@ async fn test_full_index_parallel_matches_sequential_state() {
 
     // Run 1: sequential (concurrency 1)
     let pool_seq = setup_pool();
-    let stats_seq = {
-        let _guard = set_index_concurrency(Some("1"));
-        full_index(&pool_seq, &config_for(dir.path()), &setup_progress()).await.unwrap()
-    };
+    let stats_seq =
+        full_index_with_concurrency(&pool_seq, &config_for(dir.path()), &setup_progress(), 1)
+            .await
+            .unwrap();
 
     // Run 2: concurrent (concurrency 4), same files on disk
     let pool_par = setup_pool();
-    let stats_par = {
-        let _guard = set_index_concurrency(Some("4"));
-        full_index(&pool_par, &config_for(dir.path()), &setup_progress()).await.unwrap()
-    };
+    let stats_par =
+        full_index_with_concurrency(&pool_par, &config_for(dir.path()), &setup_progress(), 4)
+            .await
+            .unwrap();
 
     assert_eq!(stats_seq.created, 250, "all files created in sequential run");
     assert_eq!(stats_seq, stats_par, "stats must be identical regardless of concurrency");
@@ -534,15 +487,13 @@ async fn test_incremental_index_parallel_matches_sequential_state() {
 
     // Seed both pools with a full index of the same on-disk fixture.
     let pool_seq = setup_pool();
-    {
-        let _guard = set_index_concurrency(Some("1"));
-        full_index(&pool_seq, &config_for(dir.path()), &setup_progress()).await.unwrap();
-    }
+    full_index_with_concurrency(&pool_seq, &config_for(dir.path()), &setup_progress(), 1)
+        .await
+        .unwrap();
     let pool_par = setup_pool();
-    {
-        let _guard = set_index_concurrency(Some("4"));
-        full_index(&pool_par, &config_for(dir.path()), &setup_progress()).await.unwrap();
-    }
+    full_index_with_concurrency(&pool_par, &config_for(dir.path()), &setup_progress(), 4)
+        .await
+        .unwrap();
 
     // Modify 20 files (different text-chunk content → different size + checksum,
     // so the incremental size/mtime skip check cannot accidentally skip them).
@@ -551,14 +502,22 @@ async fn test_incremental_index_parallel_matches_sequential_state() {
         create_png_with_text_chunks(&path, &[("index", &format!("modified-{}", i))]);
     }
 
-    let stats_seq = {
-        let _guard = set_index_concurrency(Some("1"));
-        incremental_index(&pool_seq, &config_for(dir.path()), &setup_progress()).await.unwrap()
-    };
-    let stats_par = {
-        let _guard = set_index_concurrency(Some("4"));
-        incremental_index(&pool_par, &config_for(dir.path()), &setup_progress()).await.unwrap()
-    };
+    let stats_seq = incremental_index_with_concurrency(
+        &pool_seq,
+        &config_for(dir.path()),
+        &setup_progress(),
+        1,
+    )
+    .await
+    .unwrap();
+    let stats_par = incremental_index_with_concurrency(
+        &pool_par,
+        &config_for(dir.path()),
+        &setup_progress(),
+        4,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(stats_seq.updated, 20, "modified files must be updated");
     assert_eq!(stats_seq.skipped, 100, "unchanged files must be skipped");
@@ -575,10 +534,9 @@ async fn test_stats_accurate_with_failures_under_concurrency() {
     }
 
     let pool = setup_pool();
-    let stats = {
-        let _guard = set_index_concurrency(Some("4"));
-        full_index(&pool, &config_for(dir.path()), &setup_progress()).await.unwrap()
-    };
+    let stats = full_index_with_concurrency(&pool, &config_for(dir.path()), &setup_progress(), 4)
+        .await
+        .unwrap();
 
     assert_eq!(stats.created, 4, "only valid PNGs created");
     assert_eq!(stats.errors, 2, "both invalid files counted exactly once");
@@ -597,10 +555,8 @@ async fn test_progress_converges_under_concurrency() {
 
     let pool = setup_pool();
     let progress = setup_progress();
-    let stats = {
-        let _guard = set_index_concurrency(Some("4"));
-        full_index(&pool, &config_for(dir.path()), &progress).await.unwrap()
-    };
+    let stats =
+        full_index_with_concurrency(&pool, &config_for(dir.path()), &progress, 4).await.unwrap();
 
     let snap = progress.snapshot();
     assert_eq!(snap.status, progress::IndexStatus::Complete);
