@@ -7,7 +7,6 @@ use http_body_util::BodyExt;
 use r2d2::Pool;
 
 use imageviz_backend::db::SqliteConnectionManager;
-use serde_json::json;
 use std::sync::Arc;
 use tower::ServiceExt;
 use tower_http::cors::CorsLayer;
@@ -52,20 +51,21 @@ fn create_media_test_app() -> (Router, Arc<MediaState>, tempfile::TempDir) {
     (app, media_state, cache_dir)
 }
 
-/// Seed the config table with a single watched folder pointing at `folder_path`.
+/// Stable watched-folder id used by the seed helpers.
+const SEED_FOLDER_ID: &str = "fid-test";
+
+/// Seed a single watched folder (in the `watched_folders` table — the single
+/// source of truth) pointing at `folder_path`.
 async fn seed_config(state: &Arc<MediaState>, folder_path: &std::path::Path) {
     let conn = state.db.get().expect("Failed to get DB connection");
-    let config = json!({
-        "watched_folders": [{"path": folder_path.to_str().unwrap()}]
-    });
     conn.execute(
-        "INSERT INTO config (key, value) VALUES ('watched_folders', ?1)",
-        rusqlite::params![config.to_string()],
+        "INSERT OR IGNORE INTO watched_folders (id, path) VALUES (?1, ?2)",
+        rusqlite::params![SEED_FOLDER_ID, folder_path.to_str().unwrap()],
     )
     .expect("Failed to seed config");
 }
 
-/// Seed a single media item in the database.
+/// Seed a single media item in the database, assigned to the seeded folder.
 async fn seed_media_item(
     state: &Arc<MediaState>,
     id: &str,
@@ -76,9 +76,9 @@ async fn seed_media_item(
 ) {
     let conn = state.db.get().expect("Failed to get DB connection");
     conn.execute(
-        "INSERT INTO media_items (id, filename, relative_path, mime_type, file_size, file_created_at, file_modified_at, checksum)
-         VALUES (?1, ?2, ?3, ?4, 1024, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z', ?5)",
-        rusqlite::params![id, filename, relative_path, mime_type, checksum],
+        "INSERT INTO media_items (id, filename, relative_path, mime_type, file_size, file_created_at, file_modified_at, checksum, folder_id)
+         VALUES (?1, ?2, ?3, ?4, 1024, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z', ?5, ?6)",
+        rusqlite::params![id, filename, relative_path, mime_type, checksum, SEED_FOLDER_ID],
     )
     .expect("Failed to seed media item");
 }

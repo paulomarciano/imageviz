@@ -8,6 +8,8 @@ pub mod schema;
 pub use pool::SqliteConnectionManager;
 
 #[cfg(test)]
+mod migrations_test;
+#[cfg(test)]
 mod schema_test;
 
 /// Open a SQLite database connection with WAL mode, foreign keys, and busy timeout enabled.

@@ -17,8 +17,9 @@ use super::MediaState;
 /// Resolve a media item's absolute file path, MIME type, and filename from the
 /// database by UUID.
 ///
-/// Queries `media_items` for the relative path and looks it up against every
-/// configured watched folder, returning the first matching absolute path.
+/// Joins the item's `folder_id` against the `watched_folders` table (the
+/// single source of truth) to build the absolute path. Returns `404` when the
+/// item, its folder, or the file on disk cannot be found.
 pub(super) fn resolve_media_path(
     db: &rusqlite::Connection,
     id: &str,
@@ -39,7 +40,8 @@ pub(super) fn resolve_media_path(
             }
         })?;
 
-    // Try to resolve via folder_id → watched_folders path first (preferred).
+    // Resolve via folder_id → watched_folders path. The watched_folders
+    // table is the single source of truth; there is no legacy fallback.
     let folder_id: Option<String> = db
         .query_row(
             "SELECT folder_id FROM media_items WHERE id = ?1",
@@ -65,30 +67,7 @@ pub(super) fn resolve_media_path(
         }
     }
 
-    // Fallback: resolve using the config JSON (backward compat).
-    let config_str: String = db
-        .query_row("SELECT value FROM config WHERE key = 'watched_folders'", [], |row| row.get(0))
-        .map_err(|_| (StatusCode::NOT_FOUND, Json(json!({"error": "File not found on disk"}))))?;
-
-    let config: Value = serde_json::from_str(&config_str).map_err(|_| {
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Invalid configuration"})))
-    })?;
-
-    let folders = config["watched_folders"].as_array().ok_or_else(|| {
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Invalid configuration format"})))
-    })?;
-
-    let file_path = folders
-        .iter()
-        .filter_map(|folder| {
-            let base = folder["path"].as_str()?;
-            let full = std::path::Path::new(base).join(&relative_path);
-            if full.exists() { Some(full) } else { None }
-        })
-        .next()
-        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(json!({"error": "File not found on disk"}))))?;
-
-    Ok((file_path, mime_type, filename))
+    Err((StatusCode::NOT_FOUND, Json(json!({"error": "File not found on disk"}))))
 }
 
 /// Parse a single Range header value.

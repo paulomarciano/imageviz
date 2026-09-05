@@ -268,10 +268,10 @@ pub(crate) fn system_time_to_iso(time: SystemTime) -> String {
     chrono::DateTime::from_timestamp(secs, nsecs).unwrap_or_default().to_rfc3339()
 }
 
-/// Load watched folder paths from the database `config` table.
+/// Load watched folder (path, id) pairs from the `watched_folders` table —
+/// the single source of truth for folder configuration.
 ///
-/// Reads the `watched_folders` JSON blob and returns a list of absolute paths.
-/// Returns an empty list when no config entry exists.
+/// Returns an empty list when no folders are configured.
 pub(crate) fn load_watched_folders(
     conn: &Connection,
 ) -> Result<Vec<(PathBuf, String)>, Box<dyn std::error::Error + Send + Sync + 'static>> {
@@ -331,23 +331,12 @@ mod tests {
             db::migrations::run_migrations(&mut conn).expect("migrations");
         }
 
-        // Seed watched folders config with a stable folder ID.
+        // Seed the watched_folders registry table (single source of truth).
         let watched = tempfile::tempdir().expect("tempdir");
         let watched_path = watched.path().to_str().unwrap().to_string();
         let fid = Uuid::new_v4().to_string();
-        let config = json!({
-            "watched_folders": [
-                {"path": watched_path, "id": fid}
-            ]
-        });
         {
             let conn = pool.get().expect("get conn");
-            conn.execute(
-                "INSERT INTO config (key, value) VALUES ('watched_folders', ?1)",
-                params![config.to_string()],
-            )
-            .expect("seed config");
-            // Also seed the watched_folders registry table.
             conn.execute(
                 "INSERT OR IGNORE INTO watched_folders (id, path) VALUES (?1, ?2)",
                 params![fid, watched_path],
@@ -381,7 +370,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_load_watched_folders_from_config() {
+    fn test_load_watched_folders_from_table() {
         let mut conn = db::open_in_memory().expect("in-memory DB");
         db::migrations::run_migrations(&mut conn).expect("migrations");
 
@@ -391,18 +380,6 @@ mod tests {
         conn.execute("INSERT INTO watched_folders (id, path) VALUES ('fid2', '/tmp/b')", [])
             .expect("seed watched_folders");
 
-        let config = json!({
-            "watched_folders": [
-                {"path": "/tmp/a", "id": "fid1"},
-                {"path": "/tmp/b", "id": "fid2"}
-            ]
-        });
-        conn.execute(
-            "INSERT INTO config (key, value) VALUES ('watched_folders', ?1)",
-            params![config.to_string()],
-        )
-        .expect("seed");
-
         let folders = load_watched_folders(&conn).expect("load");
         assert_eq!(folders.len(), 2);
         assert_eq!(folders[0].0, PathBuf::from("/tmp/a"));
@@ -410,12 +387,12 @@ mod tests {
     }
 
     #[test]
-    fn test_load_watched_folders_empty_when_no_config() {
+    fn test_load_watched_folders_empty_when_no_folders() {
         let mut conn = db::open_in_memory().expect("in-memory DB");
         db::migrations::run_migrations(&mut conn).expect("migrations");
 
         let folders = load_watched_folders(&conn).expect("load");
-        assert!(folders.is_empty(), "no config row should return empty list");
+        assert!(folders.is_empty(), "no watched folders should return empty list");
     }
 
     #[test]

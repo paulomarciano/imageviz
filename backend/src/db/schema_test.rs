@@ -108,10 +108,10 @@ mod tests {
         // Run migrations twice
         migrations::run_migrations(&mut conn).unwrap();
         migrations::run_migrations(&mut conn).unwrap();
-        // user_version should be 3 after both runs (v1 + v2 + v3 are cumulative)
+        // user_version should be 4 after both runs (v1..v4 are cumulative)
         let version: i32 =
             conn.pragma_query_value(None, "user_version", |r| r.get::<_, i32>(0)).unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, 4);
         // Tables should still exist (no duplicate errors)
         let count: i32 =
             conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get::<_, i32>(0)).unwrap();

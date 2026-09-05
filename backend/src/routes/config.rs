@@ -90,7 +90,10 @@ async fn update_config(
         })?
     };
 
-    // Persist the new config.
+    // Persist the new config: assign stable folder ids, upsert every row,
+    // and delete rows for paths that are no longer configured — all in one
+    // transactional write to the watched_folders table (the single source
+    // of truth).
     {
         let conn = state.db.get().map_err(|e| {
             tracing::error!(error = %e, "Failed to acquire database connection");
@@ -99,20 +102,11 @@ async fn update_config(
                 Json(json!({"error": "Service temporarily unavailable"})),
             )
         })?;
-        crate::config::save_config(&conn, &config).map_err(|e| {
+        crate::config::save_config(&conn, &mut config).map_err(|e| {
             tracing::error!(error = %e, "Failed to save config to database");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error": "Failed to save configuration"})),
-            )
-        })?;
-
-        // Assign stable folder IDs after saving config.
-        crate::config::assign_folder_ids(&conn, &mut config).map_err(|e| {
-            tracing::error!(error = %e, "Failed to assign folder IDs");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to assign folder IDs"})),
             )
         })?;
     }

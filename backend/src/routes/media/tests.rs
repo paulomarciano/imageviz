@@ -34,22 +34,21 @@ fn test_state() -> (Arc<MediaState>, tempfile::TempDir) {
     (state, cache_dir)
 }
 
-/// Seed the database with a watched-folder config pointing at `folder_path`.
+/// Stable watched-folder id used by the seed helpers.
+const SEED_FOLDER_ID: &str = "fid-test";
+
+/// Seed a single watched folder (in the `watched_folders` table — the single
+/// source of truth) pointing at `folder_path`.
 async fn seed_config(state: &Arc<MediaState>, folder_path: &std::path::Path) {
     let conn = state.db.get().expect("Failed to get DB connection");
-    let config = json!({
-        "watched_folders": [
-            {"path": folder_path.to_str().unwrap()}
-        ]
-    });
     conn.execute(
-        "INSERT INTO config (key, value) VALUES ('watched_folders', ?1)",
-        rusqlite::params![config.to_string()],
+        "INSERT OR IGNORE INTO watched_folders (id, path) VALUES (?1, ?2)",
+        rusqlite::params![SEED_FOLDER_ID, folder_path.to_str().unwrap()],
     )
     .expect("Failed to seed config");
 }
 
-/// Seed a single media item in the database.
+/// Seed a single media item in the database, assigned to the seeded folder.
 async fn seed_media_item(
     state: &Arc<MediaState>,
     id: &str,
@@ -60,9 +59,9 @@ async fn seed_media_item(
 ) {
     let conn = state.db.get().expect("Failed to get DB connection");
     conn.execute(
-        "INSERT INTO media_items (id, filename, relative_path, mime_type, file_size, file_created_at, file_modified_at, checksum)
-         VALUES (?1, ?2, ?3, ?4, 1024, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z', ?5)",
-        rusqlite::params![id, filename, relative_path, mime_type, checksum],
+        "INSERT INTO media_items (id, filename, relative_path, mime_type, file_size, file_created_at, file_modified_at, checksum, folder_id)
+         VALUES (?1, ?2, ?3, ?4, 1024, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z', ?5, ?6)",
+        rusqlite::params![id, filename, relative_path, mime_type, checksum, SEED_FOLDER_ID],
     )
     .expect("Failed to seed media item");
 }
@@ -430,6 +429,59 @@ async fn test_serve_file_happy_path() {
     let content_disposition =
         response.headers().get(header::CONTENT_DISPOSITION).and_then(|v| v.to_str().ok()).unwrap();
     assert!(content_disposition.contains("test.png"));
+}
+
+#[tokio::test]
+async fn test_serve_file_does_not_fall_back_to_legacy_config_blob() {
+    let (state, _cache_dir) = test_state();
+    let watched = tempfile::tempdir().unwrap();
+    let source_path = watched.path().join("blob_only.png");
+    create_test_png(&source_path);
+
+    // Simulate a legacy install: the folder exists only in the config JSON
+    // blob and the media item has no folder_id. The watched_folders table is
+    // the single source of truth, so resolution must fail with 404 instead
+    // of silently falling back to the blob.
+    {
+        let conn = state.db.get().expect("Failed to get DB connection");
+        let config = json!({
+            "watched_folders": [{"path": watched.path().to_str().unwrap()}]
+        });
+        conn.execute(
+            "INSERT INTO config (key, value) VALUES ('watched_folders', ?1)",
+            rusqlite::params![config.to_string()],
+        )
+        .expect("Failed to seed legacy blob");
+    }
+
+    // Legacy-style row: no folder_id at all.
+    {
+        let conn = state.db.get().expect("Failed to get DB connection");
+        conn.execute(
+            "INSERT INTO media_items (id, filename, relative_path, mime_type, file_size, file_created_at, file_modified_at, checksum)
+             VALUES ('00000000-0000-0000-0000-000000000009', 'blob_only.png', 'blob_only.png', 'image/png', 1024, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z', '')",
+            [],
+        )
+        .expect("Failed to seed legacy media item");
+    }
+
+    let app = routes().with_state(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/media/00000000-0000-0000-0000-000000000009/file")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&body_bytes).unwrap();
+    assert_eq!(body["error"], "File not found on disk");
 }
 
 // -----------------------------------------------------------------------

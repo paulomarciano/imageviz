@@ -20,31 +20,28 @@ pub struct AppConfig {
     pub watched_folders: Vec<WatchedFolder>,
 }
 
-/// Load configuration from the database.
+/// Load configuration from the `watched_folders` table — the single source
+/// of truth for watched-folder configuration.
 ///
-/// Returns `AppConfig::default()` (empty watched folders) when no config row exists.
+/// Returns `AppConfig::default()` (empty watched folders) when the table has
+/// no rows. Folders are returned in the order they were last persisted.
 pub fn load_config(conn: &Connection) -> Result<AppConfig, rusqlite::Error> {
-    let result: Result<String, rusqlite::Error> =
-        conn.query_row("SELECT value FROM config WHERE key = 'watched_folders'", [], |r| r.get(0));
-
-    match result {
-        Ok(json) => serde_json::from_str(&json)
-            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e))),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(AppConfig::default()),
-        Err(e) => Err(e),
-    }
+    let mut stmt = conn.prepare("SELECT id, path, label FROM watched_folders ORDER BY rowid")?;
+    let folders = stmt
+        .query_map([], |row| {
+            Ok(WatchedFolder { id: Some(row.get(0)?), path: row.get(1)?, label: row.get(2)? })
+        })?
+        .filter_map(|row| row.ok())
+        .collect();
+    Ok(AppConfig { watched_folders: folders })
 }
 
-/// Save configuration to the database.
+/// Ensure every folder in `config` has a stable UUID and persist the rows to
+/// the `watched_folders` table (upsert-only).
 ///
-/// The entire `watched_folders` array is serialized as JSON and stored in a single
-/// config row keyed by `'watched_folders'`.
-/// Ensure all watched folders have stable UUIDs, persisting to the DB.
-///
-/// For each folder in the config:
-/// 1. Looks up the path in `watched_folders` to see if an ID already exists.
-/// 2. If not, generates a new UUID v4.
-/// 3. Upserts the folder entry into `watched_folders`.
+/// Rows whose paths are absent from `config` are intentionally left in place:
+/// deletion is [`save_config`]'s responsibility, because the indexer calls
+/// this function on every run and never removes folders.
 pub fn assign_folder_ids(conn: &Connection, config: &mut AppConfig) -> Result<(), rusqlite::Error> {
     for folder in &mut config.watched_folders {
         let existing: Option<String> = conn
@@ -68,13 +65,6 @@ pub fn assign_folder_ids(conn: &Connection, config: &mut AppConfig) -> Result<()
         }
     }
 
-    // Persist the IDs back to the config table JSON so that downstream
-    // readers (e.g. load_watched_folders in the watcher handler) can
-    // resolve folder IDs without a separate query to the watched_folders
-    // table. Without this, every file event log-floods with:
-    //   "File ... is not inside any configured watched folder"
-    save_config(conn, config)?;
-
     Ok(())
 }
 
@@ -90,19 +80,46 @@ pub fn folder_id_map(config: &AppConfig) -> std::collections::HashMap<String, St
         .collect()
 }
 
-pub fn save_config(conn: &Connection, config: &AppConfig) -> Result<(), rusqlite::Error> {
-    let json = serde_json::to_string(config)
-        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-    conn.execute(
-        "INSERT OR REPLACE INTO config (key, value) VALUES ('watched_folders', ?1)",
-        params![json],
-    )?;
-    Ok(())
+/// Replace the stored configuration with `config` in a single transactional
+/// write: assign stable ids, upsert every row, and delete rows for paths that
+/// are no longer configured.
+///
+/// Existing paths keep their UUID so `media_items.folder_id` references stay
+/// valid across configuration updates.
+pub fn save_config(conn: &Connection, config: &mut AppConfig) -> Result<(), rusqlite::Error> {
+    let tx = conn.unchecked_transaction()?;
+    assign_folder_ids(&tx, config)?;
+
+    let keep: std::collections::HashSet<&str> =
+        config.watched_folders.iter().map(|f| f.path.as_str()).collect();
+    let existing_paths: Vec<String> = {
+        let mut stmt = tx.prepare("SELECT path FROM watched_folders")?;
+        let rows = stmt.query_map([], |row| row.get(0))?;
+        rows.filter_map(|row| row.ok()).collect()
+    };
+    for path in existing_paths {
+        if !keep.contains(path.as_str()) {
+            tx.execute("DELETE FROM watched_folders WHERE path = ?1", params![path])?;
+        }
+    }
+
+    tx.commit()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// In-memory connection with the full schema applied.
+    fn migrated_conn() -> Connection {
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::run_migrations(&mut conn).unwrap();
+        conn
+    }
+
+    fn folder(path: &str, label: Option<&str>) -> WatchedFolder {
+        WatchedFolder { path: path.to_string(), label: label.map(str::to_string), id: None }
+    }
 
     #[test]
     fn test_default_config_empty() {
@@ -111,29 +128,27 @@ mod tests {
     }
 
     #[test]
-    fn test_load_config_returns_default_when_no_rows() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT);").unwrap();
+    fn test_load_config_returns_empty_when_no_folders() {
+        let conn = migrated_conn();
         let config = load_config(&conn).unwrap();
         assert!(config.watched_folders.is_empty());
     }
 
     #[test]
     fn test_save_and_load_roundtrip() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT);").unwrap();
+        let conn = migrated_conn();
 
-        let folders = vec![
-            WatchedFolder {
-                path: "/tmp/images".to_string(),
-                label: Some("Test images".to_string()),
-                id: None,
-            },
-            WatchedFolder { path: "/tmp/videos".to_string(), label: None, id: None },
-        ];
-        let config = AppConfig { watched_folders: folders };
-
-        save_config(&conn, &config).unwrap();
+        let mut config = AppConfig {
+            watched_folders: vec![
+                folder("/tmp/images", Some("Test images")),
+                folder("/tmp/videos", None),
+            ],
+        };
+        save_config(&conn, &mut config).unwrap();
+        assert!(
+            config.watched_folders.iter().all(|f| f.id.is_some()),
+            "save_config must assign ids"
+        );
 
         let loaded = load_config(&conn).unwrap();
         assert_eq!(loaded.watched_folders.len(), 2);
@@ -141,34 +156,59 @@ mod tests {
         assert_eq!(loaded.watched_folders[0].label.as_deref(), Some("Test images"));
         assert_eq!(loaded.watched_folders[1].path, "/tmp/videos");
         assert!(loaded.watched_folders[1].label.is_none());
+        // PUT order is preserved and ids survive the roundtrip.
+        assert_eq!(loaded.watched_folders[0].id, config.watched_folders[0].id);
+        assert_eq!(loaded.watched_folders[1].id, config.watched_folders[1].id);
     }
 
     #[test]
-    fn test_save_overwrites_previous() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT);").unwrap();
+    fn test_save_config_preserves_existing_path_ids() {
+        let conn = migrated_conn();
+        conn.execute(
+            "INSERT INTO watched_folders (id, path, label) VALUES ('fid-known', '/known', NULL)",
+            [],
+        )
+        .unwrap();
 
-        let first = AppConfig {
-            watched_folders: vec![WatchedFolder {
-                path: "/first".to_string(),
-                label: None,
-                id: None,
-            }],
-        };
-        save_config(&conn, &first).unwrap();
+        let mut config =
+            AppConfig { watched_folders: vec![folder("/known", None), folder("/new", None)] };
+        save_config(&conn, &mut config).unwrap();
 
-        let second = AppConfig {
-            watched_folders: vec![WatchedFolder {
-                path: "/second".to_string(),
-                label: None,
-                id: None,
-            }],
-        };
-        save_config(&conn, &second).unwrap();
+        // The pre-existing path keeps its stable id (media_items.folder_id
+        // references depend on this).
+        assert_eq!(config.watched_folders[0].id.as_deref(), Some("fid-known"));
+        assert!(config.watched_folders[1].id.is_some());
+
+        let loaded = load_config(&conn).unwrap();
+        assert_eq!(loaded.watched_folders[0].id.as_deref(), Some("fid-known"));
+    }
+
+    #[test]
+    fn test_save_config_removes_paths_no_longer_configured() {
+        let conn = migrated_conn();
+
+        let mut first =
+            AppConfig { watched_folders: vec![folder("/first", None), folder("/second", None)] };
+        save_config(&conn, &mut first).unwrap();
+
+        let mut second = AppConfig { watched_folders: vec![folder("/second", None)] };
+        save_config(&conn, &mut second).unwrap();
 
         let loaded = load_config(&conn).unwrap();
         assert_eq!(loaded.watched_folders.len(), 1);
         assert_eq!(loaded.watched_folders[0].path, "/second");
+    }
+
+    #[test]
+    fn test_assign_folder_ids_is_idempotent() {
+        let conn = migrated_conn();
+
+        let mut config = AppConfig { watched_folders: vec![folder("/stable", None)] };
+        assign_folder_ids(&conn, &mut config).unwrap();
+        let first_id = config.watched_folders[0].id.clone().unwrap();
+
+        assign_folder_ids(&conn, &mut config).unwrap();
+        assert_eq!(config.watched_folders[0].id.as_deref(), Some(first_id.as_str()));
     }
 
     #[test]
