@@ -65,14 +65,15 @@ impl From<std::io::Error> for VideoThumbnailError {
     }
 }
 
-/// Extract a single video frame as a PNG thumbnail using ffmpeg.
+/// Extract a single video frame as a PNG using ffmpeg.
 ///
 /// Invokes:
 /// `ffmpeg -ss {timestamp} -i {source} -vframes 1 -f image2 {output}`
 ///
-/// The output file is named `{source_stem}_frame_{timestamp}.png` and placed
-/// in `output_dir`. The function wraps ffmpeg in a 30-second timeout and
-/// kills the subprocess if it exceeds that limit.
+/// The frame is written to the exact `output_path` provided (ffmpeg requires a
+/// file target; the `-f image2` flag forces PNG output regardless of extension).
+/// The function wraps ffmpeg in a 30-second timeout and kills the subprocess if
+/// it exceeds that limit.
 ///
 /// # Errors
 ///
@@ -85,29 +86,24 @@ impl From<std::io::Error> for VideoThumbnailError {
 /// | `InvalidOutput` | ffmpeg succeeds but output PNG was not created |
 pub async fn extract_video_thumbnail(
     source_path: &Path,
-    output_dir: &Path,
+    output_path: &Path,
     timestamp_secs: u32,
 ) -> Result<PathBuf, VideoThumbnailError> {
-    // -- Validate source and build output path
+    // -- Validate source and prepare the output location
     ensure_source_exists(source_path)?;
-    tokio::fs::create_dir_all(output_dir).await?;
-    let output_path = video_output_path(source_path, output_dir, timestamp_secs);
+    if let Some(parent) = output_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
 
     // -- Run ffmpeg with timeout
-    run_ffmpeg_frame(source_path, &output_path, timestamp_secs).await?;
+    run_ffmpeg_frame(source_path, output_path, timestamp_secs).await?;
 
     // -- Verify ffmpeg actually wrote the output file
     if !output_path.exists() {
-        return Err(VideoThumbnailError::InvalidOutput(output_path));
+        return Err(VideoThumbnailError::InvalidOutput(output_path.to_path_buf()));
     }
 
-    Ok(output_path)
-}
-
-/// Build the deterministic output path for a video thumbnail.
-fn video_output_path(source_path: &Path, output_dir: &Path, timestamp_secs: u32) -> PathBuf {
-    let stem = source_path.file_stem().and_then(|s| s.to_str()).unwrap_or("video");
-    output_dir.join(format!("{}_frame_{}.png", stem, timestamp_secs))
+    Ok(output_path.to_path_buf())
 }
 
 /// Ensure the source file exists, or return `SourceNotFound`.

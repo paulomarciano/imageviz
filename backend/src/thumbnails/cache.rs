@@ -216,41 +216,38 @@ pub async fn get_or_generate_thumbnail(
     // Ensure the cache directory exists.
     tokio::fs::create_dir_all(cache_dir).await?;
 
-    // Generate the thumbnail.
-    // For video files: extract a PNG keyframe via ffmpeg, then convert to WebP.
-    // For images: resize the source to WebP directly.
-    let generated_path = if mime_type.starts_with("video/") {
-        let video_temp = std::env::temp_dir().join("imageviz-video-thumbs");
-        tokio::fs::create_dir_all(&video_temp).await?;
+    // Generate the thumbnail directly into the cache directory as `{key}.tmp`,
+    // then publish it with an atomic rename onto `{key}.webp`. Nothing is
+    // written to the OS temp directory. A leftover `.tmp` from a crashed
+    // generation is harmless: it is overwritten here, and eviction sweeps it.
+    let tmp_path = cache_dir.join(format!("{key}.tmp"));
 
-        let frame_path = super::video::extract_video_thumbnail(
+    // For video files: extract a PNG keyframe via ffmpeg into the cache dir
+    // (ffmpeg needs a file target; the `.png` extension lets the image2 muxer
+    // select the PNG codec), convert it to WebP at the requested width, then
+    // delete the intermediate frame.
+    // For images: resize the source to WebP directly.
+    if mime_type.starts_with("video/") {
+        let frame_path = cache_dir.join(format!("{key}.frame.png"));
+        super::video::extract_video_thumbnail(
             source_path,
-            &video_temp,
-            1, // extract frame at 1 second
+            &frame_path,
+            super::video::DEFAULT_TIMESTAMP_SECS,
         )
         .await
         .map_err(|e| CacheError::Generation(e.to_string()))?;
 
-        // Convert the extracted PNG frame to a WebP thumbnail at the
-        // requested width.
-        let webp_path = image::generate_image_thumbnail(&frame_path, target_width)
+        let converted = image::generate_image_thumbnail(&frame_path, target_width, &tmp_path).await;
+        // Clean up the intermediate frame regardless of conversion outcome.
+        let _ = tokio::fs::remove_file(&frame_path).await;
+        converted.map_err(|e| CacheError::Generation(e.to_string()))?;
+    } else {
+        image::generate_image_thumbnail(source_path, target_width, &tmp_path)
             .await
             .map_err(|e| CacheError::Generation(e.to_string()))?;
+    }
 
-        // Clean up the intermediate frame PNG.
-        let _ = tokio::fs::remove_file(&frame_path).await;
-
-        webp_path
-    } else {
-        image::generate_image_thumbnail(source_path, target_width)
-            .await
-            .map_err(|e| CacheError::Generation(e.to_string()))?
-    };
-
-    // Atomic write: copy to a temp file inside the cache directory, then
-    // rename (which is atomic on the same filesystem).
-    let tmp_path = cache_dir.join(format!("{key}.tmp"));
-    tokio::fs::copy(&generated_path, &tmp_path).await?;
+    // Atomic publish: rename is atomic on the same filesystem.
     tokio::fs::rename(&tmp_path, &cache_path).await?;
 
     // Check cache size and evict old files if needed (best-effort, fire-and-forget).
