@@ -1,6 +1,5 @@
-// The test module is nested inside schema::tests, so we need super::super to
-// access items from the `search` module (mod.rs) such as IndexManager.
-use super::super::*;
+use super::*;
+use crate::search::IndexManager;
 
 use tantivy::DateTime;
 use tantivy::collector::TopDocs;

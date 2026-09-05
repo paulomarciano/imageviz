@@ -68,7 +68,7 @@ impl From<std::io::Error> for VideoThumbnailError {
 /// Extract a single video frame as a PNG using ffmpeg.
 ///
 /// Invokes:
-/// `ffmpeg -ss {timestamp} -i {source} -vframes 1 -f image2 {output}`
+/// `ffmpeg -y -ss {timestamp} -i {source} -vframes 1 -f image2 {output}`
 ///
 /// The frame is written to the exact `output_path` provided (ffmpeg requires a
 /// file target; the image2 muxer selects the codec from the output filename's

@@ -288,6 +288,11 @@ async fn test_video_generation_leaves_no_temp_or_intermediate_files() {
     let source = crate::test_support::fixture_path("sample_video.webm");
     assert!(source.exists(), "test fixture should exist: {:?}", source);
 
+    // The legacy dir may still exist from pre-8.3 runs on this machine —
+    // snapshot before acting so we only assert on newly created state.
+    let legacy_video_temp = std::env::temp_dir().join("imageviz-video-thumbs");
+    let legacy_existed_before = legacy_video_temp.exists();
+
     // Act
     let result =
         get_or_generate_thumbnail(&source, TEST_CHECKSUM, 200, cache_dir.path(), "video/webm")
@@ -295,6 +300,13 @@ async fn test_video_generation_leaves_no_temp_or_intermediate_files() {
     assert!(result.is_ok(), "video thumbnail generation failed: {:?}", result.err());
     let cached = result.unwrap();
     assert!(cached.exists(), "final thumbnail should exist");
+
+    // Assert — the published file is a freshly generated WebP.
+    let data = std::fs::read(&cached).unwrap();
+    assert!(
+        data.len() > 12 && &data[0..4] == b"RIFF" && &data[8..12] == b"WEBP",
+        "final file must be a freshly generated WebP, not residue"
+    );
 
     // Assert — exactly one file in the cache dir: the final WebP. No
     // `{key}.frame.png` / `{key}.webp.tmp` residue may remain.
@@ -306,10 +318,9 @@ async fn test_video_generation_leaves_no_temp_or_intermediate_files() {
     let expected = vec![format!("{}_200.webp", &TEST_CHECKSUM[..16])];
     assert_eq!(entries, expected, "cache dir must contain only the final thumbnail");
 
-    // Assert — the legacy OS-temp video frame dir is no longer created.
-    let legacy_video_temp = std::env::temp_dir().join("imageviz-video-thumbs");
+    // Assert — this run does not create the legacy OS-temp video frame dir.
     assert!(
-        !legacy_video_temp.exists(),
+        legacy_existed_before || !legacy_video_temp.exists(),
         "legacy video temp dir must not be created: {}",
         legacy_video_temp.display()
     );

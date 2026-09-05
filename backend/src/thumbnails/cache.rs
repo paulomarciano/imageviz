@@ -229,13 +229,18 @@ pub async fn get_or_generate_thumbnail(
     // For images: resize the source to WebP directly.
     if mime_type.starts_with("video/") {
         let frame_path = cache_dir.join(format!("{key}.frame.png"));
-        super::video::extract_video_thumbnail(
+        let extracted = super::video::extract_video_thumbnail(
             source_path,
             &frame_path,
             super::video::DEFAULT_TIMESTAMP_SECS,
         )
-        .await
-        .map_err(|e| CacheError::Generation(e.to_string()))?;
+        .await;
+        if extracted.is_err() {
+            // ffmpeg may leave a partial frame behind — clean it up before
+            // propagating the error so the next attempt starts clean.
+            let _ = tokio::fs::remove_file(&frame_path).await;
+        }
+        extracted.map_err(|e| CacheError::Generation(e.to_string()))?;
 
         let converted = image::generate_image_thumbnail(&frame_path, target_width, &tmp_path).await;
         // Clean up the intermediate frame regardless of conversion outcome.
