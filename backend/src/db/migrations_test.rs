@@ -109,6 +109,60 @@ mod tests {
     }
 
     #[test]
+    fn test_v004_blob_id_collision_gets_fresh_id() {
+        let mut conn = legacy_v3_conn();
+
+        // The table already uses id 'fid-x' for a different path.
+        conn.execute("INSERT INTO watched_folders (id, path) VALUES ('fid-x', '/table/path')", [])
+            .unwrap();
+
+        // The blob references the same id for another path (drift/corruption).
+        let blob = json!({"watched_folders": [{"path": "/blob/other", "id": "fid-x"}]}).to_string();
+        conn.execute(
+            "INSERT INTO config (key, value) VALUES ('watched_folders', ?1)",
+            params![blob],
+        )
+        .unwrap();
+
+        run_migrations(&mut conn).expect("migrations");
+
+        // The folder must still be imported — under a fresh id, not silently
+        // dropped by the PK conflict.
+        let rows = table_rows(&conn);
+        assert_eq!(rows.len(), 2, "both folders must exist, got: {rows:?}");
+        assert!(
+            rows.iter().any(|(id, path, _)| path == "/blob/other" && id != "fid-x"),
+            "blob folder whose id is taken must be re-imported under a fresh id, got: {rows:?}"
+        );
+        assert!(blob_row(&conn).is_none());
+    }
+
+    #[test]
+    fn test_v004_duplicate_path_inside_blob_is_not_duplicated() {
+        let mut conn = legacy_v3_conn();
+
+        let blob = json!({
+            "watched_folders": [
+                {"path": "/dup", "id": "fid-a"},
+                {"path": "/dup", "id": "fid-b"}
+            ]
+        })
+        .to_string();
+        conn.execute(
+            "INSERT INTO config (key, value) VALUES ('watched_folders', ?1)",
+            params![blob],
+        )
+        .unwrap();
+
+        run_migrations(&mut conn).expect("migrations");
+
+        let rows = table_rows(&conn);
+        assert_eq!(rows.len(), 1, "duplicate path inside the blob must not be inserted twice");
+        assert_eq!(rows[0].1, "/dup");
+        assert!(blob_row(&conn).is_none());
+    }
+
+    #[test]
     fn test_v004_corrupt_blob_is_left_in_place() {
         let mut conn = legacy_v3_conn();
 

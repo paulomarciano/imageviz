@@ -103,10 +103,35 @@ fn import_legacy_config_blob(conn: &Connection) -> Result<(), rusqlite::Error> {
         }
 
         let id = folder.id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        conn.execute(
+        let inserted = conn.execute(
             "INSERT OR IGNORE INTO watched_folders (id, path, label) VALUES (?1, ?2, ?3)",
             params![id, folder.path, folder.label],
         )?;
+
+        if inserted == 0 {
+            // The insert was ignored: either the id is taken by a different
+            // path (drift/corruption) or this path appears twice in the blob.
+            // Re-import under a fresh id only when the path is genuinely
+            // missing — never silently drop the folder.
+            let path_present: Option<String> = conn
+                .query_row(
+                    "SELECT id FROM watched_folders WHERE path = ?1",
+                    params![folder.path],
+                    |r| r.get(0),
+                )
+                .optional()?;
+
+            if path_present.is_none() {
+                tracing::warn!(
+                    path = %folder.path,
+                    "Legacy config blob id is already in use by another folder — assigning a fresh id"
+                );
+                conn.execute(
+                    "INSERT INTO watched_folders (id, path, label) VALUES (?1, ?2, ?3)",
+                    params![uuid::Uuid::new_v4().to_string(), folder.path, folder.label],
+                )?;
+            }
+        }
     }
 
     conn.execute("DELETE FROM config WHERE key = ?1", params![LEGACY_WATCHED_FOLDERS_KEY])?;

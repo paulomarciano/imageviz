@@ -190,3 +190,62 @@ async fn test_config_put_idempotent() {
     let folders = body["watched_folders"].as_array().unwrap();
     assert_eq!(folders.len(), 1, "PUT should replace, not append");
 }
+
+// ---------------------------------------------------------------------------
+// Removal: PUT removing a folder that has indexed media must succeed
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_config_put_removing_folder_with_media_returns_200() {
+    let app = common::create_test_app_with_search();
+
+    // Seed a folder with media rows referencing it (FK enforcement is ON in
+    // this pool — media_items.folder_id references watched_folders.id).
+    {
+        let conn = app.pool.get().unwrap();
+        conn.execute("INSERT INTO watched_folders (id, path) VALUES ('fid-gone', '/gone')", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO media_items (id, filename, relative_path, mime_type, file_size, \
+             folder_id, file_created_at, file_modified_at) \
+             VALUES ('m-1', 'a.png', 'a.png', 'image/png', 1, 'fid-gone', \
+             '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+    }
+
+    // PUT a config that no longer contains /gone.
+    let input = json!({ "watched_folders": [{"path": "/kept"}] });
+    let response = app
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::PUT)
+                .uri("/api/v1/config")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&input).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "removing a media-bearing folder must not fail the FK constraint"
+    );
+
+    // The folder and its media rows are removed together.
+    let conn = app.pool.get().unwrap();
+    let folders: i64 = conn
+        .query_row("SELECT COUNT(*) FROM watched_folders WHERE path = '/gone'", [], |r| r.get(0))
+        .unwrap();
+    let items: i64 = conn
+        .query_row("SELECT COUNT(*) FROM media_items WHERE folder_id = 'fid-gone'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!((folders, items), (0, 0), "folder and its media rows must be removed together");
+}

@@ -99,6 +99,13 @@ pub fn save_config(conn: &Connection, config: &mut AppConfig) -> Result<(), rusq
     };
     for path in existing_paths {
         if !keep.contains(path.as_str()) {
+            // media_items.folder_id is an FK child of watched_folders.id —
+            // remove dependents first or the parent DELETE fails (FK = ON).
+            tx.execute(
+                "DELETE FROM media_items WHERE folder_id IN \
+                 (SELECT id FROM watched_folders WHERE path = ?1)",
+                params![path],
+            )?;
             tx.execute("DELETE FROM watched_folders WHERE path = ?1", params![path])?;
         }
     }
@@ -110,9 +117,10 @@ pub fn save_config(conn: &Connection, config: &mut AppConfig) -> Result<(), rusq
 mod tests {
     use super::*;
 
-    /// In-memory connection with the full schema applied.
+    /// In-memory connection with the full schema applied and foreign keys
+    /// enabled (matching production pool posture).
     fn migrated_conn() -> Connection {
-        let mut conn = Connection::open_in_memory().unwrap();
+        let mut conn = crate::db::open_in_memory().unwrap();
         crate::db::migrations::run_migrations(&mut conn).unwrap();
         conn
     }
@@ -197,6 +205,35 @@ mod tests {
         let loaded = load_config(&conn).unwrap();
         assert_eq!(loaded.watched_folders.len(), 1);
         assert_eq!(loaded.watched_folders[0].path, "/second");
+    }
+
+    #[test]
+    fn test_save_config_removal_with_referencing_media_items() {
+        let conn = migrated_conn();
+
+        conn.execute("INSERT INTO watched_folders (id, path) VALUES ('fid-1', '/gone')", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO media_items (id, filename, relative_path, mime_type, file_size, \
+                 folder_id, file_created_at, file_modified_at) \
+             VALUES ('m-1', 'a.png', 'a.png', 'image/png', 1, 'fid-1', \
+                 '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+        // Removing the folder must succeed even though media items reference
+        // it: media_items.folder_id is an FK child of watched_folders.id, so
+        // the folder's media rows are removed in the same transaction before
+        // the folder row.
+        let mut config = AppConfig { watched_folders: vec![] };
+        save_config(&conn, &mut config).unwrap();
+
+        let folders: i64 =
+            conn.query_row("SELECT COUNT(*) FROM watched_folders", [], |r| r.get(0)).unwrap();
+        let items: i64 =
+            conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).unwrap();
+        assert_eq!((folders, items), (0, 0), "folder and its media rows must be removed together");
     }
 
     #[test]
