@@ -109,10 +109,10 @@ fn import_legacy_config_blob(conn: &Connection) -> Result<(), rusqlite::Error> {
         )?;
 
         if inserted == 0 {
-            // The insert was ignored: either the id is taken by a different
-            // path (drift/corruption) or this path appears twice in the blob.
-            // Re-import under a fresh id only when the path is genuinely
-            // missing — never silently drop the folder.
+            // The insert was ignored because the id is taken by a different
+            // path (drift/corruption). Duplicate paths inside one blob never
+            // reach this point — they are caught by the pre-check above.
+            // Re-import under a fresh id; never silently drop the folder.
             let path_present: Option<String> = conn
                 .query_row(
                     "SELECT id FROM watched_folders WHERE path = ?1",
