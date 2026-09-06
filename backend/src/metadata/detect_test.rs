@@ -60,18 +60,56 @@ fn extension_to_mime_type_mapping_is_table_driven() {
     assert_eq!(mime_type_for_extension("mp4"), Some("video/mp4"));
     assert_eq!(mime_type_for_extension("webm"), Some("video/webm"));
     assert_eq!(mime_type_for_extension("mov"), Some("video/quicktime"));
+    // Lookup is case-insensitive — callers must not need to normalize first.
+    assert_eq!(mime_type_for_extension("MOV"), Some("video/quicktime"));
+    assert_eq!(mime_type_for_extension("PNG"), Some("image/png"));
     assert_eq!(mime_type_for_extension("txt"), None);
     assert_eq!(mime_type_for_extension(""), None);
 }
 
 #[test]
 fn every_supported_extension_has_a_detection_path() {
+    // Forward: every scannable extension must have a detection arm, or be
+    // explicitly listed in KNOWN_UNSUPPORTED.
     for ext in SUPPORTED_EXTENSIONS {
         assert!(
             mime_type_for_extension(ext).is_some() || KNOWN_UNSUPPORTED.contains(ext),
             "{ext} is scannable but has no detection arm"
         );
     }
+
+    // Reverse: every detection table entry must be scannable, else the
+    // scanner silently skips files it could have indexed.
+    for (ext, _) in DETECTABLE_EXTENSIONS {
+        assert!(
+            SUPPORTED_EXTENSIONS.contains(ext),
+            "{ext} is detectable but not scannable — add it to SUPPORTED_EXTENSIONS"
+        );
+    }
+
+    // Table keys must be unique: a duplicate row is silently shadowed by find().
+    let mut keys: Vec<&str> = DETECTABLE_EXTENSIONS.iter().map(|(ext, _)| *ext).collect();
+    keys.sort_unstable();
+    keys.dedup();
+    assert_eq!(
+        keys.len(),
+        DETECTABLE_EXTENSIONS.len(),
+        "DETECTABLE_EXTENSIONS contains duplicate extension keys"
+    );
+}
+
+#[tokio::test]
+async fn test_detect_uppercase_extension() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("CLIP.MOV");
+    std::fs::write(&path, b"not a real mov").unwrap();
+
+    // Garbage content exercises the ffprobe-error branch, but the MIME
+    // mapping (the part this test pins) is resolved before ffprobe runs.
+    let info = detect_media(&path).await.unwrap();
+    assert_eq!(info.mime_type, "video/quicktime");
+    assert!(info.width.is_none(), "ffprobe fails on garbage → width None");
+    assert!(info.height.is_none(), "ffprobe fails on garbage → height None");
 }
 
 #[tokio::test]

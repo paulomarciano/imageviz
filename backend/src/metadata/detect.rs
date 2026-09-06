@@ -32,9 +32,12 @@ pub const DETECTABLE_EXTENSIONS: &[(&str, &str)] = &[
 /// here explicitly, not silently rejected.
 pub const KNOWN_UNSUPPORTED: &[&str] = &[];
 
-/// Return the MIME type for a lowercase media extension, if detectable.
+/// Return the MIME type for a media extension (case-insensitive), if detectable.
 pub fn mime_type_for_extension(extension: &str) -> Option<&'static str> {
-    DETECTABLE_EXTENSIONS.iter().find(|(ext, _)| *ext == extension).map(|(_, mime)| *mime)
+    DETECTABLE_EXTENSIONS
+        .iter()
+        .find(|(ext, _)| ext.eq_ignore_ascii_case(extension))
+        .map(|(_, mime)| *mime)
 }
 
 /// Detect media information from a file path.
@@ -43,10 +46,10 @@ pub fn mime_type_for_extension(extension: &str) -> Option<&'static str> {
 /// For images, dimensions are read via the `image` crate (header-only, fast).
 /// For videos, dimensions are read via ffprobe (async).
 pub async fn detect_media(path: &Path) -> Result<MediaInfo, DetectionError> {
-    let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
-    let mime_type = mime_type_for_extension(&extension)
-        .ok_or_else(|| DetectionError::UnsupportedFormat(extension.clone()))?
+    let mime_type = mime_type_for_extension(extension)
+        .ok_or_else(|| DetectionError::UnsupportedFormat(extension.to_string()))?
         .to_string();
 
     let file_size = std::fs::metadata(path).map_err(DetectionError::Io)?.len();
