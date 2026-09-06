@@ -89,6 +89,43 @@ async fn test_full_index_creates_entries_for_new_files() {
 }
 
 #[tokio::test]
+#[ignore = "requires test-fixtures/sample_video.mov (run scripts/generate-fixtures.sh)"]
+async fn test_full_index_indexes_mov_files_without_errors() {
+    let dir = tempfile::Builder::new().prefix("imgviz_").tempdir().unwrap();
+
+    // Copy the generated .mov fixture into a fresh watched folder
+    let mov_src = crate::test_support::fixture_path("sample_video.mov");
+    assert!(mov_src.exists(), "Fixture not found: {}", mov_src.display());
+    std::fs::copy(&mov_src, dir.path().join("clip.mov")).unwrap();
+
+    let pool = setup_pool();
+    let config = AppConfig {
+        watched_folders: vec![WatchedFolder {
+            path: dir.path().to_string_lossy().to_string(),
+            label: None,
+            id: None,
+        }],
+    };
+
+    let stats = full_index(&pool, &config, &setup_progress()).await.unwrap();
+
+    assert_eq!(stats.created, 1, ".mov file should be indexed");
+    assert_eq!(stats.errors, 0, ".mov must not increment stats.errors");
+
+    let conn = pool.get().unwrap();
+    let (mime_type, width, height): (String, Option<u32>, Option<u32>) = conn
+        .query_row(
+            "SELECT mime_type, width, height FROM media_items WHERE relative_path = 'clip.mov'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(mime_type, "video/quicktime");
+    assert!(width.is_some_and(|w| w > 0), "indexed .mov should have width");
+    assert!(height.is_some_and(|h| h > 0), "indexed .mov should have height");
+}
+
+#[tokio::test]
 async fn test_incremental_index_skips_unchanged_files() {
     let dir = tempfile::Builder::new().prefix("imgviz_").tempdir().unwrap();
     let png_path = dir.path().join("test.png");

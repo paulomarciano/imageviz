@@ -41,6 +41,14 @@ if command -v ffmpeg &>/dev/null; then
         -c:v libx264 -preset ultrafast -crf 28 \
         -shortest \
         "$FIXTURES_DIR/sample_video.mp4" 2>/dev/null
+
+    echo "==> Generating sample_video.mov (2s, H.264, 640x480)"
+    ffmpeg -y \
+        -f lavfi -i "color=c=gray:s=640x480:d=2" \
+        -f lavfi -i "anullsrc=r=44100:cl=mono" \
+        -c:v libx264 -preset ultrafast -crf 28 \
+        -shortest \
+        "$FIXTURES_DIR/sample_video.mov" 2>/dev/null
 else
     echo "WARNING: ffmpeg not found — skipping video fixtures"
     echo "  Install ffmpeg and re-run this script"

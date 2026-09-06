@@ -11,6 +11,32 @@ pub struct MediaInfo {
     pub file_size: u64,
 }
 
+/// All file extensions `detect_media` can detect, mapped to their MIME type.
+///
+/// Must stay in sync with [`crate::media_types::SUPPORTED_EXTENSIONS`]: every
+/// scannable extension must either appear here or in [`KNOWN_UNSUPPORTED`].
+/// The `every_supported_extension_has_a_detection_path` test enforces this.
+pub const DETECTABLE_EXTENSIONS: &[(&str, &str)] = &[
+    ("png", "image/png"),
+    ("jpg", "image/jpeg"),
+    ("jpeg", "image/jpeg"),
+    ("webp", "image/webp"),
+    ("gif", "image/gif"),
+    ("mp4", "video/mp4"),
+    ("webm", "video/webm"),
+    ("mov", "video/quicktime"),
+];
+
+/// Extensions accepted by the scanner that intentionally have no detection
+/// arm. Empty today; an undetectable-but-scannable extension must be listed
+/// here explicitly, not silently rejected.
+pub const KNOWN_UNSUPPORTED: &[&str] = &[];
+
+/// Return the MIME type for a lowercase media extension, if detectable.
+pub fn mime_type_for_extension(extension: &str) -> Option<&'static str> {
+    DETECTABLE_EXTENSIONS.iter().find(|(ext, _)| *ext == extension).map(|(_, mime)| *mime)
+}
+
 /// Detect media information from a file path.
 ///
 /// Returns MIME type, dimensions (if available), and file size.
@@ -19,16 +45,9 @@ pub struct MediaInfo {
 pub async fn detect_media(path: &Path) -> Result<MediaInfo, DetectionError> {
     let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
 
-    let mime_type = match extension.as_str() {
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        "gif" => "image/gif",
-        "mp4" => "video/mp4",
-        "webm" => "video/webm",
-        other => return Err(DetectionError::UnsupportedFormat(other.to_string())),
-    }
-    .to_string();
+    let mime_type = mime_type_for_extension(&extension)
+        .ok_or_else(|| DetectionError::UnsupportedFormat(extension.clone()))?
+        .to_string();
 
     let file_size = std::fs::metadata(path).map_err(DetectionError::Io)?.len();
 

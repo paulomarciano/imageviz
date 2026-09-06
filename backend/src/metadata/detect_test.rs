@@ -1,3 +1,4 @@
+use crate::media_types::SUPPORTED_EXTENSIONS;
 use crate::metadata::detect::*;
 use crate::metadata::png::Metadata;
 use crate::test_support::fixture_path;
@@ -47,6 +48,47 @@ async fn test_detect_jpg() {
     assert_eq!(info.mime_type, "image/jpeg");
     assert_eq!(info.width, Some(800));
     assert_eq!(info.height, Some(600));
+}
+
+#[test]
+fn extension_to_mime_type_mapping_is_table_driven() {
+    assert_eq!(mime_type_for_extension("png"), Some("image/png"));
+    assert_eq!(mime_type_for_extension("jpg"), Some("image/jpeg"));
+    assert_eq!(mime_type_for_extension("jpeg"), Some("image/jpeg"));
+    assert_eq!(mime_type_for_extension("webp"), Some("image/webp"));
+    assert_eq!(mime_type_for_extension("gif"), Some("image/gif"));
+    assert_eq!(mime_type_for_extension("mp4"), Some("video/mp4"));
+    assert_eq!(mime_type_for_extension("webm"), Some("video/webm"));
+    assert_eq!(mime_type_for_extension("mov"), Some("video/quicktime"));
+    assert_eq!(mime_type_for_extension("txt"), None);
+    assert_eq!(mime_type_for_extension(""), None);
+}
+
+#[test]
+fn every_supported_extension_has_a_detection_path() {
+    for ext in SUPPORTED_EXTENSIONS {
+        assert!(
+            mime_type_for_extension(ext).is_some() || KNOWN_UNSUPPORTED.contains(ext),
+            "{ext} is scannable but has no detection arm"
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires test-fixtures/sample_video.mov (run scripts/generate-fixtures.sh)"]
+async fn test_detect_mov_video() {
+    let path = fixture_path("sample_video.mov");
+    assert!(path.exists(), "Fixture not found: {}", path.display());
+
+    let info = detect_media(&path).await.unwrap();
+    assert_eq!(info.mime_type, "video/quicktime");
+    assert!(info.width.is_some_and(|w| w > 0), "mov should have width > 0");
+    assert!(info.height.is_some_and(|h| h > 0), "mov should have height > 0");
+    assert!(info.file_size > 0);
+
+    // ffprobe also extracts duration for QuickTime files.
+    let meta = crate::metadata::video::parse_video_metadata(&path).await.unwrap();
+    assert!(meta.duration_ms.is_some(), "mov should have a duration");
 }
 
 #[tokio::test]

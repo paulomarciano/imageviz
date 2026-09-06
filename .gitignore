@@ -53,6 +53,7 @@ data/
 test-fixtures/*.png
 test-fixtures/*.webm
 test-fixtures/*.mp4
+test-fixtures/*.mov
 test-fixtures/*.jpg
 test-fixtures/*.jpeg
 # Keep .gitkeep so the directory is always present after clone
