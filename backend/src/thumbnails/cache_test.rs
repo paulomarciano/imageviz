@@ -442,6 +442,199 @@ fn test_free_disk_space_existing_path_is_reasonable() {
     );
 }
 
+// -----------------------------------------------------------------------
+// Lock map lifecycle (wave 8.6 / review finding R1)
+// -----------------------------------------------------------------------
+
+/// Build a deterministic 64-char checksum whose first 16 characters are
+/// unique per `tag`, so lock-map assertions in one test cannot collide with
+/// keys used by other tests running in parallel (libtest default).
+fn unique_checksum(tag: &str) -> String {
+    assert!(tag.len() <= 16, "tag must fit within the 16-char lock-key prefix");
+    format!("{tag}{}", "0".repeat(64 - tag.len()))
+}
+
+#[tokio::test]
+async fn test_lock_entry_created_and_evicted() {
+    use crate::thumbnails::cache::{LOCKS, acquire_lock, lock_key};
+
+    // Arrange
+    let checksum = unique_checksum("lc1");
+    let key = lock_key(&checksum);
+    assert!(!LOCKS.contains_key(key), "map must not contain the key before use");
+
+    // Act + Assert — entry appears while the lock is held…
+    let guard = acquire_lock(key).await;
+    assert!(LOCKS.contains_key(key), "lock entry must exist while a generation holds it");
+
+    // …and is evicted once the last holder drops it.
+    drop(guard);
+    assert!(!LOCKS.contains_key(key), "lock entry must be evicted after release");
+}
+
+#[tokio::test]
+async fn test_same_checksum_different_widths_share_one_entry() {
+    use crate::thumbnails::cache::{LOCKS, acquire_lock, lock_key};
+    use std::time::Duration;
+
+    // Arrange — two widths of the same content map to the same lock key.
+    let checksum = unique_checksum("lc2");
+    let key = lock_key(&checksum);
+
+    // Act — the first holder acquires; a concurrent acquisition from another
+    // task must wait on the shared mutex.
+    let guard_200 = acquire_lock(key).await;
+    let key_owned = key.to_string();
+    let second = tokio::spawn(async move { acquire_lock(&key_owned).await });
+    // Yield to the runtime so the spawned task runs and parks on the mutex.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Assert — one shared entry (not one per width), and the second
+    // acquisition is parked on it.
+    assert_eq!(
+        LOCKS.iter().filter(|entry| entry.key().as_str() == key).count(),
+        1,
+        "different widths of the same checksum must share a single lock entry"
+    );
+    assert!(
+        !second.is_finished(),
+        "second acquisition must wait while the first holder is in flight"
+    );
+
+    // Act — first holder releases; the entry must survive for the second.
+    drop(guard_200);
+    let guard_300 = second.await.expect("second acquisition task panicked");
+    assert!(LOCKS.contains_key(key), "entry must survive while another holder is in flight");
+
+    // Assert — evicted only after the last holder releases.
+    drop(guard_300);
+    assert!(!LOCKS.contains_key(key), "entry must be evicted after the last holder releases");
+}
+
+#[tokio::test]
+async fn test_generation_does_not_retain_lock_entry() {
+    use crate::thumbnails::cache::{LOCKS, lock_key};
+
+    // Arrange
+    let cache_dir = tempdir().unwrap();
+    let source_dir = tempdir().unwrap();
+    let source_path = source_dir.path().join("test.png");
+    create_test_png(&source_path, 100, 100);
+    let checksum = unique_checksum("lc3");
+
+    // Act
+    let result =
+        get_or_generate_thumbnail(&source_path, &checksum, 200, cache_dir.path(), "image/png")
+            .await;
+    assert!(result.is_ok(), "generation should succeed: {:?}", result.err());
+
+    // Assert — the map is back to its prior size: nothing retained for this key.
+    assert!(
+        !LOCKS.contains_key(lock_key(&checksum)),
+        "a completed generation must not retain its lock entry"
+    );
+}
+
+#[tokio::test]
+async fn test_concurrent_same_checksum_different_widths_share_lock() {
+    use crate::thumbnails::cache::{LOCKS, lock_key};
+
+    // Arrange
+    let cache_dir = tempdir().unwrap();
+    let source_dir = tempdir().unwrap();
+    let source_path = source_dir.path().join("test.png");
+    create_test_png(&source_path, 100, 100);
+    let checksum = unique_checksum("lc4");
+    let cache_path = cache_dir.path().to_path_buf();
+
+    // Act — two concurrent first-requests for the same checksum at different
+    // widths: both serialise on the single shared per-checksum lock, then
+    // each publishes its own width.
+    let (w200, w300) = tokio::join!(
+        get_or_generate_thumbnail(&source_path, &checksum, 200, &cache_path, "image/png"),
+        get_or_generate_thumbnail(&source_path, &checksum, 300, &cache_path, "image/png")
+    );
+
+    // Assert — both widths produced exactly one file each.
+    assert!(w200.is_ok(), "200px generation failed: {:?}", w200.err());
+    assert!(w300.is_ok(), "300px generation failed: {:?}", w300.err());
+    let path200 = w200.unwrap();
+    let path300 = w300.unwrap();
+    assert_ne!(path200, path300, "widths must map to distinct cache files");
+    assert!(path200.exists() && path300.exists(), "both widths must be published");
+    let count = std::fs::read_dir(&cache_path).unwrap().count();
+    assert_eq!(count, 2, "exactly one cache file per width must exist");
+
+    // Assert — no lock entry retained after both generations finish.
+    assert!(
+        !LOCKS.contains_key(lock_key(&checksum)),
+        "no lock entry may be retained after both generations finish"
+    );
+}
+
+#[tokio::test]
+async fn test_stress_burst_evicts_all_entries_without_deadlock() {
+    use crate::thumbnails::cache::LOCKS;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    // Arrange — 64 concurrent tasks over 8 checksums × 2 widths, released
+    // simultaneously to maximise acquire/evict interleaving (guards against
+    // the Weak-upgrade/evict race and deadlocks).
+    const TASKS: usize = 64;
+    const KEYS: usize = 8;
+
+    let cache_dir = tempdir().unwrap();
+    let source_dir = tempdir().unwrap();
+    let source_path = source_dir.path().join("test.png");
+    create_test_png(&source_path, 100, 100);
+
+    let checksums: Vec<String> = (0..KEYS).map(|i| unique_checksum(&format!("sx{i}"))).collect();
+    let cache_path = cache_dir.path().to_path_buf();
+    let barrier = Arc::new(tokio::sync::Barrier::new(TASKS));
+
+    // Collect BEFORE awaiting: forces all 64 tasks to spawn up front, so
+    // the barrier is satisfiable (a lazy iterator would spawn+await one at
+    // a time and deadlock on the barrier).
+    let handles: Vec<_> = (0..TASKS)
+        .map(|task| {
+            let checksum = checksums[task % KEYS].clone();
+            let cache_path = cache_path.clone();
+            let source_path = source_path.clone();
+            let barrier = Arc::clone(&barrier);
+            tokio::spawn(async move {
+                barrier.wait().await;
+                // Deterministic jitter interleaves acquire/evict windows.
+                tokio::time::sleep(Duration::from_millis((task as u64 * 7) % 50)).await;
+                // Width by round (not task parity): parity would correlate
+                // with `task % KEYS` (8 is even) and pin one width per key.
+                let width = if (task / KEYS).is_multiple_of(2) { 200 } else { 300 };
+                get_or_generate_thumbnail(&source_path, &checksum, width, &cache_path, "image/png")
+                    .await
+            })
+        })
+        .collect();
+
+    // Act — all tasks must complete: no deadlock, no panic.
+    for handle in handles {
+        let result = handle.await.expect("burst task panicked");
+        assert!(result.is_ok(), "burst generation failed: {:?}", result.err());
+    }
+
+    // Assert — the map is empty once the burst completes. A short bounded
+    // settle tolerates lock entries held by *other tests* running in
+    // parallel; our own entries are released synchronously on drop.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline && !LOCKS.is_empty() {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(LOCKS.is_empty(), "all lock entries must be evicted after the burst");
+
+    // Assert — one thumbnail per (checksum, width) combination.
+    let files = std::fs::read_dir(&cache_path).unwrap().count();
+    assert_eq!(files, KEYS * 2, "one thumbnail per checksum/width combination");
+}
+
 #[test]
 fn test_dir_size_counts_only_direct_files() {
     use crate::thumbnails::cache::dir_size;

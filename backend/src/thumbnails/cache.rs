@@ -6,15 +6,19 @@
 //! key), ensuring the same content always maps to the same cache entry.
 //!
 //! # Thread safety
-//! A per-key [`tokio::sync::Mutex`] ensures that concurrent calls for the same
-//! cache key serialise the generation step, so the underlying image processing
-//! is only performed once.
+//! A per-checksum [`tokio::sync::Mutex`] ensures that concurrent calls for the
+//! same content (at any width) serialise the generation step, so the underlying
+//! image processing is only performed once. Lock entries are held as `Weak`
+//! references and evicted when the last in-flight generation for a checksum
+//! finishes, keeping the lock map bounded by concurrent work rather than by
+//! total library size.
 
 use crate::thumbnails::image;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Weak};
 
 use dashmap::DashMap;
+use dashmap::mapref::entry::Entry;
 use std::time::SystemTime;
 
 /// Errors that can occur during cache operations.
@@ -127,22 +131,69 @@ fn cache_file_path(cache_dir: &Path, checksum: &str, target_width: u32) -> PathB
 // Per-key lock map
 // ---------------------------------------------------------------------------
 
-static LOCKS: LazyLock<DashMap<String, Arc<tokio::sync::Mutex<()>>>> = LazyLock::new(DashMap::new);
+/// Per-content generation locks, keyed by [`lock_key`] (`checksum[:16]`).
+///
+/// Values are `Weak` references so the map never keeps a lock alive on its
+/// own: an entry exists exactly as long as some request is holding (or
+/// waiting on) that lock. [`KeyLockGuard`] evicts the entry on drop, which
+/// bounds the map by in-flight generations instead of total library size.
+static LOCKS: LazyLock<DashMap<String, Weak<tokio::sync::Mutex<()>>>> = LazyLock::new(DashMap::new);
 
-/// Acquire or create a per-key mutex for the given cache key.
+/// Lock-map key for a content checksum: its first 16 characters.
 ///
-/// Uses a global `DashMap` keyed by cache key — sharded lock design means
-/// lookups and insertions are concurrent-safe without a global mutex.
+/// Deliberately excludes the target width so that concurrent requests for
+/// different widths of the same file share one lock entry — the map grows
+/// with unique content, not unique (content, width) pairs.
+fn lock_key(checksum: &str) -> &str {
+    &checksum[..checksum.len().min(16)]
+}
+
+/// RAII guard for a per-content generation lock.
 ///
-/// The first caller to acquire the lock for a given key proceeds to generate
-/// the thumbnail; subsequent callers block and then find the cached file after
-/// the lock is released.
-fn acquire_lock(key: &str) -> Arc<tokio::sync::Mutex<()>> {
-    LOCKS
-        .entry(key.to_string())
-        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-        .value()
-        .clone()
+/// Holds the owned mutex guard (which also keeps the mutex alive). On drop
+/// it evicts the map entry iff no other request still holds a strong
+/// reference to the same mutex.
+struct KeyLockGuard {
+    key: String,
+    /// Owned mutex guard; also holds the strong `Arc<Mutex>` reference.
+    _mutex_guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl Drop for KeyLockGuard {
+    fn drop(&mut self) {
+        // `strong_count() == 1` means only this guard still references the
+        // mutex (the map itself stores a `Weak`), so the entry is dead weight.
+        LOCKS.remove_if(&self.key, |_, weak| weak.strong_count() == 1);
+    }
+}
+
+/// Acquire the per-content generation lock for `key`, creating the entry if
+/// absent.
+///
+/// The dashmap `Entry` API keeps lookup/insert/replace atomic per shard: a
+/// live entry is reused via `Weak::upgrade`; a dead one (its holders dropped
+/// between an eviction and the next acquire) is replaced in place. No retry
+/// loop is needed because every branch returns while the shard lock is held,
+/// and the entry guard is never held across the `.await` below.
+async fn acquire_lock(key: &str) -> KeyLockGuard {
+    let mutex = match LOCKS.entry(key.to_string()) {
+        Entry::Occupied(mut occupied) => {
+            if let Some(existing) = occupied.get().upgrade() {
+                existing
+            } else {
+                let fresh = Arc::new(tokio::sync::Mutex::new(()));
+                *occupied.get_mut() = Arc::downgrade(&fresh);
+                fresh
+            }
+        }
+        Entry::Vacant(vacant) => {
+            let fresh = Arc::new(tokio::sync::Mutex::new(()));
+            vacant.insert(Arc::downgrade(&fresh));
+            fresh
+        }
+    };
+    let mutex_guard = Arc::clone(&mutex).lock_owned().await;
+    KeyLockGuard { key: key.to_string(), _mutex_guard: mutex_guard }
 }
 
 // ---------------------------------------------------------------------------
@@ -165,10 +216,11 @@ fn acquire_lock(key: &str) -> Arc<tokio::sync::Mutex<()>> {
 /// (no file mtime or path is incorporated).
 ///
 /// # Thread safety
-/// A per-key [`tokio::sync::Mutex`] guarantees that concurrent calls with the
-/// same cache key only perform generation once. The first caller generates the
-/// thumbnail; subsequent callers block on the lock, then find and return the
-/// cached file directly.
+/// A per-checksum [`tokio::sync::Mutex`] guarantees that concurrent calls for
+/// the same content (at any width) only perform generation once. The first
+/// caller generates the thumbnail; subsequent callers block on the lock, then
+/// find and return the cached file directly. The lock entry is evicted once
+/// the last in-flight call for that checksum finishes.
 ///
 /// # Errors
 /// Returns [`CacheError::InvalidWidth`] when `target_width` is outside the
@@ -204,9 +256,10 @@ pub async fn get_or_generate_thumbnail(
         return Err(CacheError::SourceNotFound(source_path.to_path_buf()));
     }
 
-    // Acquire per-key lock so concurrent callers serialise generation.
-    let lock = acquire_lock(&key);
-    let _guard = lock.lock().await;
+    // Acquire the per-checksum lock so concurrent callers serialise
+    // generation for the same content (across all widths). The guard evicts
+    // the lock entry on drop, including on early returns and errors.
+    let _guard = acquire_lock(lock_key(checksum)).await;
 
     // Double-check: another task may have populated the cache while we waited.
     if cache_path.exists() {
