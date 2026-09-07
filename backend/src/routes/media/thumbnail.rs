@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tokio_util::io::ReaderStream;
 
 use crate::middleware::validation;
-use crate::thumbnails::cache::CacheError;
+use crate::thumbnails::cache::{CacheError, probe_thumbnail};
 
 use super::MediaState;
 
@@ -76,9 +76,7 @@ pub(super) async fn serve_thumbnail(
 
     // Cache hit: serve directly — cached responses bypass the generation
     // limiter entirely (wave 8.9 / review P5).
-    if let Some(cached) =
-        crate::thumbnails::cache::probe_thumbnail(&state.thumbnail_cache_dir, &checksum, width)
-    {
+    if let Some(cached) = probe_thumbnail(&state.thumbnail_cache_dir, &checksum, width) {
         return serve_thumbnail_file(cached).await;
     }
 

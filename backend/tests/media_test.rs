@@ -243,6 +243,15 @@ async fn test_thumbnail_cache_hit_bypasses_generation_limiter() {
     .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
+
+    // Header contract must be identical on the hit path (wave 8.9).
+    let content_type =
+        response.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap();
+    assert_eq!(content_type, "image/webp");
+    let cache_control =
+        response.headers().get(header::CACHE_CONTROL).and_then(|v| v.to_str().ok()).unwrap();
+    assert_eq!(cache_control, "public, max-age=31536000, immutable");
+
     // The permit was held throughout: the hit cannot have consumed one.
     assert_eq!(
         state.thumbnail_limiter.available_permits(),

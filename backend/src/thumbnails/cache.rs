@@ -209,6 +209,9 @@ async fn acquire_lock(key: &str) -> KeyLockGuard {
 /// Used by the thumbnail route to serve cache hits without acquiring a
 /// generation permit (wave 8.9 / review P5). Returns the cached file path if
 /// present, `None` otherwise. Never creates files or directories.
+///
+/// Unlike [`get_or_generate_thumbnail`], this does *not* validate
+/// `target_width` — callers must validate first and treat `None` uniformly.
 pub fn probe_thumbnail(cache_dir: &Path, checksum: &str, target_width: u32) -> Option<PathBuf> {
     let path = cache_file_path(cache_dir, checksum, target_width);
     path.exists().then_some(path)
