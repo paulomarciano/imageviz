@@ -1,5 +1,7 @@
-//! Tests for migration v004: one-time import of the legacy
-//! `config(key='watched_folders')` JSON blob into the `watched_folders` table.
+//! Tests for migration v004 (one-time import of the legacy
+//! `config(key='watched_folders')` JSON blob into the `watched_folders`
+//! table) and migration v005 (drop of the write-only `thumbnail_path`
+//! column).
 
 mod tests {
     use super::super::migrations::run_migrations;
@@ -63,7 +65,7 @@ mod tests {
         );
         // The legacy blob row is gone.
         assert!(blob_row(&conn).is_none(), "legacy blob row must be deleted after import");
-        assert_eq!(user_version(&conn), 4);
+        assert_eq!(user_version(&conn), 5);
     }
 
     #[test]
@@ -176,7 +178,7 @@ mod tests {
         // inspection, and still advance the version.
         run_migrations(&mut conn).expect("migrations must not fail on corrupt blob");
 
-        assert_eq!(user_version(&conn), 4);
+        assert_eq!(user_version(&conn), 5);
         assert!(blob_row(&conn).is_some(), "unparseable blob must be preserved");
         assert!(table_rows(&conn).is_empty(), "nothing can be imported from a corrupt blob");
     }
@@ -187,7 +189,7 @@ mod tests {
 
         run_migrations(&mut conn).expect("migrations");
 
-        assert_eq!(user_version(&conn), 4);
+        assert_eq!(user_version(&conn), 5);
         assert!(blob_row(&conn).is_none());
         assert!(table_rows(&conn).is_empty());
     }
@@ -200,6 +202,67 @@ mod tests {
         run_migrations(&mut conn).unwrap();
         run_migrations(&mut conn).unwrap();
 
-        assert_eq!(user_version(&conn), 4);
+        assert_eq!(user_version(&conn), 5);
+    }
+
+    /// Build a database that looks like a v0.7.0 install: the full schema
+    /// chain through migration v003, checkpointed at `user_version = 4`
+    /// (post-v004), including the now-obsolete `thumbnail_path` column.
+    fn legacy_v4_conn() -> rusqlite::Connection {
+        let conn = open_in_memory().expect("in-memory DB");
+        conn.execute_batch(schema::CREATE_MEDIA_ITEMS).unwrap();
+        conn.execute_batch(schema::CREATE_CONFIG_TABLE).unwrap();
+        conn.execute_batch(schema::MIGRATION_V002).unwrap();
+        conn.execute_batch(schema::MIGRATION_V003).unwrap();
+        conn.pragma_update(None, "user_version", 4).unwrap();
+        conn
+    }
+
+    #[test]
+    fn test_v005_drops_thumbnail_path_and_preserves_rows() {
+        let conn = legacy_v4_conn();
+
+        // Seed a watched folder + a media item carrying thumbnail_path data,
+        // as a v0.7.0 install would have after serving thumbnails.
+        conn.execute("INSERT INTO watched_folders (id, path) VALUES ('fid-a', '/media/a')", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO media_items (id, filename, relative_path, mime_type, file_size, \
+             file_created_at, file_modified_at, indexed_at, thumbnail_path, folder_id) \
+             VALUES ('uuid-1', 'a.png', 'a.png', 'image/png', 100, \
+             '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z', \
+             '/cache/abcdef1234567890_200.webp', 'fid-a')",
+            [],
+        )
+        .unwrap();
+
+        let mut conn = conn;
+        run_migrations(&mut conn).expect("migrations");
+
+        assert_eq!(user_version(&conn), 5);
+
+        // The column is gone.
+        let has_column: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('media_items') \
+                 WHERE name = 'thumbnail_path'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_column, 0, "thumbnail_path column must be dropped");
+
+        // Existing rows survive intact.
+        let (count, filename, relative_path, mime_type): (i64, String, String, String) = conn
+            .query_row(
+                "SELECT COUNT(*), filename, relative_path, mime_type FROM media_items",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "row must survive the migration");
+        assert_eq!(filename, "a.png");
+        assert_eq!(relative_path, "a.png");
+        assert_eq!(mime_type, "image/png");
     }
 }

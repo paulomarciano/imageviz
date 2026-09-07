@@ -264,8 +264,19 @@ async fn test_thumbnail_happy_path_generates_webp() {
     assert_eq!(content_type2, "image/webp");
 }
 
+/// Snapshot the full `media_items` row for `id` as comparable values.
+/// Used to assert that thumbnail serving performs no database writes.
+fn snapshot_media_row(state: &Arc<MediaState>, id: &str) -> Vec<rusqlite::types::Value> {
+    let conn = state.db.get().expect("Failed to get DB connection");
+    let mut stmt = conn.prepare("SELECT * FROM media_items WHERE id = ?1").unwrap();
+    let column_count = stmt.column_count();
+    let mut rows = stmt.query(rusqlite::params![id]).unwrap();
+    let row = rows.next().unwrap().expect("media item row must exist");
+    (0..column_count).map(|i| row.get::<_, rusqlite::types::Value>(i).unwrap()).collect()
+}
+
 #[tokio::test]
-async fn test_thumbnail_populates_thumbnail_path() {
+async fn test_thumbnail_serving_does_not_write_media_items() {
     let (state, _cache_dir) = test_state();
     let watched = tempfile::tempdir().unwrap();
     let source_path = watched.path().join("test.png");
@@ -282,38 +293,40 @@ async fn test_thumbnail_populates_thumbnail_path() {
     )
     .await;
 
+    let media_id = "00000000-0000-0000-0000-000000000010";
+    let before = snapshot_media_row(&state, media_id);
     let app = routes().with_state(state.clone());
 
-    // Request thumbnail generation
+    // Cache miss — generation must not write to media_items.
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
-                .uri("/media/00000000-0000-0000-0000-000000000010/thumbnail")
+                .uri(format!("/media/{media_id}/thumbnail"))
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-
     assert_eq!(response.status(), StatusCode::OK);
 
-    // Verify thumbnail_path was populated in the database
-    let conn = state.db.get().unwrap();
-    let thumb_path: Option<String> = conn
-        .query_row(
-            "SELECT thumbnail_path FROM media_items WHERE id = '00000000-0000-0000-0000-000000000010'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let after_miss = snapshot_media_row(&state, media_id);
+    assert_eq!(after_miss, before, "cache miss must not modify the media_items row");
 
-    assert!(thumb_path.is_some(), "thumbnail_path should be populated after generation");
-    let path = thumb_path.unwrap();
-    assert!(!path.is_empty(), "thumbnail_path should be a non-empty string");
-    assert!(
-        path.contains("abcdef1234567890_200.webp"),
-        "thumbnail_path should point to the content-addressed cache file"
-    );
+    // Cache hit — serving must not write to media_items either.
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/media/{media_id}/thumbnail"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let after_hit = snapshot_media_row(&state, media_id);
+    assert_eq!(after_hit, before, "cache hit must not modify the media_items row");
 }
 
 #[tokio::test]

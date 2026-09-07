@@ -108,10 +108,19 @@ mod tests {
         // Run migrations twice
         migrations::run_migrations(&mut conn).unwrap();
         migrations::run_migrations(&mut conn).unwrap();
-        // user_version should be 4 after both runs (v1..v4 are cumulative)
+        // user_version should be 5 after both runs (v1..v5 are cumulative)
         let version: i32 =
             conn.pragma_query_value(None, "user_version", |r| r.get::<_, i32>(0)).unwrap();
-        assert_eq!(version, 4);
+        assert_eq!(version, 5);
+        // The write-only `thumbnail_path` column must be gone (migration v005).
+        let thumbnail_path_columns: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('media_items') WHERE name = 'thumbnail_path'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(thumbnail_path_columns, 0, "fresh schema must not have thumbnail_path");
         // Tables should still exist (no duplicate errors)
         let count: i32 =
             conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get::<_, i32>(0)).unwrap();

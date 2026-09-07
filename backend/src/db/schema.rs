@@ -109,3 +109,21 @@ pub const MIGRATION_V003: &str = "
     CREATE UNIQUE INDEX IF NOT EXISTS idx_media_folder_path
         ON media_items(folder_id, relative_path);
 ";
+
+/// SQL for migration v005: drop the `thumbnail_path` column.
+///
+/// The column was written by the thumbnail route after every served
+/// thumbnail (cache hit or miss) but never read — a pooled-connection
+/// checkout plus a WAL write per thumbnail request for data no one
+/// consumes (code review §4 R5). The content-addressed thumbnail cache
+/// already serves the purpose the column was never used for.
+///
+/// Safe unconditionally: every database that reaches this migration
+/// created `media_items` with the column (v1 schema, retained in
+/// [`CREATE_MEDIA_ITEMS`] per the frozen-history migration convention).
+///
+/// Requires SQLite ≥ 3.35 for `ALTER TABLE ... DROP COLUMN`; the bundled
+/// rusqlite build is well above that.
+pub const MIGRATION_V005: &str = "
+    ALTER TABLE media_items DROP COLUMN thumbnail_path;
+";

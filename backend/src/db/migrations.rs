@@ -50,6 +50,13 @@ pub fn run_migrations(conn: &mut Connection) -> Result<(), rusqlite::Error> {
         tx.commit()?;
     }
 
+    if version < 5 {
+        let tx = conn.transaction()?;
+        tx.execute_batch(super::schema::MIGRATION_V005)?;
+        tx.pragma_update(None, "user_version", 5)?;
+        tx.commit()?;
+    }
+
     Ok(())
 }
 
