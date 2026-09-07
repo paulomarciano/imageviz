@@ -512,6 +512,34 @@ async fn test_same_checksum_different_widths_share_one_entry() {
 }
 
 #[tokio::test]
+async fn test_distinct_checksums_can_hold_locks_simultaneously() {
+    use crate::thumbnails::cache::{LOCKS, acquire_lock, lock_key};
+    use std::time::Duration;
+
+    // Arrange — two unrelated files.
+    let a = unique_checksum("lc5");
+    let b = unique_checksum("lc6");
+
+    // Act — acquire both locks concurrently. The timeout converts a
+    // global-serialization regression (one shared mutex, or a shard guard
+    // held across the await) into a fast failure instead of a hung suite.
+    // (`join!` awaits internally, so the async block provides the future
+    // that `timeout` needs.)
+    let (guard_a, guard_b) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(acquire_lock(lock_key(&a)), acquire_lock(lock_key(&b)))
+    })
+    .await
+    .expect("distinct checksums must be able to acquire their locks in parallel");
+
+    // Assert — both entries coexist in the map while held.
+    assert!(
+        LOCKS.contains_key(lock_key(&a)) && LOCKS.contains_key(lock_key(&b)),
+        "distinct checksums must be able to hold their locks at the same time"
+    );
+    drop((guard_a, guard_b));
+}
+
+#[tokio::test]
 async fn test_generation_does_not_retain_lock_entry() {
     use crate::thumbnails::cache::{LOCKS, lock_key};
 

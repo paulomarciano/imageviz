@@ -137,6 +137,9 @@ fn cache_file_path(cache_dir: &Path, checksum: &str, target_width: u32) -> PathB
 /// own: an entry exists exactly as long as some request is holding (or
 /// waiting on) that lock. [`KeyLockGuard`] evicts the entry on drop, which
 /// bounds the map by in-flight generations instead of total library size.
+///
+/// Invariant: strong references to the mapped mutexes exist only inside a
+/// [`KeyLockGuard`] — any `Arc::clone` escaping the guard breaks eviction.
 static LOCKS: LazyLock<DashMap<String, Weak<tokio::sync::Mutex<()>>>> = LazyLock::new(DashMap::new);
 
 /// Lock-map key for a content checksum: its first 16 characters.
