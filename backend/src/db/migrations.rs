@@ -11,9 +11,10 @@ const LEGACY_WATCHED_FOLDERS_KEY: &str = "watched_folders";
 /// Run all pending migrations, advancing `PRAGMA user_version` as each completes.
 ///
 /// Migrations are wrapped in a single transaction so that a crash mid-migration
-/// never leaves the database in a partial state. Each migration step uses
-/// `CREATE TABLE IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS` so that
-/// re-running a completed version is safe.
+/// never leaves the database in a partial state. Re-entry is guarded by the
+/// stored `user_version` — each block runs only when the stored version is
+/// below its target. Individual migration SQL is not required to be idempotent
+/// (e.g. v005's `DROP COLUMN`); the version guard is what makes re-running safe.
 pub fn run_migrations(conn: &mut Connection) -> Result<(), rusqlite::Error> {
     let version: i32 =
         conn.pragma_query_value(None, "user_version", |r| r.get::<_, i32>(0)).unwrap_or(0);
