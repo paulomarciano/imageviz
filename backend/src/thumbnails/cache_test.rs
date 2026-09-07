@@ -16,6 +16,12 @@ fn create_test_png(path: &Path, width: u32, height: u32) {
 /// A 64-character hex string simulating a SHA-256 checksum.
 const TEST_CHECKSUM: &str = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
 
+/// Serializes tests that call `dir_size`/`evict_if_needed` so the global
+/// `DIR_SIZE_CALLS` counter cannot be bumped concurrently by unrelated tests
+/// (libtest runs tests in parallel by default). Sync tests use
+/// `blocking_lock()` (safe: they run outside any tokio runtime).
+static SCAN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 // -----------------------------------------------------------------------
 // Tests
 // -----------------------------------------------------------------------
@@ -363,6 +369,9 @@ fn test_eviction_when_over_limit() {
     use crate::thumbnails::cache::{dir_size, evict_if_needed};
     use std::fs;
 
+    // Serialize with other dir_size/evict_if_needed callers (shared counter).
+    let _scan_lock = SCAN_LOCK.blocking_lock();
+
     let dir = tempfile::tempdir().unwrap();
 
     // Create 10 files of 10 MB each = 100 MB total.
@@ -387,6 +396,9 @@ fn test_no_eviction_when_under_limit() {
     use crate::thumbnails::cache::evict_if_needed;
     use std::io::Write;
 
+    // Serialize with other dir_size/evict_if_needed callers (shared counter).
+    let _scan_lock = SCAN_LOCK.blocking_lock();
+
     let dir = tempfile::tempdir().unwrap();
 
     // Create small files totaling ~few hundred bytes.
@@ -403,6 +415,8 @@ fn test_no_eviction_when_under_limit() {
 #[test]
 fn test_eviction_empty_cache_does_not_crash() {
     use crate::thumbnails::cache::evict_if_needed;
+    // Serialize with other dir_size/evict_if_needed callers (shared counter).
+    let _scan_lock = SCAN_LOCK.blocking_lock();
     let dir = tempfile::tempdir().unwrap();
     let stats = evict_if_needed(dir.path(), 1_000_000, 100_000_000).unwrap();
     assert_eq!(stats.evicted, 0);
@@ -411,6 +425,8 @@ fn test_eviction_empty_cache_does_not_crash() {
 #[test]
 fn test_dir_size_empty_directory() {
     use crate::thumbnails::cache::dir_size;
+    // Serialize with other dir_size/evict_if_needed callers (shared counter).
+    let _scan_lock = SCAN_LOCK.blocking_lock();
     let dir = tempfile::tempdir().unwrap();
     assert_eq!(dir_size(dir.path()).unwrap(), 0);
 }
@@ -667,10 +683,69 @@ async fn test_stress_burst_evicts_all_entries_without_deadlock() {
 fn test_dir_size_counts_only_direct_files() {
     use crate::thumbnails::cache::dir_size;
 
+    // Serialize with other dir_size/evict_if_needed callers (shared counter).
+    let _scan_lock = SCAN_LOCK.blocking_lock();
+
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.webp"), b"hello").unwrap();
     std::fs::create_dir(dir.path().join("subdir")).unwrap();
     // File inside subdir — dir_size is shallow so this should not count.
     std::fs::write(dir.path().join("subdir").join("b.webp"), b"world").unwrap();
     assert_eq!(dir_size(dir.path()).unwrap(), 5, "Should only count direct files");
+}
+
+// -----------------------------------------------------------------------
+// Inline eviction scan removal (wave 8.8 / review finding R3)
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_generation_does_not_trigger_directory_scan() {
+    use crate::thumbnails::cache::{DIR_SIZE_CALLS, evict_if_needed};
+    use std::sync::atomic::Ordering;
+
+    // Serialize with the other dir_size/evict_if_needed callers so the
+    // global counter cannot be bumped by unrelated tests in parallel.
+    let _scan_lock = SCAN_LOCK.lock().await;
+
+    // Arrange — three distinct checksums force three cache misses.
+    let cache_dir = tempdir().unwrap();
+    let source_dir = tempdir().unwrap();
+    let source_path = source_dir.path().join("test.png");
+    create_test_png(&source_path, 100, 100);
+    let checksums = ["ev1", "ev2", "ev3"].map(unique_checksum);
+
+    // Act — reset the counter, then generate on cache misses.
+    DIR_SIZE_CALLS.store(0, Ordering::Relaxed);
+    for checksum in &checksums {
+        let result =
+            get_or_generate_thumbnail(&source_path, checksum, 200, cache_dir.path(), "image/png")
+                .await;
+        assert!(result.is_ok(), "cache-miss generation should succeed: {:?}", result.err());
+    }
+
+    // A current-thread test runtime only polls spawned tasks at yield points;
+    // drain the scheduler so any fire-and-forget eviction spawn would run.
+    for _ in 0..50 {
+        tokio::task::yield_now().await;
+    }
+
+    // Assert — generations must not scan the cache directory at all. The
+    // background 5-minute timer (`spawn_cache_eviction_timer`) is the sole
+    // eviction trigger.
+    assert_eq!(
+        DIR_SIZE_CALLS.load(Ordering::Relaxed),
+        0,
+        "cache-miss generations must not trigger a directory scan"
+    );
+
+    // Sanity — the timer path still performs the scan: this proves the
+    // instrumentation is wired and that `evict_if_needed` remains the
+    // scanning entry point for the timer. (`u64::MAX` max size + `0` min
+    // free space = an unlimited budget that never evicts.)
+    let stats = evict_if_needed(cache_dir.path(), u64::MAX, 0).unwrap();
+    assert_eq!(stats.evicted, 0, "nothing should be evicted with an unlimited budget");
+    assert!(
+        DIR_SIZE_CALLS.load(Ordering::Relaxed) > 0,
+        "the eviction-timer path must still scan the directory"
+    );
 }

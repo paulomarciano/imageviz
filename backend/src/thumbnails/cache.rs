@@ -311,16 +311,10 @@ pub async fn get_or_generate_thumbnail(
     // Atomic publish: rename is atomic on the same filesystem.
     tokio::fs::rename(&tmp_path, &cache_path).await?;
 
-    // Check cache size and evict old files if needed (best-effort, fire-and-forget).
-    // The primary eviction is handled by a background timer (see
-    // `spawn_cache_eviction_timer` in main.rs).  This inline spawn is an
-    // extra safety net for unusually large cache bursts.
-    let cache_dir = cache_dir.to_path_buf();
-    std::mem::drop(tokio::spawn(async move {
-        if let Err(e) = evict_if_needed(&cache_dir, max_cache_size(), min_free_disk_space()) {
-            tracing::warn!(error = %e, "Cache eviction check failed");
-        }
-    }));
+    // Eviction is deliberately NOT triggered inline here: the background
+    // 5-minute timer (`spawn_cache_eviction_timer` in main.rs) is the sole
+    // eviction path. An inline scan after every cache miss caused a full
+    // `read_dir` + stat of the cache directory per generation (wave 8.8).
 
     Ok(cache_path)
 }
@@ -329,8 +323,18 @@ pub async fn get_or_generate_thumbnail(
 // Eviction logic
 // ---------------------------------------------------------------------------
 
+/// Test-only instrumentation: number of `dir_size` invocations. Used by
+/// `cache_test.rs` to assert that cache generations never scan the cache
+/// directory (wave 8.8 / review finding R3) — eviction scans must come only
+/// from the background timer.
+#[cfg(test)]
+pub(crate) static DIR_SIZE_CALLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 /// Compute the total size of all files in a directory (shallow, non-recursive).
 fn dir_size(path: &Path) -> std::io::Result<u64> {
+    #[cfg(test)]
+    DIR_SIZE_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut total = 0u64;
     for entry in std::fs::read_dir(path)? {
         let entry = entry?;

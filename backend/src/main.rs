@@ -399,9 +399,8 @@ fn spawn_background_indexing(
 /// Spawn a background task that periodically evicts old thumbnails.
 ///
 /// Runs every 5 minutes and calls [`evict_if_needed`] with the configured
-/// cache size and free-disk-space limits.  This is the primary eviction
-/// mechanism; the inline fire-and-forget spawn in `get_or_generate_thumbnail`
-/// is an additional safety net for cache bursts.
+/// cache size and free-disk-space limits. This is the sole eviction
+/// mechanism — cache generations do not trigger scans inline (wave 8.8).
 fn spawn_cache_eviction_timer(cache_dir: PathBuf) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
