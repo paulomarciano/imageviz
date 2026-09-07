@@ -27,6 +27,14 @@ use imageviz_backend::routes::media::{MediaState, routes};
 /// The database contains only the schema — no seeded data. Callers must
 /// call `seed_config` and `seed_media_item` to populate test data.
 fn create_media_test_app() -> (Router, Arc<MediaState>, tempfile::TempDir) {
+    create_media_test_app_with_permits(16)
+}
+
+/// Variant of [`create_media_test_app`] whose thumbnail limiter issues only
+/// `max_permits` permits — used by tests that assert on semaphore behavior.
+fn create_media_test_app_with_permits(
+    max_permits: usize,
+) -> (Router, Arc<MediaState>, tempfile::TempDir) {
     let pool: Pool<SqliteConnectionManager> = imageviz_backend::db::pool::create_in_memory_pool();
     {
         let mut conn = pool.get().expect("Failed to get connection for migrations");
@@ -39,7 +47,7 @@ fn create_media_test_app() -> (Router, Arc<MediaState>, tempfile::TempDir) {
         db: pool,
         thumbnail_cache_dir: cache_dir.path().to_path_buf(),
         thumbnail_limiter: Arc::new(imageviz_backend::thumbnails::limiter::ThumbnailLimiter::new(
-            16,
+            max_permits,
         )),
         total_count_cache: Arc::new(std::sync::Mutex::new(None)),
     });
@@ -183,6 +191,127 @@ async fn test_thumbnail_custom_width() {
     let content_type =
         response.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap();
     assert_eq!(content_type, "image/webp");
+}
+
+// ---------------------------------------------------------------------------
+// Thumbnail limiter-scope tests (wave 8.9 / review P5)
+// ---------------------------------------------------------------------------
+
+/// A cache hit must be served without consuming a generation permit.
+///
+/// The limiter's only permit is held by the test itself; a cached thumbnail
+/// must still be served. (The pre-8.9 handler acquired a permit *before* the
+/// cache lookup, so this request would block until the 120 s limiter timeout.)
+#[tokio::test]
+async fn test_thumbnail_cache_hit_bypasses_generation_limiter() {
+    let (app, state, cache_dir) = create_media_test_app_with_permits(1);
+    let watched = tempfile::tempdir().unwrap();
+    let source_path = watched.path().join("test.png");
+    create_test_png(&source_path);
+
+    let checksum = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
+    seed_config(&state, watched.path()).await;
+    seed_media_item(
+        &state,
+        "00000000-0000-0000-0000-000000000003",
+        "test.png",
+        "test.png",
+        "image/png",
+        checksum,
+    )
+    .await;
+
+    // Pre-populate the cache so the request is a guaranteed hit.
+    let cached_path = cache_dir.path().join(format!("{}_200.webp", &checksum[..16]));
+    std::fs::write(&cached_path, b"RIFF0000WEBP").unwrap();
+
+    // Hold the only permit — the request must not need it.
+    let permit = state.thumbnail_limiter.acquire().await.unwrap();
+    assert_eq!(state.thumbnail_limiter.available_permits(), 0);
+
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        app.oneshot(
+            Request::builder()
+                .uri("/api/v1/media/00000000-0000-0000-0000-000000000003/thumbnail")
+                .body(Body::empty())
+                .unwrap(),
+        ),
+    )
+    .await
+    .expect("cache hit must not block on the generation limiter")
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    // The permit was held throughout: the hit cannot have consumed one.
+    assert_eq!(
+        state.thumbnail_limiter.available_permits(),
+        0,
+        "cache hit must not consume or release a generation permit"
+    );
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body, &b"RIFF0000WEBP"[..], "cached file must be served verbatim");
+
+    drop(permit);
+}
+
+/// A cache miss must remain bounded by the limiter: while the only permit is
+/// held, the request stays pending; once released, it completes and the
+/// permit is returned.
+#[tokio::test]
+async fn test_thumbnail_cache_miss_waits_for_generation_permit() {
+    let (app, state, _cache_dir) = create_media_test_app_with_permits(1);
+    let watched = tempfile::tempdir().unwrap();
+    let source_path = watched.path().join("test.png");
+    create_test_png(&source_path);
+
+    seed_config(&state, watched.path()).await;
+    seed_media_item(
+        &state,
+        "00000000-0000-0000-0000-000000000004",
+        "test.png",
+        "test.png",
+        "image/png",
+        "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+    )
+    .await;
+
+    let permit = state.thumbnail_limiter.acquire().await.unwrap();
+
+    let request_task = tokio::spawn(
+        app.oneshot(
+            Request::builder()
+                .uri("/api/v1/media/00000000-0000-0000-0000-000000000004/thumbnail")
+                .body(Body::empty())
+                .unwrap(),
+        ),
+    );
+
+    // Give the handler time to reach the (blocked) permit acquisition.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(
+        !request_task.is_finished(),
+        "cache miss must wait for a generation permit while none is available"
+    );
+
+    drop(permit);
+
+    let response = tokio::time::timeout(std::time::Duration::from_secs(10), request_task)
+        .await
+        .expect("request must complete after the permit is released")
+        .expect("request task must not panic")
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        state.thumbnail_limiter.available_permits(),
+        1,
+        "permit must be returned once generation finishes"
+    );
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&body[0..4], b"RIFF", "generated thumbnail must be valid WebP");
 }
 
 // ---------------------------------------------------------------------------

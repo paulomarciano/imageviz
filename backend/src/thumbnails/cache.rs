@@ -203,6 +203,17 @@ async fn acquire_lock(key: &str) -> KeyLockGuard {
 // Public API
 // ---------------------------------------------------------------------------
 
+/// Probe the cache for an existing thumbnail without generating it.
+///
+/// Cheap and read-only: a single `stat` of the content-addressed cache entry.
+/// Used by the thumbnail route to serve cache hits without acquiring a
+/// generation permit (wave 8.9 / review P5). Returns the cached file path if
+/// present, `None` otherwise. Never creates files or directories.
+pub fn probe_thumbnail(cache_dir: &Path, checksum: &str, target_width: u32) -> Option<PathBuf> {
+    let path = cache_file_path(cache_dir, checksum, target_width);
+    path.exists().then_some(path)
+}
+
 /// Retrieve a thumbnail from the content-addressed cache, generating it if absent.
 ///
 /// # Arguments

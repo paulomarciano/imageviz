@@ -14,6 +14,38 @@ use crate::thumbnails::cache::CacheError;
 
 use super::MediaState;
 
+/// Stream a thumbnail file from `path` with the standard thumbnail headers.
+///
+/// Shared by the cache-hit and cache-miss paths so both responses carry
+/// identical headers (content type, length, immutable cache policy).
+async fn serve_thumbnail_file(
+    path: std::path::PathBuf,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let file = tokio::fs::File::open(&path).await.map_err(|e| {
+        tracing::error!(error = %e, "Failed to open thumbnail file");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
+    })?;
+    let content_length = file
+        .metadata()
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "Failed to read thumbnail metadata");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
+        })?
+        .len();
+    let stream = ReaderStream::new(file);
+    let body = Body::from_stream(stream);
+
+    Ok((
+        [
+            (header::CONTENT_TYPE, "image/webp".to_string()),
+            (header::CONTENT_LENGTH, content_length.to_string()),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_string()),
+        ],
+        body,
+    ))
+}
+
 /// GET /api/v1/media/{id}/thumbnail — serve a WebP thumbnail.
 pub(super) async fn serve_thumbnail(
     State(state): State<Arc<MediaState>>,
@@ -42,7 +74,19 @@ pub(super) async fn serve_thumbnail(
         .unwrap_or_default();
     drop(conn);
 
-    // Acquire thumbnail generation permit (limits CPU contention)
+    // Cache hit: serve directly — cached responses bypass the generation
+    // limiter entirely (wave 8.9 / review P5).
+    if let Some(cached) =
+        crate::thumbnails::cache::probe_thumbnail(&state.thumbnail_cache_dir, &checksum, width)
+    {
+        return serve_thumbnail_file(cached).await;
+    }
+
+    // Cache miss: acquire a generation permit, then generate. The permit is
+    // taken *after* the probe so hits never queue behind in-flight
+    // generations. Concurrent misses stay safe: the per-key lock and cache
+    // re-check inside `get_or_generate_thumbnail` dedup generation, so at
+    // most one generation runs per cache key regardless of limiter order.
     let _permit = state.thumbnail_limiter.acquire().await.map_err(|_| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -50,7 +94,8 @@ pub(super) async fn serve_thumbnail(
         )
     })?;
 
-    // Generate or retrieve cached thumbnail
+    // Generate or retrieve cached thumbnail (re-checks the cache under the
+    // per-key lock, covering the probe→permit race window).
     let thumbnail = crate::thumbnails::get_or_generate_thumbnail(
         &file_path,
         &checksum,
@@ -72,28 +117,5 @@ pub(super) async fn serve_thumbnail(
         }
     })?;
 
-    // Stream the thumbnail file instead of reading it entirely into memory.
-    let file = tokio::fs::File::open(&thumbnail).await.map_err(|e| {
-        tracing::error!(error = %e, "Failed to open thumbnail file");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
-    })?;
-    let content_length = file
-        .metadata()
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "Failed to read thumbnail metadata");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
-        })?
-        .len();
-    let stream = ReaderStream::new(file);
-    let body = Body::from_stream(stream);
-
-    Ok((
-        [
-            (header::CONTENT_TYPE, "image/webp".to_string()),
-            (header::CONTENT_LENGTH, content_length.to_string()),
-            (header::CACHE_CONTROL, "public, max-age=31536000, immutable".to_string()),
-        ],
-        body,
-    ))
+    serve_thumbnail_file(thumbnail).await
 }

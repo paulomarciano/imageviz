@@ -1,4 +1,4 @@
-use crate::thumbnails::cache::{CacheError, get_or_generate_thumbnail};
+use crate::thumbnails::cache::{CacheError, get_or_generate_thumbnail, probe_thumbnail};
 use sha2::Digest;
 use std::path::Path;
 use tempfile::tempdir;
@@ -358,6 +358,53 @@ async fn test_concurrent_first_requests_generate_once() {
 
     let count = std::fs::read_dir(cache_dir.path()).unwrap().count();
     assert_eq!(count, 1, "exactly one cache file must exist after concurrent misses");
+}
+
+// -----------------------------------------------------------------------
+// Probe tests (wave 8.9 / review P5)
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_probe_returns_cached_path_on_hit() {
+    // Arrange
+    let cache_dir = tempdir().unwrap();
+    let source_dir = tempdir().unwrap();
+    let source_path = source_dir.path().join("test.png");
+    create_test_png(&source_path, 100, 100);
+
+    // Act — populate the cache via a real generation, then probe.
+    let generated =
+        get_or_generate_thumbnail(&source_path, TEST_CHECKSUM, 200, cache_dir.path(), "image/png")
+            .await
+            .expect("generation should succeed");
+
+    // Assert — probe returns exactly the generated cache entry.
+    let probed = probe_thumbnail(cache_dir.path(), TEST_CHECKSUM, 200);
+    assert_eq!(probed, Some(generated), "probe must return the cached path on hit");
+}
+
+#[test]
+fn test_probe_returns_none_on_miss() {
+    // Arrange
+    let cache_dir = tempdir().unwrap();
+
+    // Assert — nothing cached: probe must return None.
+    assert_eq!(probe_thumbnail(cache_dir.path(), TEST_CHECKSUM, 200), None);
+}
+
+#[test]
+fn test_probe_is_read_only() {
+    // Arrange
+    let cache_dir = tempdir().unwrap();
+
+    // Act
+    let probed = probe_thumbnail(cache_dir.path(), TEST_CHECKSUM, 200);
+
+    // Assert — a miss must not create any files or directories.
+    assert_eq!(probed, None);
+    let entries = std::fs::read_dir(cache_dir.path())
+        .expect("cache dir should still exist (created by tempdir root)");
+    assert_eq!(entries.count(), 0, "probe must be read-only: no cache entries created");
 }
 
 // -----------------------------------------------------------------------
