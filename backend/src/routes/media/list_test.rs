@@ -208,11 +208,13 @@ async fn fetch_total(app: &axum::Router, mime: &str) -> i64 {
 #[tokio::test]
 async fn test_filtered_list_totals_are_independent_end_to_end() {
     let (state, _cache_dir) = test_state();
+    // Asymmetric counts (3 images vs 1 video): if both filters ever shared a
+    // cache entry, the totals below would flip (1 ↔ 3) and fail.
     for (i, (id, mime)) in [
         ("img-1", "image/png"),
         ("img-2", "image/webp"),
+        ("img-3", "image/gif"),
         ("vid-1", "video/mp4"),
-        ("vid-2", "video/webm"),
     ]
     .into_iter()
     .enumerate()
@@ -234,12 +236,12 @@ async fn test_filtered_list_totals_are_independent_end_to_end() {
 
     let app = routes().with_state(state);
 
-    assert_eq!(fetch_total(&app, "image/%").await, 2);
-    assert_eq!(fetch_total(&app, "video/%").await, 2, "video total must not reuse the image entry");
+    assert_eq!(fetch_total(&app, "image/%").await, 3);
+    assert_eq!(fetch_total(&app, "video/%").await, 1, "video total must not reuse the image entry");
     assert_eq!(
         fetch_total(&app, "image/%").await,
-        2,
+        3,
         "image total must not be poisoned by the video filter"
     );
-    assert_eq!(fetch_total(&app, "video/%").await, 2);
+    assert_eq!(fetch_total(&app, "video/%").await, 1);
 }
