@@ -5,11 +5,71 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::middleware::validation;
 
-use super::MediaState;
+use super::{CountCache, MediaState};
+
+#[cfg(test)]
+#[path = "list_test.rs"]
+mod list_test;
+
+// ---------------------------------------------------------------------------
+// Total-count cache (per mime filter, 30s TTL)
+// ---------------------------------------------------------------------------
+
+/// TTL for cached total counts, shared by all filter keys.
+const COUNT_CACHE_TTL: Duration = Duration::from_secs(30);
+
+/// Cache key for the unfiltered total count.
+const UNFILTERED_COUNT_KEY: &str = "";
+
+/// Normalize an optional mime filter into a stable cache key
+/// (`""` for the unfiltered count).
+fn count_cache_key(filter: Option<&str>) -> String {
+    filter.unwrap_or(UNFILTERED_COUNT_KEY).to_ascii_lowercase()
+}
+
+/// An entry is fresh when its age is below [`COUNT_CACHE_TTL`]. Entries
+/// stamped "in the future" relative to `now` (concurrent stores) count as
+/// fresh — `checked_duration_since` avoids the `duration_since` panic.
+fn is_fresh(at: Instant, now: Instant) -> bool {
+    now.checked_duration_since(at).is_none_or(|age| age < COUNT_CACHE_TTL)
+}
+
+/// Return the cached count for `key` if its entry is fresh.
+fn fresh_count(cache: &CountCache, key: &str, now: Instant) -> Option<i64> {
+    cache.get(key).filter(|(_, at)| is_fresh(*at, now)).map(|(count, _)| *count)
+}
+
+/// Compute the total count for `filter`, caching results per filter key for
+/// 30 seconds.
+///
+/// Lock discipline: the cache mutex is held only for the map read and the
+/// map write — never across `run_count` — so concurrent list requests never
+/// serialize behind a long-running `COUNT(*)` query.
+fn cached_count(
+    cache: &Mutex<CountCache>,
+    filter: Option<&str>,
+    now: Instant,
+    run_count: impl FnOnce() -> i64,
+) -> i64 {
+    let key = count_cache_key(filter);
+    if let Some(fresh) = fresh_count(&cache.lock().unwrap(), &key, now) {
+        return fresh;
+    }
+    let count = run_count();
+    {
+        let mut map = cache.lock().unwrap();
+        // Prune expired entries so the map stays bounded by the filters seen
+        // within one TTL window.
+        map.retain(|_, (_, at)| is_fresh(*at, now));
+        map.insert(key, (count, now));
+    }
+    count
+}
 
 // ---------------------------------------------------------------------------
 // Media list (cursor-based pagination)
@@ -70,29 +130,23 @@ pub(super) async fn list_media(
         (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "Service temporarily unavailable"})))
     })?;
 
-    // Total count — cached for 30s for unfiltered queries to avoid a full
-    // index scan on every page load.  MIME-filtered counts are queried
-    // directly since the filter pattern varies per user.
-    let total: i64 = if let Some(ref mime_type) = params.mime_type {
-        conn.query_row(
-            "SELECT COUNT(*) FROM media_items WHERE mime_type LIKE ?1",
-            rusqlite::params![mime_type],
-            |row| row.get(0),
-        )
-        .unwrap_or(0)
-    } else {
-        let mut cache = state.total_count_cache.lock().unwrap();
-        let now = std::time::Instant::now();
-        match *cache {
-            Some((count, ts)) if ts.elapsed() < std::time::Duration::from_secs(30) => count,
-            _ => {
-                let count = conn
-                    .query_row("SELECT COUNT(*) FROM media_items", [], |row| row.get(0))
-                    .unwrap_or(0);
-                *cache = Some((count, now));
-                count
-            }
-        }
+    // Total count — cached per mime-filter key for 30s to avoid a full index
+    // scan on every page load, including mime-filtered pages. The cache mutex
+    // is never held across the COUNT query (see `cached_count`).
+    let total: i64 = {
+        let mime_filter = params.mime_type.as_deref();
+        cached_count(&state.total_count_cache, mime_filter, Instant::now(), || match mime_filter {
+            Some(mime) => conn
+                .query_row(
+                    "SELECT COUNT(*) FROM media_items WHERE mime_type LIKE ?1",
+                    rusqlite::params![mime],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0),
+            None => conn
+                .query_row("SELECT COUNT(*) FROM media_items", [], |row| row.get(0))
+                .unwrap_or(0),
+        })
     };
 
     // Build SQL dynamically for cursor-based pagination

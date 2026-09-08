@@ -49,7 +49,7 @@ fn create_media_test_app_with_permits(
         thumbnail_limiter: Arc::new(imageviz_backend::thumbnails::limiter::ThumbnailLimiter::new(
             max_permits,
         )),
-        total_count_cache: Arc::new(std::sync::Mutex::new(None)),
+        total_count_cache: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     });
 
     let app = imageviz_backend::health_router()

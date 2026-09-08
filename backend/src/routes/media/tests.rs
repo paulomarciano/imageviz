@@ -18,7 +18,7 @@ use crate::thumbnails::limiter::ThumbnailLimiter;
 /// a temporary cache directory (kept alive until the test finishes).
 /// The database is created via the real migration path so the schema
 /// matches production.
-fn test_state() -> (Arc<MediaState>, tempfile::TempDir) {
+pub(super) fn test_state() -> (Arc<MediaState>, tempfile::TempDir) {
     let pool = crate::db::pool::create_in_memory_pool();
     {
         let mut conn = pool.get().expect("Failed to get connection for migrations");
@@ -29,7 +29,7 @@ fn test_state() -> (Arc<MediaState>, tempfile::TempDir) {
         db: pool,
         thumbnail_cache_dir: cache_dir.path().to_path_buf(),
         thumbnail_limiter: Arc::new(ThumbnailLimiter::new(16)), // generous for tests
-        total_count_cache: Arc::new(Mutex::new(None)),
+        total_count_cache: Arc::new(Mutex::new(HashMap::new())),
     });
     (state, cache_dir)
 }
@@ -70,7 +70,7 @@ async fn seed_media_item(
 /// Used by cursor pagination tests to create items at specific timestamps.
 #[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
-async fn seed_media_item_full(
+pub(super) async fn seed_media_item_full(
     state: &Arc<MediaState>,
     id: &str,
     filename: &str,

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -126,7 +127,7 @@ async fn main() {
         db: pool.clone(),
         thumbnail_cache_dir: settings.thumbnail_cache_dir.clone(),
         thumbnail_limiter: Arc::clone(&thumbnail_limiter),
-        total_count_cache: Arc::new(StdMutex::new(None)),
+        total_count_cache: Arc::new(StdMutex::new(HashMap::new())),
     });
     let search_state =
         Arc::new(SearchState { index_manager: Arc::clone(&index_manager), db: pool.clone() });
