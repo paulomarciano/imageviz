@@ -481,6 +481,10 @@ async fn test_search_cursor_pagination_distinct_pages() {
         .map(|v| v["id"].as_str().unwrap().to_string())
         .collect();
     assert_eq!(page1_ids.len(), 10);
+    assert_eq!(
+        body["meta"]["total"], 25,
+        "total should reflect all 25 matching docs, not the page size"
+    );
     assert_eq!(body["meta"]["has_more"], true);
     let cursor = body["meta"]["next_cursor"].as_str().unwrap().to_string();
 

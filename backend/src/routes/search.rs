@@ -31,13 +31,12 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use tantivy::SegmentReader;
-use tantivy::collector::TopDocs;
+use tantivy::collector::{Count, MultiCollector, TopDocs};
 use tantivy::query::QueryParser;
 use tantivy::schema::Value as TantivyValue;
 
 use crate::middleware::validation;
 use crate::search::IndexManager;
-use tantivy::collector::Count;
 
 // ---------------------------------------------------------------------------
 // State
@@ -149,33 +148,14 @@ async fn search_handler(
 
     let id_field = schema.get_field("id").unwrap();
 
-    // Run Count collector (fast, no scoring) to get the accurate total.
-    let total_hits: usize = match searcher.search(&query, &Count) {
-        Ok(count) => count,
-        Err(e) => {
-            tracing::error!(error = %e, "Tantivy count query failed");
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Search failed"})),
-            ));
-        }
-    };
-
     // Build the collector: offset-based pagination with appropriate ordering.
     // Both branches return Vec<(f32, DocAddress)> so we can share a single code path.
     let collector: TopDocs = TopDocs::with_limit(limit + 1).and_offset(offset);
 
-    let top_docs: Vec<(f32, tantivy::DocAddress)> = if params.sort == "score" {
-        match searcher.search(&query, &collector.order_by_score()) {
-            Ok(docs) => docs,
-            Err(e) => {
-                tracing::error!(error = %e, "Tantivy search failed");
-                return Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": "Search failed"})),
-                ));
-            }
-        }
+    // Single index traversal: count + top docs are collected together via
+    // MultiCollector instead of walking all matching docs twice.
+    let search_result = if params.sort == "score" {
+        search_single_traversal(&searcher, &query, collector.order_by_score())
     } else {
         // Default: recency — custom scoring = created_at timestamp (µs).
         let score_fn = move |segment_reader: &SegmentReader| {
@@ -187,15 +167,17 @@ async fn search_handler(
                 date_reader.first(doc_id).map(|dt| dt.into_timestamp_micros() as f32).unwrap_or(0.0)
             }
         };
-        match searcher.search(&query, &collector.order_by(score_fn)) {
-            Ok(docs) => docs,
-            Err(e) => {
-                tracing::error!(error = %e, "Tantivy search failed");
-                return Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": "Search failed"})),
-                ));
-            }
+        search_single_traversal(&searcher, &query, collector.order_by(score_fn))
+    };
+
+    let (total_hits, top_docs): (usize, Vec<(f32, tantivy::DocAddress)>) = match search_result {
+        Ok(result) => result,
+        Err(e) => {
+            tracing::error!(error = %e, "Tantivy search failed");
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Search failed"})),
+            ));
         }
     };
 
@@ -251,6 +233,32 @@ async fn search_handler(
             "query": query_str,
         }
     })))
+}
+
+// ---------------------------------------------------------------------------
+// Search execution
+// ---------------------------------------------------------------------------
+
+/// Run `query` in a single index traversal, returning `(total_matches, top_docs)`.
+///
+/// Tantivy's `MultiCollector` feeds both the count and the top-docs collectors
+/// during one walk over the matching documents — half the traversal cost of
+/// running `Count` and `TopDocs` in separate `searcher.search` calls.
+fn search_single_traversal<C>(
+    searcher: &tantivy::Searcher,
+    query: &dyn tantivy::query::Query,
+    top_docs_collector: C,
+) -> Result<(usize, Vec<(f32, tantivy::DocAddress)>), tantivy::TantivyError>
+where
+    C: tantivy::collector::Collector<Fruit = Vec<(f32, tantivy::DocAddress)>>,
+{
+    let mut multicollector = MultiCollector::new();
+    let docs_handle = multicollector.add_collector(top_docs_collector);
+    let count_handle = multicollector.add_collector(Count);
+    let mut multifruit = searcher.search(query, &multicollector)?;
+    let total = count_handle.extract(&mut multifruit);
+    let top_docs = docs_handle.extract(&mut multifruit);
+    Ok((total, top_docs))
 }
 
 // ---------------------------------------------------------------------------
