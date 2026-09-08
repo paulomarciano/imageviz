@@ -12,27 +12,22 @@ const ConfigPanel = lazy(() =>
 );
 import { ShortcutsPanel } from './components/shared/shortcuts-panel';
 import { selectedMediaItemAtom, detailViewOpenAtom } from './store/media-atoms';
-import { searchQueryAtom, mediaViewModeAtom } from './store/search-atoms';
+import { mediaDataAtom } from './store/media-data-atoms';
 import { shortcutsPanelOpenAtom, configPanelOpenAtom } from './store/ui-atoms';
-import { useInfiniteMedia } from './hooks/use-infinite-media';
-import { useSearch } from './hooks/use-search';
 import { useSseGridUpdates } from './hooks/use-sse-grid-updates';
 import type { MediaItem } from './types/media';
 
 /**
- * Inner component that only mounts hooks for the active view mode.
- * Fully unmounted when switching modes, so only one hook observer is alive.
+ * Inner component that hosts the active grid and the detail view.
+ *
+ * The item list is not fetched here: the grid writes the flattened list it
+ * renders into `mediaDataAtom`, and this component reads it so DetailView
+ * navigation follows the exact grid order (Wave 8.10 — single data layer).
  */
 function ActiveViewContent() {
-  const viewMode = useAtomValue(mediaViewModeAtom);
-  const searchQuery = useAtomValue(searchQueryAtom);
   const [selectedItem, setSelectedItem] = useAtom(selectedMediaItemAtom);
   const [detailOpen, setDetailOpen] = useAtom(detailViewOpenAtom);
-
-  // Only mount the hook corresponding to the active mode.
-  const browseData = useInfiniteMedia(100, undefined, viewMode !== 'search');
-  const searchData = useSearch(searchQuery, 100, undefined, 'recency');
-  const allItems = viewMode === 'search' ? searchData.results : browseData.allItems;
+  const { items: allItems } = useAtomValue(mediaDataAtom);
 
   const handleItemClick = useCallback(
     (item: MediaItem) => {

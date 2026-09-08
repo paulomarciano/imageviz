@@ -1,6 +1,6 @@
 import { forwardRef, useCallback, useState, useEffect, type HTMLAttributes } from 'react';
 import { VirtuosoGrid } from 'react-virtuoso';
-import { useAtomValue } from 'jotai';
+import { useAtomValue, useSetAtom } from 'jotai';
 import {
   searchQueryAtom,
   mediaViewModeAtom,
@@ -8,6 +8,7 @@ import {
   searchSortAtom,
   mimeTypePattern,
 } from '../../store/search-atoms';
+import { mediaDataAtom, type MediaDataMode } from '../../store/media-data-atoms';
 import { useInfiniteMedia } from '../../hooks/use-infinite-media';
 import { useSearch } from '../../hooks/use-search';
 import { useScrollRestore } from '../../hooks/use-scroll-restore';
@@ -69,6 +70,7 @@ function BrowseGrid({ onItemClick }: ThumbnailGridProps) {
       onItemClick={onItemClick}
       searchQuery=""
       searchTotal={0}
+      mode="browse"
     />
   );
 }
@@ -120,6 +122,7 @@ function SearchGrid({ onItemClick }: ThumbnailGridProps) {
       onItemClick={onItemClick}
       searchQuery={searchQuery}
       searchTotal={totalCount}
+      mode="search"
     />
   );
 }
@@ -138,6 +141,7 @@ function MediaGrid({
   onItemClick,
   searchQuery,
   searchTotal,
+  mode,
 }: {
   items: readonly MediaItem[];
   totalCount: number;
@@ -151,7 +155,18 @@ function MediaGrid({
   onItemClick: (item: MediaItem) => void;
   searchQuery: string;
   searchTotal: number;
+  mode: MediaDataMode;
 }) {
+  const setMediaData = useSetAtom(mediaDataAtom);
+
+  // Publish the flattened list this grid renders into the shared atom, so
+  // DetailView navigation (App) follows the exact grid order — including
+  // mime-filter and sort state. Writing `[]` while loading also resets the
+  // atom on mode switches and query changes (Wave 8.10 — single data layer).
+  useEffect(() => {
+    setMediaData({ mode, items });
+  }, [setMediaData, mode, items]);
+
   const loadMore = useCallback(() => {
     if (hasNextPage && !isFetchingNextPage) {
       fetchNextPage();

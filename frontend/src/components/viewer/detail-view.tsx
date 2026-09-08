@@ -18,7 +18,7 @@ import { MetadataPanel } from './metadata-panel';
 import { useFocusTrap } from '@/hooks/use-focus-trap';
 
 interface DetailViewProps {
-  readonly items: MediaItem[];
+  readonly items: readonly MediaItem[];
   readonly currentIndex: number;
   readonly onNavigate: (index: number) => void;
   readonly onClose: () => void;
