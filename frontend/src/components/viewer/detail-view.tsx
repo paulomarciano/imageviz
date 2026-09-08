@@ -3,8 +3,8 @@
  * and metadata panel. Supports keyboard navigation (← → Escape), body scroll
  * lock, and fade-in entrance animation.
  *
- * The parent provides the current context of `items: MediaItem[]` and the
- * `currentIndex` for arrow-based navigation.
+ * The parent provides the current context of `items: readonly MediaItem[]` and
+ * the `currentIndex` for arrow-based navigation.
  */
 
 import { useEffect, useRef } from 'react';

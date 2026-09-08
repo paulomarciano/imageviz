@@ -4,7 +4,12 @@ import type { MediaItem } from '../types/media';
 /** Which grid produced the current item list. */
 export type MediaDataMode = 'browse' | 'search';
 
-/** The derived flat list the active grid renders, plus its mode discriminator. */
+/**
+ * The derived flat list the active grid renders, plus its mode discriminator.
+ *
+ * `mode` is not consumed by the production reader today — it exists for
+ * diagnostics, test observability, and future reader-side mode guards.
+ */
 export interface MediaDataState {
   readonly mode: MediaDataMode;
   readonly items: readonly MediaItem[];

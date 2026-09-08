@@ -177,7 +177,7 @@ function MediaDataProbe() {
 }
 
 /** Open the search input and wait for one debounced query change to land. */
-async function searchFor(input: HTMLElement, query: string, expectText: string) {
+async function searchFor(input: HTMLElement, query: string, expectText: string | RegExp) {
   await userEvent.type(input, query);
   await waitFor(() => expect(screen.getByText(expectText)).toBeInTheDocument(), {
     timeout: 2000,
@@ -297,6 +297,62 @@ describe('Single data layer (Wave 8.10)', () => {
 
     // Only the selected item was ever fetched — never alpha-2 (previous
     // query's list) and nothing from the beta list either.
+    expect(detailFetches.every((id) => id === 'alpha-1')).toBe(true);
+  });
+
+  it('resets the atom on a cached zero-result query even though MediaGrid never mounts', async () => {
+    const detailFetches: string[] = [];
+    server.use(
+      http.get('/api/v1/search', ({ request }) => {
+        const q = new URL(request.url).searchParams.get('q') ?? '';
+        const data =
+          q === 'alpha'
+            ? [
+                item('alpha-1', 'alpha-one.png', 'image/png'),
+                item('alpha-2', 'alpha-two.png', 'image/png'),
+              ]
+            : []; // "beta" always returns zero results
+        return paginated(data, q);
+      }),
+      trackDetailFetches(detailFetches),
+    );
+
+    renderWithProviders(
+      <>
+        <App />
+        <MediaDataProbe />
+      </>,
+    );
+
+    const input = screen.getByPlaceholderText('Search media...');
+
+    // Prime the query cache: "beta" completes with zero results.
+    await searchFor(input, 'beta', /0 results/);
+
+    // Search "alpha", open the detail view on the first hit.
+    await userEvent.clear(input);
+    await searchFor(input, 'alpha', 'alpha-one.png');
+    await userEvent.click(screen.getByRole('button', { name: 'View alpha-one.png' }));
+    await waitFor(() => expect(detailFetches).toEqual(['alpha-1']));
+
+    // Switch back to the *cached* zero-result query — noResults is true on
+    // the first render, so MediaGrid never mounts and its write effect can't
+    // reset the atom.
+    await userEvent.clear(input);
+    await userEvent.type(input, 'beta');
+    await waitFor(() => expect(screen.getByText(/0 results/)).toBeInTheDocument(), {
+      timeout: 2000,
+    });
+    await waitFor(
+      () => expect(screen.getByTestId('media-data-probe')).toHaveAttribute('data-ids', ''),
+      {
+        timeout: 2000,
+      },
+    );
+
+    fireEvent.keyDown(window, { key: 'ArrowRight' });
+
+    // Navigation must not walk into the previous query's item list.
     expect(detailFetches.every((id) => id === 'alpha-1')).toBe(true);
   });
 

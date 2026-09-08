@@ -84,6 +84,7 @@ function SearchGrid({ onItemClick }: ThumbnailGridProps) {
   const mediaTypeFilter = useAtomValue(mediaTypeFilterAtom);
   const mimeType = mimeTypePattern(mediaTypeFilter);
   const sort = useAtomValue(searchSortAtom);
+  const setMediaData = useSetAtom(mediaDataAtom);
 
   const {
     results,
@@ -97,6 +98,16 @@ function SearchGrid({ onItemClick }: ThumbnailGridProps) {
     refetch,
     noResults,
   } = useSearch(searchQuery, 100, mimeType, sort);
+
+  // Reset the shared atom when this query definitively has no results:
+  // the no-results branch below returns before MediaGrid mounts, so the
+  // grid's own write effect can't reset it (matters when the empty result
+  // set is served from cache and there is no loading pass at all).
+  useEffect(() => {
+    if (noResults) {
+      setMediaData({ mode: 'search', items: [] });
+    }
+  }, [noResults, setMediaData]);
 
   // Search-specific: show no-results state before the grid
   if (noResults) {
