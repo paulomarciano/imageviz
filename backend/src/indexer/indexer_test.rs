@@ -259,6 +259,44 @@ async fn test_modes_agree_on_fresh_and_unchanged_trees() {
     assert_eq!(fetch_indexed_rows(&pool_full), fetch_indexed_rows(&pool_incr));
 }
 
+/// Guard against seam ↔ wrapper drift: `run_mode_with_concurrency` re-states
+/// each mode's skip predicate (the public wrappers hard-code their own), so
+/// pin the seam to the real entry points on an identical fixture — otherwise
+/// editing a wrapper's predicate could silently diverge from the seam.
+#[tokio::test]
+async fn test_seam_matches_public_wrappers() {
+    let dir = tempfile::Builder::new().prefix("imgviz_seam_").tempdir().unwrap();
+    create_png_batch(dir.path(), 5);
+    let config = config_for(dir.path());
+
+    // Fresh tree: seam (concurrency 4) vs public wrapper (env-derived).
+    let pool_seam = setup_pool();
+    let pool_api = setup_pool();
+    let seam_full =
+        run_mode_with_concurrency(IndexMode::Full, &pool_seam, &config, &setup_progress(), 4)
+            .await
+            .unwrap();
+    let api_full = full_index(&pool_api, &config, &setup_progress()).await.unwrap();
+
+    assert_eq!(seam_full, api_full, "seam must match full_index");
+    assert_eq!(fetch_indexed_rows(&pool_seam), fetch_indexed_rows(&pool_api));
+
+    // Unchanged tree: same for the incremental mode.
+    let seam_incr = run_mode_with_concurrency(
+        IndexMode::Incremental,
+        &pool_seam,
+        &config,
+        &setup_progress(),
+        4,
+    )
+    .await
+    .unwrap();
+    let api_incr = incremental_index(&pool_api, &config, &setup_progress()).await.unwrap();
+
+    assert_eq!(seam_incr, api_incr, "seam must match incremental_index");
+    assert_eq!(fetch_indexed_rows(&pool_seam), fetch_indexed_rows(&pool_api));
+}
+
 /// Full column set of a freshly indexed `media_items` row (all 12 columns).
 type FullyIndexedRow = (
     String,
