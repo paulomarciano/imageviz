@@ -455,10 +455,11 @@ fn remove_deleted_items(conn: &Connection, config: &AppConfig) -> Result<usize, 
 pub struct IndexStats {
     pub created: usize,
     pub updated: usize,
-    /// Files that produced no DB write. Aggregates two mechanisms: files
-    /// exempted by the mode's skip predicate before Phase 1 (incremental's
-    /// size+mtime gate; full never skips there) and files whose checksum
-    /// matched in [`store_file`]. Both count toward this single counter.
+    /// Files already indexed whose content required no write. Aggregates
+    /// two mechanisms: files exempted by the mode's skip predicate before
+    /// Phase 1 (incremental's size+mtime gate; full never skips there) and
+    /// files whose checksum matched in `store_file`. Both count toward
+    /// this single counter.
     pub skipped: usize,
     pub deleted: usize,
     pub errors: usize,

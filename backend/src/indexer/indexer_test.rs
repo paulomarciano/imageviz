@@ -259,10 +259,21 @@ async fn test_modes_agree_on_fresh_and_unchanged_trees() {
     assert_eq!(fetch_indexed_rows(&pool_full), fetch_indexed_rows(&pool_incr));
 }
 
-/// Guard against seam ↔ wrapper drift: `run_mode_with_concurrency` re-states
-/// each mode's skip predicate (the public wrappers hard-code their own), so
-/// pin the seam to the real entry points on an identical fixture — otherwise
-/// editing a wrapper's predicate could silently diverge from the seam.
+/// Guard against seam ↔ wrapper wiring drift: `run_mode_with_concurrency`
+/// re-states each mode's skip predicate (the public wrappers hard-code their
+/// own), so pin the seam to the real entry points on an identical fixture.
+///
+/// Phase 3 makes predicate drift on the full wrapper observable: a full mode
+/// that grew the incremental size+mtime gate would skip a same-size,
+/// same-mtime content change and leave a stale row, while the real
+/// never-skip predicate must re-hash and update it. (Incremental-wrapper
+/// predicate drift is inherently stats-invisible — the correct incremental
+/// predicate also skips same-mtime files — so that class is guarded by
+/// review, not by outcomes.)
+///
+/// The concurrency asymmetry (seam at 4 vs the wrappers' env-derived value)
+/// is intentional: outcomes are pinned concurrency-invariant by the
+/// parallel-equivalence tests below.
 #[tokio::test]
 async fn test_seam_matches_public_wrappers() {
     let dir = tempfile::Builder::new().prefix("imgviz_seam_").tempdir().unwrap();
@@ -294,6 +305,27 @@ async fn test_seam_matches_public_wrappers() {
     let api_incr = incremental_index(&pool_api, &config, &setup_progress()).await.unwrap();
 
     assert_eq!(seam_incr, api_incr, "seam must match incremental_index");
+    assert_eq!(fetch_indexed_rows(&pool_seam), fetch_indexed_rows(&pool_api));
+
+    // Phase 3: same-size, same-mtime content change. The real full
+    // predicate (never skip) must re-hash and update; a full wrapper that
+    // drifted into the incremental size+mtime gate would skip the file and
+    // leave a stale row — this phase makes that drift fail the test.
+    let path = dir.path().join("img_0000.png");
+    let mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+    // Same-length text value → same file size; mtime restored below.
+    create_png_with_text_chunks(&path, &[("index", "Z")]);
+    std::fs::File::options().write(true).open(&path).unwrap().set_modified(mtime).unwrap();
+
+    let seam_full =
+        run_mode_with_concurrency(IndexMode::Full, &pool_seam, &config, &setup_progress(), 4)
+            .await
+            .unwrap();
+    let api_full = full_index(&pool_api, &config, &setup_progress()).await.unwrap();
+
+    assert_eq!(seam_full, api_full, "seam must match full_index after content change");
+    assert_eq!(api_full.updated, 1, "full mode must catch same-size/same-mtime change");
+    assert_eq!(api_full.skipped, 4, "full mode skips only the untouched files, at checksum");
     assert_eq!(fetch_indexed_rows(&pool_seam), fetch_indexed_rows(&pool_api));
 }
 
