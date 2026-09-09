@@ -1,11 +1,11 @@
 //! Bridge between SQLite `media_items` and the Tantivy full-text index.
 //!
 //! Provides [`full_reindex`] to rebuild the entire Tantivy index from SQLite
-//! data, and [`incremental_index`] to process only recently-modified rows.
+//! data.
 //!
 //! # Architecture
 //!
-//! Both functions operate synchronously and should be called from
+//! The function operates synchronously and should be called from
 //! [`tokio::task::spawn_blocking`] when used in async contexts to avoid
 //! blocking the Tokio runtime.
 //!
@@ -17,7 +17,6 @@
 
 use crate::search::IndexManager;
 use rusqlite::Connection;
-use rusqlite::OptionalExtension;
 use tantivy::DateTime;
 use tantivy::doc;
 
@@ -30,8 +29,6 @@ use tantivy::doc;
 pub struct ReindexStats {
     /// Number of documents successfully added to the Tantivy index.
     pub indexed_count: usize,
-    /// Number of rows that were skipped (e.g. unchanged in incremental mode).
-    pub skipped_count: usize,
     /// Number of errors encountered.
     pub errors: usize,
 }
@@ -141,125 +138,6 @@ pub fn full_reindex(
     Ok(stats)
 }
 
-/// Incremental index: process only rows whose `file_modified_at` is newer
-/// than the last recorded index timestamp.
-///
-/// The last-indexed timestamp is tracked in the `config` table under the key
-/// `search_last_indexed_at`. If no such config entry exists (e.g. on the first
-/// run), this falls back to a full reindex.
-///
-/// After processing, the `search_last_indexed_at` config value is updated to
-/// the current wall-clock time so that subsequent calls only pick up newer
-/// modifications.
-pub fn incremental_index(
-    db: &Connection,
-    index_manager: &IndexManager,
-) -> Result<ReindexStats, Box<dyn std::error::Error>> {
-    // 1. Read the last-indexed timestamp from config
-    let last_indexed: Option<String> = db
-        .query_row("SELECT value FROM config WHERE key = 'search_last_indexed_at'", [], |row| {
-            row.get(0)
-        })
-        .optional()?;
-
-    // 2. If no prior index exists, do a full rebuild
-    let since = match last_indexed {
-        Some(ts) => ts,
-        None => {
-            let stats = full_reindex(db, index_manager)?;
-            record_indexed_at(db)?;
-            return Ok(stats);
-        }
-    };
-
-    // 3. Query items modified after that timestamp
-    let mut stmt = db.prepare(
-        "SELECT id, filename, mime_type, COALESCE(metadata_json, ''), 
-                file_created_at, file_size, width, height 
-         FROM media_items 
-         WHERE file_modified_at > ?1",
-    )?;
-
-    let rows = stmt.query_map(rusqlite::params![since], |row| {
-        Ok(MediaItemRow {
-            id: row.get(0)?,
-            filename: row.get(1)?,
-            mime_type: row.get(2)?,
-            metadata_json: row.get(3)?,
-            created_at_str: row.get(4)?,
-            file_size: row.get(5)?,
-            width: row.get(6)?,
-            height: row.get(7)?,
-        })
-    })?;
-
-    // 4. Delete stale Tantivy documents, then add updated ones
-    let schema = index_manager.schema();
-    let id_field = schema.get_field("id")?;
-    let filename_field = schema.get_field("filename")?;
-    let mime_type_field = schema.get_field("mime_type")?;
-    let metadata_json_field = schema.get_field("metadata_json")?;
-    let created_at_field = schema.get_field("created_at")?;
-    let file_size_field = schema.get_field("file_size")?;
-    let width_field = schema.get_field("width")?;
-    let height_field = schema.get_field("height")?;
-
-    let mut stats = ReindexStats::default();
-
-    for row_result in rows {
-        let row = match row_result {
-            Ok(r) => r,
-            Err(e) => {
-                stats.errors += 1;
-                tracing::warn!("Skipping incremental row due to DB error: {e}");
-                continue;
-            }
-        };
-
-        // Delete the old Tantivy document for this id before re-adding
-        index_manager.delete_document_by_field("id", &row.id)?;
-
-        let created_at = match parse_iso8601_to_tantivy(&row.created_at_str) {
-            Ok(dt) => dt,
-            Err(e) => {
-                stats.errors += 1;
-                tracing::warn!(
-                    "Skipping incremental row {}: bad date '{}': {e}",
-                    row.id,
-                    row.created_at_str
-                );
-                continue;
-            }
-        };
-
-        let doc = tantivy::doc!(
-            id_field => row.id,
-            filename_field => row.filename,
-            mime_type_field => row.mime_type,
-            metadata_json_field => row.metadata_json,
-            created_at_field => created_at,
-            file_size_field => row.file_size as u64,
-            width_field => row.width.unwrap_or(0) as u64,
-            height_field => row.height.unwrap_or(0) as u64,
-        );
-
-        if let Err(e) = index_manager.add_document(doc) {
-            stats.errors += 1;
-            tracing::warn!("Failed to add incremental document: {e}");
-        } else {
-            stats.indexed_count += 1;
-        }
-    }
-
-    // 5. Commit and refresh reader
-    index_manager.commit()?;
-
-    // 6. Update the tracking timestamp
-    record_indexed_at(db)?;
-
-    Ok(stats)
-}
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -277,17 +155,6 @@ fn parse_iso8601_to_tantivy(ts: &str) -> Result<DateTime, Box<dyn std::error::Er
     let dt: ChronoDateTime<Utc> = ts.parse()?;
     let timestamp = dt.timestamp(); // Unix seconds
     Ok(DateTime::from_timestamp_secs(timestamp))
-}
-
-/// Record the current wall-clock time in the `config` table so that the next
-/// incremental index can determine which rows have changed since this run.
-fn record_indexed_at(db: &Connection) -> Result<(), Box<dyn std::error::Error>> {
-    let now = chrono::Utc::now().to_rfc3339();
-    db.execute(
-        "INSERT OR REPLACE INTO config (key, value) VALUES ('search_last_indexed_at', ?1)",
-        rusqlite::params![now],
-    )?;
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -495,64 +362,5 @@ mod tests {
     fn test_parse_iso8601_invalid_date() {
         let result = parse_iso8601_to_tantivy("not-a-date");
         assert!(result.is_err(), "invalid date string should return an error");
-    }
-
-    // -----------------------------------------------------------------------
-    // incremental_index tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_incremental_index_falls_back_to_full() {
-        // No config entry — incremental_index should call full_reindex internally
-        let conn = setup_db_with_items(5);
-        let (_dir, manager) = setup_tantivy();
-
-        let stats = incremental_index(&conn, &manager).expect("incremental_index");
-        assert_eq!(stats.indexed_count, 5);
-        assert_eq!(stats.errors, 0);
-
-        let total_docs = count_tantivy_docs(&manager);
-        assert_eq!(total_docs, 5, "should index all items via fallback to full");
-    }
-
-    #[test]
-    fn test_incremental_index_only_new_items() {
-        let conn = setup_db_with_items(3);
-        let (_dir, manager) = setup_tantivy();
-
-        // First call: full reindex (no config entry)
-        let s1 = incremental_index(&conn, &manager).expect("first incremental");
-        assert_eq!(s1.indexed_count, 3);
-
-        // record_indexed_at stores Utc::now(), so we need a timestamp
-        // that is strictly after that point.  Add a generous 10-second
-        // buffer to avoid any sub-second race.
-        let after_indexed_at = (chrono::Utc::now() + chrono::Duration::seconds(10)).to_rfc3339();
-
-        // Add a new item with a modification time after the recorded timestamp
-        conn.execute(
-            "INSERT INTO media_items
-                (id, filename, relative_path, mime_type, file_size,
-                 file_created_at, file_modified_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            rusqlite::params![
-                "uuid-new",
-                "new_file.png",
-                "new/new_file.png",
-                "image/png",
-                4096,
-                after_indexed_at,
-                after_indexed_at,
-            ],
-        )
-        .expect("insert new item");
-
-        // Second call: should only index the new item
-        let s2 = incremental_index(&conn, &manager).expect("second incremental");
-        assert_eq!(s2.indexed_count, 1, "only the new item should be indexed");
-        assert_eq!(s2.errors, 0);
-
-        let total_docs = count_tantivy_docs(&manager);
-        assert_eq!(total_docs, 4, "total should be 3 original + 1 new");
     }
 }

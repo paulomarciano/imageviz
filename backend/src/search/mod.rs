@@ -153,9 +153,9 @@ impl IndexManager {
 
     /// Delete the document identified by a text field value.
     ///
-    /// Used primarily by [`indexer::incremental_index`] to remove stale documents
-    /// for re-indexed rows.  The field should be `STRING`-indexed for this to work
-    /// predictably — in practice the `id` field is always used.
+    /// Used by the watcher pipeline to remove stale documents when a file
+    /// is deleted or re-indexed.  The field should be `STRING`-indexed for
+    /// this to work predictably — in practice the `id` field is always used.
     pub fn delete_document_by_field(
         &self,
         field_name: &str,

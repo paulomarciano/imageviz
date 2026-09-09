@@ -4,6 +4,85 @@ use crate::db::SqliteConnectionManager;
 use crate::db::migrations::run_migrations;
 use r2d2::Pool;
 
+// ---------------------------------------------------------------------------
+// Parameterization over index modes (ticket 8.13)
+// ---------------------------------------------------------------------------
+
+/// Which pipeline entry point a parameterized test exercises.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IndexMode {
+    /// [`full_index`] — nothing skips Phase 1 before the checksum check.
+    Full,
+    /// [`incremental_index`] — unchanged files skip Phase 1 via size+mtime.
+    Incremental,
+}
+
+/// Every behavioral test runs against both modes so the shared [`run_index`]
+/// core cannot drift between them.
+const ALL_MODES: [IndexMode; 2] = [IndexMode::Full, IndexMode::Incremental];
+
+/// Run one index mode with an injected Phase-1 concurrency.
+///
+/// Test seam for the former `full_index_with_concurrency` /
+/// `incremental_index_with_concurrency` pair: both modes funnel through the
+/// same [`run_index`] core, differing only in the skip predicate.
+async fn run_mode_with_concurrency(
+    mode: IndexMode,
+    pool: &Pool<SqliteConnectionManager>,
+    config: &AppConfig,
+    progress: &progress::ProgressTracker,
+    concurrency: usize,
+) -> Result<IndexStats, IndexError> {
+    match mode {
+        IndexMode::Full => run_index(pool, config, progress, concurrency, |_, _| false).await,
+        IndexMode::Incremental => {
+            run_index(pool, config, progress, concurrency, is_unchanged).await
+        }
+    }
+}
+
+/// Fresh fixtures for one parameterized index run: a temp watched folder
+/// (kept alive), a migrated in-memory pool, and the matching config.
+struct Case {
+    mode: IndexMode,
+    dir: tempfile::TempDir,
+    pool: Pool<SqliteConnectionManager>,
+    config: AppConfig,
+}
+
+impl Case {
+    /// Watched folder = the (initially empty) temp dir.
+    fn new(mode: IndexMode) -> Self {
+        let dir = tempfile::Builder::new().prefix("imgviz_case_").tempdir().unwrap();
+        let config = AppConfig {
+            watched_folders: vec![WatchedFolder {
+                path: dir.path().to_string_lossy().to_string(),
+                label: None,
+                id: None,
+            }],
+        };
+        Self { mode, dir, pool: setup_pool(), config }
+    }
+
+    /// Path of the watched folder — create test files here before running.
+    fn path(&self) -> &std::path::Path {
+        self.dir.path()
+    }
+
+    /// Run one index pass with deterministic sequential Phase-1 concurrency.
+    async fn run(&self) -> IndexStats {
+        run_mode_with_concurrency(self.mode, &self.pool, &self.config, &setup_progress(), 1)
+            .await
+            .unwrap()
+    }
+
+    /// Number of rows currently in `media_items`.
+    fn db_count(&self) -> i32 {
+        let conn = self.pool.get().unwrap();
+        conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).unwrap()
+    }
+}
+
 /// Create a test pool with schema applied.
 fn setup_pool() -> Pool<SqliteConnectionManager> {
     let pool = crate::db::pool::create_in_memory_pool();
@@ -21,221 +100,163 @@ fn setup_progress() -> progress::ProgressTracker {
 
 #[tokio::test]
 async fn test_empty_config_returns_empty_stats() {
-    let pool = setup_pool();
-    let config = AppConfig::default();
-    let progress = setup_progress();
+    for mode in ALL_MODES {
+        let pool = setup_pool();
 
-    let stats = full_index(&pool, &config, &progress).await.unwrap();
+        let stats =
+            run_mode_with_concurrency(mode, &pool, &AppConfig::default(), &setup_progress(), 1)
+                .await
+                .unwrap();
 
-    assert_eq!(stats, IndexStats { created: 0, updated: 0, skipped: 0, deleted: 0, errors: 0 });
+        assert_eq!(stats, IndexStats::default(), "{mode:?}");
+    }
 }
 
 #[tokio::test]
-async fn test_incremental_index_processes_files_and_skips_unchanged() {
-    let dir = tempfile::Builder::new().prefix("imgviz_").tempdir().unwrap();
-    let png_path = dir.path().join("test.png");
-    create_minimal_png(&png_path);
+async fn test_index_creates_entries_for_new_files() {
+    for mode in ALL_MODES {
+        let case = Case::new(mode);
+        create_minimal_png(&case.path().join("test.png"));
+        std::fs::write(case.path().join("test.jpg"), b"fake jpeg data").unwrap();
 
-    let pool = setup_pool();
-    let config = AppConfig {
-        watched_folders: vec![WatchedFolder {
-            path: dir.path().to_string_lossy().to_string(),
-            label: None,
-            id: None,
-        }],
-    };
+        let stats = case.run().await;
 
-    // incremental_index delegates to full_index internally
-    let stats = incremental_index(&pool, &config, &setup_progress()).await.unwrap();
-    assert_eq!(stats.created, 1, "incremental_index should create entries for new files");
-
-    // Second call should skip unchanged files
-    let stats = incremental_index(&pool, &config, &setup_progress()).await.unwrap();
-    assert_eq!(stats.skipped, 1, "incremental_index should skip unchanged files");
+        assert_eq!(stats.created, 1, "{mode:?}: only the valid PNG is created");
+        assert_eq!(stats.errors, 1, "{mode:?}: the fake JPG fails detection");
+        assert_eq!(case.db_count(), 1, "{mode:?}: exactly one media item stored");
+    }
 }
 
 #[tokio::test]
-async fn test_full_index_creates_entries_for_new_files() {
-    let dir = tempfile::Builder::new().prefix("imgviz_").tempdir().unwrap();
+async fn test_index_is_idempotent() {
+    for mode in ALL_MODES {
+        let case = Case::new(mode);
+        create_minimal_png(&case.path().join("test.png"));
 
-    // Create a minimal valid PNG file
-    let png_path = dir.path().join("test.png");
-    create_minimal_png(&png_path);
+        let first = case.run().await;
+        assert_eq!(first.created, 1, "{mode:?}: first run creates the entry");
 
-    // Create a JPG file (just a copy won't work — create a minimal valid one)
-    let jpg_path = dir.path().join("test.jpg");
-    std::fs::write(&jpg_path, b"fake jpeg data").unwrap();
+        for _ in 0..2 {
+            let stats = case.run().await;
+            assert_eq!(stats.created, 0, "{mode:?}: reruns create nothing");
+            assert_eq!(stats.skipped, 1, "{mode:?}: reruns skip the unchanged file");
+        }
+        assert_eq!(case.db_count(), 1, "{mode:?}: still exactly one entry");
+    }
+}
 
-    let pool = setup_pool();
-    let config = AppConfig {
-        watched_folders: vec![WatchedFolder {
-            path: dir.path().to_string_lossy().to_string(),
-            label: None,
-            id: None,
-        }],
-    };
-    let progress = setup_progress();
+#[tokio::test]
+async fn test_index_updates_modified_files() {
+    for mode in ALL_MODES {
+        let case = Case::new(mode);
+        let png_path = case.path().join("test.png");
+        create_minimal_png(&png_path);
+        assert_eq!(case.run().await.created, 1, "{mode:?}");
 
-    let stats = full_index(&pool, &config, &progress).await.unwrap();
+        // Rewrite with different content AND size, so the incremental
+        // size+mtime gate cannot skip the file even if the filesystem's
+        // mtime granularity is coarse.
+        create_png_with_text_chunks(&png_path, &[("revision", "second-longer-value")]);
 
-    // PNG should be indexed; JPG will fail detection (invalid format)
-    assert_eq!(stats.created, 1, "Only valid PNG should be created");
-    assert_eq!(stats.errors, 1, "JPG should fail detection");
+        let stats = case.run().await;
 
-    // Verify entry in DB
-    let conn = pool.get().unwrap();
-    let count: i32 = conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).unwrap();
-    assert_eq!(count, 1, "Only one media item in DB");
+        assert_eq!(stats.updated, 1, "{mode:?}: modified file must be updated");
+        assert_eq!(stats.created, 0, "{mode:?}");
+        assert_eq!(stats.skipped, 0, "{mode:?}");
+    }
+}
+
+#[tokio::test]
+async fn test_index_skips_unchanged_files() {
+    for mode in ALL_MODES {
+        let case = Case::new(mode);
+        create_minimal_png(&case.path().join("test.png"));
+
+        assert_eq!(case.run().await.created, 1, "{mode:?}");
+        let stats = case.run().await;
+
+        assert_eq!(stats.created, 0, "{mode:?}");
+        assert_eq!(stats.updated, 0, "{mode:?}");
+        assert_eq!(stats.skipped, 1, "{mode:?}: unchanged file must be skipped");
+    }
+}
+
+#[tokio::test]
+async fn test_index_removes_deleted_files() {
+    for mode in ALL_MODES {
+        let case = Case::new(mode);
+        let png_path = case.path().join("test.png");
+        create_minimal_png(&png_path);
+
+        assert_eq!(case.run().await.created, 1, "{mode:?}");
+
+        std::fs::remove_file(&png_path).unwrap();
+        let stats = case.run().await;
+
+        assert_eq!(stats.deleted, 1, "{mode:?}: deletion must be detected");
+        assert_eq!(case.db_count(), 0, "{mode:?}: DB empty after cleanup");
+    }
 }
 
 #[tokio::test]
 #[ignore = "requires test-fixtures/sample_video.mov (run scripts/generate-fixtures.sh)"]
-async fn test_full_index_indexes_mov_files_without_errors() {
-    let dir = tempfile::Builder::new().prefix("imgviz_").tempdir().unwrap();
+async fn test_index_indexes_mov_files_without_errors() {
+    for mode in ALL_MODES {
+        let case = Case::new(mode);
 
-    // Copy the generated .mov fixture into a fresh watched folder
-    let mov_src = crate::test_support::fixture_path("sample_video.mov");
-    assert!(mov_src.exists(), "Fixture not found: {}", mov_src.display());
-    std::fs::copy(&mov_src, dir.path().join("clip.mov")).unwrap();
+        // Copy the generated .mov fixture into the watched folder
+        let mov_src = crate::test_support::fixture_path("sample_video.mov");
+        assert!(mov_src.exists(), "Fixture not found: {}", mov_src.display());
+        std::fs::copy(&mov_src, case.path().join("clip.mov")).unwrap();
 
-    let pool = setup_pool();
-    let config = AppConfig {
-        watched_folders: vec![WatchedFolder {
-            path: dir.path().to_string_lossy().to_string(),
-            label: None,
-            id: None,
-        }],
-    };
+        let stats = case.run().await;
 
-    let stats = full_index(&pool, &config, &setup_progress()).await.unwrap();
+        assert_eq!(stats.created, 1, "{mode:?}: .mov file should be indexed");
+        assert_eq!(stats.errors, 0, "{mode:?}: .mov must not increment stats.errors");
 
-    assert_eq!(stats.created, 1, ".mov file should be indexed");
-    assert_eq!(stats.errors, 0, ".mov must not increment stats.errors");
-
-    let conn = pool.get().unwrap();
-    let (mime_type, width, height): (String, Option<u32>, Option<u32>) = conn
-        .query_row(
-            "SELECT mime_type, width, height FROM media_items WHERE relative_path = 'clip.mov'",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .unwrap();
-    assert_eq!(mime_type, "video/quicktime");
-    assert!(width.is_some_and(|w| w > 0), "indexed .mov should have width");
-    assert!(height.is_some_and(|h| h > 0), "indexed .mov should have height");
-}
-
-#[tokio::test]
-async fn test_incremental_index_skips_unchanged_files() {
-    let dir = tempfile::Builder::new().prefix("imgviz_").tempdir().unwrap();
-    let png_path = dir.path().join("test.png");
-    create_minimal_png(&png_path);
-
-    let pool = setup_pool();
-    let config = AppConfig {
-        watched_folders: vec![WatchedFolder {
-            path: dir.path().to_string_lossy().to_string(),
-            label: None,
-            id: None,
-        }],
-    };
-
-    // First index — should create
-    let stats1 = full_index(&pool, &config, &setup_progress()).await.unwrap();
-    assert_eq!(stats1.created, 1);
-
-    // Second index with no changes — should skip
-    let stats2 = full_index(&pool, &config, &setup_progress()).await.unwrap();
-    assert_eq!(stats2.created, 0);
-    assert_eq!(stats2.skipped, 1);
-}
-
-#[tokio::test]
-async fn test_incremental_index_updates_modified_files() {
-    let dir = tempfile::Builder::new().prefix("imgviz_").tempdir().unwrap();
-    let png_path = dir.path().join("test.png");
-    create_minimal_png(&png_path);
-
-    let pool = setup_pool();
-    let config = AppConfig {
-        watched_folders: vec![WatchedFolder {
-            path: dir.path().to_string_lossy().to_string(),
-            label: None,
-            id: None,
-        }],
-    };
-
-    // First index
-    full_index(&pool, &config, &setup_progress()).await.unwrap();
-
-    // Modify file (change a byte)
-    let mut data = std::fs::read(&png_path).unwrap();
-    if let Some(byte) = data.last_mut() {
-        *byte = byte.wrapping_add(1);
+        let conn = case.pool.get().unwrap();
+        let (mime_type, width, height): (String, Option<u32>, Option<u32>) = conn
+            .query_row(
+                "SELECT mime_type, width, height FROM media_items WHERE relative_path = 'clip.mov'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(mime_type, "video/quicktime", "{mode:?}");
+        assert!(width.is_some_and(|w| w > 0), "{mode:?}: indexed .mov should have width");
+        assert!(height.is_some_and(|h| h > 0), "{mode:?}: indexed .mov should have height");
     }
-    std::fs::write(&png_path, &data).unwrap();
-
-    // Second index — should update
-    let stats = full_index(&pool, &config, &setup_progress()).await.unwrap();
-    assert_eq!(stats.updated, 1);
-    assert_eq!(stats.created, 0);
-    assert_eq!(stats.skipped, 0);
 }
 
+/// Drift guard (ticket 8.13): both modes must converge to identical stats and
+/// identical DB state — over a fresh tree and over an unchanged tree.
+///
+/// On the unchanged rerun, full mode re-hashes everything and skips at the
+/// checksum comparison while incremental mode skips at the size+mtime gate
+/// without hashing; the observable outcome must be the same.
 #[tokio::test]
-async fn test_remove_deleted_files_cleans_up_db() {
-    let dir = tempfile::Builder::new().prefix("imgviz_").tempdir().unwrap();
-    let png_path = dir.path().join("test.png");
-    create_minimal_png(&png_path);
+async fn test_modes_agree_on_fresh_and_unchanged_trees() {
+    let dir = tempfile::Builder::new().prefix("imgviz_drift_").tempdir().unwrap();
+    create_png_batch(dir.path(), 120);
+    let config = config_for(dir.path());
 
-    let pool = setup_pool();
-    let config = AppConfig {
-        watched_folders: vec![WatchedFolder {
-            path: dir.path().to_string_lossy().to_string(),
-            label: None,
-            id: None,
-        }],
-    };
+    // Fresh tree: each mode starts from an empty DB.
+    let pool_full = setup_pool();
+    let pool_incr = setup_pool();
+    let stats_full = full_index(&pool_full, &config, &setup_progress()).await.unwrap();
+    let stats_incr = incremental_index(&pool_incr, &config, &setup_progress()).await.unwrap();
 
-    // Index the file
-    full_index(&pool, &config, &setup_progress()).await.unwrap();
+    assert_eq!(stats_full, stats_incr, "fresh-tree stats must match across modes");
+    assert_eq!(stats_full.created, 120);
+    assert_eq!(fetch_indexed_rows(&pool_full), fetch_indexed_rows(&pool_incr));
 
-    // Delete the file from disk
-    std::fs::remove_file(&png_path).unwrap();
+    // Unchanged tree: rerun each mode over the same files.
+    let stats_full = full_index(&pool_full, &config, &setup_progress()).await.unwrap();
+    let stats_incr = incremental_index(&pool_incr, &config, &setup_progress()).await.unwrap();
 
-    // Re-index — should detect deletion
-    let stats = full_index(&pool, &config, &setup_progress()).await.unwrap();
-    assert_eq!(stats.deleted, 1);
-
-    // DB should be empty
-    let conn = pool.get().unwrap();
-    let count: i32 = conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).unwrap();
-    assert_eq!(count, 0);
-}
-
-#[tokio::test]
-async fn test_full_index_is_idempotent() {
-    let dir = tempfile::Builder::new().prefix("imgviz_").tempdir().unwrap();
-    let png_path = dir.path().join("test.png");
-    create_minimal_png(&png_path);
-
-    let pool = setup_pool();
-    let config = AppConfig {
-        watched_folders: vec![WatchedFolder {
-            path: dir.path().to_string_lossy().to_string(),
-            label: None,
-            id: None,
-        }],
-    };
-
-    // Index 3 times — should be idempotent (no duplicate entries)
-    for _ in 0..3 {
-        full_index(&pool, &config, &setup_progress()).await.unwrap();
-    }
-
-    let conn = pool.get().unwrap();
-    let count: i32 = conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).unwrap();
-    assert_eq!(count, 1, "Should have exactly one entry after 3 index runs");
+    assert_eq!(stats_full, stats_incr, "unchanged-tree stats must match across modes");
+    assert_eq!(stats_full, IndexStats { skipped: 120, ..IndexStats::default() });
+    assert_eq!(fetch_indexed_rows(&pool_full), fetch_indexed_rows(&pool_incr));
 }
 
 /// Full column set of a freshly indexed `media_items` row (all 12 columns).
@@ -256,61 +277,59 @@ type FullyIndexedRow = (
 
 #[tokio::test]
 async fn test_indexed_item_has_all_required_fields() {
-    let dir = tempfile::Builder::new().prefix("imgviz_").tempdir().unwrap();
-    let png_path = dir.path().join("test.png");
-    create_minimal_png(&png_path);
+    for mode in ALL_MODES {
+        let case = Case::new(mode);
+        create_minimal_png(&case.path().join("test.png"));
+        case.run().await;
 
-    let pool = setup_pool();
-    let config = AppConfig {
-        watched_folders: vec![WatchedFolder {
-            path: dir.path().to_string_lossy().to_string(),
-            label: None,
-            id: None,
-        }],
-    };
+        // Verify all required columns are populated
+        let conn = case.pool.get().unwrap();
+        let row: FullyIndexedRow = conn
+            .query_row(
+                "SELECT id, filename, relative_path, mime_type, width, height, file_size,
+                        file_created_at, file_modified_at, indexed_at, metadata_json, checksum
+                 FROM media_items LIMIT 1",
+                [],
+                |r| {
+                    Ok((
+                        r.get(0)?,  // id
+                        r.get(1)?,  // filename
+                        r.get(2)?,  // relative_path
+                        r.get(3)?,  // mime_type
+                        r.get(4)?,  // width
+                        r.get(5)?,  // height
+                        r.get(6)?,  // file_size
+                        r.get(7)?,  // file_created_at
+                        r.get(8)?,  // file_modified_at
+                        r.get(9)?,  // indexed_at
+                        r.get(10)?, // metadata_json
+                        r.get(11)?, // checksum
+                    ))
+                },
+            )
+            .unwrap();
 
-    full_index(&pool, &config, &setup_progress()).await.unwrap();
-
-    // Verify all required columns are populated
-    let conn = pool.get().unwrap();
-    let row: FullyIndexedRow = conn
-        .query_row(
-            "SELECT id, filename, relative_path, mime_type, width, height, file_size,
-                    file_created_at, file_modified_at, indexed_at, metadata_json, checksum
-             FROM media_items LIMIT 1",
-            [],
-            |r| {
-                Ok((
-                    r.get(0)?,  // id
-                    r.get(1)?,  // filename
-                    r.get(2)?,  // relative_path
-                    r.get(3)?,  // mime_type
-                    r.get(4)?,  // width
-                    r.get(5)?,  // height
-                    r.get(6)?,  // file_size
-                    r.get(7)?,  // file_created_at
-                    r.get(8)?,  // file_modified_at
-                    r.get(9)?,  // indexed_at
-                    r.get(10)?, // metadata_json
-                    r.get(11)?, // checksum
-                ))
-            },
-        )
-        .unwrap();
-
-    assert!(!row.0.is_empty(), "id should be non-empty (UUID)");
-    assert_eq!(row.1, "test.png", "filename should match");
-    assert_eq!(row.2, "test.png", "relative_path should match");
-    assert_eq!(row.3, "image/png", "mime_type should be image/png");
-    assert!(row.4.is_some(), "width should be present");
-    assert!(row.5.is_some(), "height should be present");
-    assert!(row.6 > 0, "file_size should be > 0");
-    assert!(!row.7.is_empty(), "file_created_at should be non-empty");
-    assert!(!row.8.is_empty(), "file_modified_at should be non-empty");
-    assert!(!row.9.is_empty(), "indexed_at should be non-empty");
-    assert!(row.10.is_none(), "metadata_json should be None for a minimal PNG without text chunks");
-    assert!(row.11.is_some(), "checksum should be present");
-    assert_eq!(row.11.as_ref().unwrap().len(), 64, "checksum should be SHA-256 (64 hex chars)");
+        assert!(!row.0.is_empty(), "{mode:?}: id should be non-empty (UUID)");
+        assert_eq!(row.1, "test.png", "{mode:?}: filename should match");
+        assert_eq!(row.2, "test.png", "{mode:?}: relative_path should match");
+        assert_eq!(row.3, "image/png", "{mode:?}: mime_type should be image/png");
+        assert!(row.4.is_some(), "{mode:?}: width should be present");
+        assert!(row.5.is_some(), "{mode:?}: height should be present");
+        assert!(row.6 > 0, "{mode:?}: file_size should be > 0");
+        assert!(!row.7.is_empty(), "{mode:?}: file_created_at should be non-empty");
+        assert!(!row.8.is_empty(), "{mode:?}: file_modified_at should be non-empty");
+        assert!(!row.9.is_empty(), "{mode:?}: indexed_at should be non-empty");
+        assert!(
+            row.10.is_none(),
+            "{mode:?}: metadata_json should be None for a minimal PNG without text chunks"
+        );
+        assert!(row.11.is_some(), "{mode:?}: checksum should be present");
+        assert_eq!(
+            row.11.as_ref().unwrap().len(),
+            64,
+            "{mode:?}: checksum should be SHA-256 (64 hex chars)"
+        );
+    }
 }
 
 /// Create a minimal valid PNG file for testing.
@@ -348,91 +367,80 @@ fn create_png_with_text_chunks(path: &std::path::Path, chunks: &[(&str, &str)]) 
 
 #[tokio::test]
 async fn test_index_stores_raw_text_entries_without_prompt() {
-    let dir = tempfile::Builder::new().prefix("imgviz_").tempdir().unwrap();
-    let png_path = dir.path().join("no_prompt.png");
+    for mode in ALL_MODES {
+        let case = Case::new(mode);
+        // Create a PNG with a non-standard text chunk (no prompt/workflow)
+        create_png_with_text_chunks(
+            &case.path().join("no_prompt.png"),
+            &[("Description", "@michiking's image")],
+        );
 
-    // Create a PNG with a non-standard text chunk (no prompt/workflow)
-    create_png_with_text_chunks(&png_path, &[("Description", "@michiking's image")]);
+        case.run().await;
 
-    let pool = setup_pool();
-    let config = AppConfig {
-        watched_folders: vec![WatchedFolder {
-            path: dir.path().to_string_lossy().to_string(),
-            label: None,
-            id: None,
-        }],
-    };
+        // Verify metadata_json was populated even without prompt/workflow
+        let conn = case.pool.get().unwrap();
+        let row: (Option<String>,) = conn
+            .query_row(
+                "SELECT metadata_json FROM media_items WHERE filename = 'no_prompt.png'",
+                [],
+                |r| Ok((r.get(0)?,)),
+            )
+            .unwrap();
 
-    full_index(&pool, &config, &setup_progress()).await.unwrap();
+        let metadata_str =
+            row.0.expect("metadata_json should be Some even without prompt/workflow");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&metadata_str).expect("metadata_json should be valid JSON");
 
-    // Verify metadata_json was populated even without prompt/workflow
-    let conn = pool.get().unwrap();
-    let row: (Option<String>,) = conn
-        .query_row(
-            "SELECT metadata_json FROM media_items WHERE filename = 'no_prompt.png'",
-            [],
-            |r| Ok((r.get(0)?,)),
-        )
-        .unwrap();
-
-    let metadata_str = row.0.expect("metadata_json should be Some even without prompt/workflow");
-    let parsed: serde_json::Value =
-        serde_json::from_str(&metadata_str).expect("metadata_json should be valid JSON");
-
-    // Verify the raw_text_entries contain the Description
-    assert_eq!(parsed["raw_text_entries"]["Description"], "@michiking's image");
+        // Verify the raw_text_entries contain the Description
+        assert_eq!(parsed["raw_text_entries"]["Description"], "@michiking's image", "{mode:?}");
+    }
 }
 
 #[tokio::test]
 async fn test_index_extracts_png_metadata_content() {
-    let dir = tempfile::Builder::new().prefix("imgviz_").tempdir().unwrap();
-    let png_path = dir.path().join("with_metadata.png");
+    for mode in ALL_MODES {
+        let case = Case::new(mode);
+        // Create a PNG with ComfyUI-style prompt + workflow metadata
+        let prompt_json = r#"{"3":{"inputs":{"seed":12345,"steps":20}}}"#;
+        let workflow_json = r#"{"nodes":[{"id":3,"type":"KSampler"}]}"#;
+        create_png_with_text_chunks(
+            &case.path().join("with_metadata.png"),
+            &[("prompt", prompt_json), ("workflow", workflow_json)],
+        );
 
-    // Create a PNG with ComfyUI-style prompt + workflow metadata
-    let prompt_json = r#"{"3":{"inputs":{"seed":12345,"steps":20}}}"#;
-    let workflow_json = r#"{"nodes":[{"id":3,"type":"KSampler"}]}"#;
-    create_png_with_text_chunks(&png_path, &[("prompt", prompt_json), ("workflow", workflow_json)]);
+        case.run().await;
 
-    let pool = setup_pool();
-    let config = AppConfig {
-        watched_folders: vec![WatchedFolder {
-            path: dir.path().to_string_lossy().to_string(),
-            label: None,
-            id: None,
-        }],
-    };
+        // Verify metadata_json was populated correctly
+        let conn = case.pool.get().unwrap();
+        let row: (Option<String>,) = conn
+            .query_row(
+                "SELECT metadata_json FROM media_items WHERE filename = 'with_metadata.png'",
+                [],
+                |r| Ok((r.get(0)?,)),
+            )
+            .unwrap();
 
-    full_index(&pool, &config, &setup_progress()).await.unwrap();
+        let metadata_str =
+            row.0.expect("metadata_json should be Some for a PNG with prompt+workflow");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&metadata_str).expect("metadata_json should be valid JSON");
 
-    // Verify metadata_json was populated correctly
-    let conn = pool.get().unwrap();
-    let row: (Option<String>,) = conn
-        .query_row(
-            "SELECT metadata_json FROM media_items WHERE filename = 'with_metadata.png'",
-            [],
-            |r| Ok((r.get(0)?,)),
-        )
-        .unwrap();
-
-    let metadata_str = row.0.expect("metadata_json should be Some for a PNG with prompt+workflow");
-    let parsed: serde_json::Value =
-        serde_json::from_str(&metadata_str).expect("metadata_json should be valid JSON");
-
-    // Verify the parsed metadata contains expected fields
-    assert_eq!(parsed["prompt"]["3"]["inputs"]["seed"], 12345);
-    assert_eq!(parsed["prompt"]["3"]["inputs"]["steps"], 20);
-    assert_eq!(parsed["workflow"]["nodes"][0]["type"], "KSampler");
+        // Verify the parsed metadata contains expected fields
+        assert_eq!(parsed["prompt"]["3"]["inputs"]["seed"], 12345, "{mode:?}");
+        assert_eq!(parsed["prompt"]["3"]["inputs"]["steps"], 20, "{mode:?}");
+        assert_eq!(parsed["workflow"]["nodes"][0]["type"], "KSampler", "{mode:?}");
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Wave 8.2 — Parallel Phase-1 processing
+// Concurrency (ticket 8.2)
 // ---------------------------------------------------------------------------
 
 // Concurrency resolution is tested through the pure `resolve_concurrency`
 // function (no env mutation: `set_var`/`remove_var` race concurrent
-// `getenv` readers on other test threads). The `full_index_with_concurrency` /
-// `incremental_index_with_concurrency` seams let the index-run tests inject a
-// concurrency value the same way.
+// `getenv` readers on other test threads). The `run_mode_with_concurrency`
+// seam lets the index-run tests inject a concurrency value the same way.
 
 #[test]
 fn test_resolve_concurrency_honors_explicit_value() {
@@ -502,17 +510,27 @@ async fn test_full_index_parallel_matches_sequential_state() {
 
     // Run 1: sequential (concurrency 1)
     let pool_seq = setup_pool();
-    let stats_seq =
-        full_index_with_concurrency(&pool_seq, &config_for(dir.path()), &setup_progress(), 1)
-            .await
-            .unwrap();
+    let stats_seq = run_mode_with_concurrency(
+        IndexMode::Full,
+        &pool_seq,
+        &config_for(dir.path()),
+        &setup_progress(),
+        1,
+    )
+    .await
+    .unwrap();
 
     // Run 2: concurrent (concurrency 4), same files on disk
     let pool_par = setup_pool();
-    let stats_par =
-        full_index_with_concurrency(&pool_par, &config_for(dir.path()), &setup_progress(), 4)
-            .await
-            .unwrap();
+    let stats_par = run_mode_with_concurrency(
+        IndexMode::Full,
+        &pool_par,
+        &config_for(dir.path()),
+        &setup_progress(),
+        4,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(stats_seq.created, 250, "all files created in sequential run");
     assert_eq!(stats_seq, stats_par, "stats must be identical regardless of concurrency");
@@ -527,13 +545,9 @@ async fn test_incremental_index_parallel_matches_sequential_state() {
 
     // Seed both pools with a full index of the same on-disk fixture.
     let pool_seq = setup_pool();
-    full_index_with_concurrency(&pool_seq, &config_for(dir.path()), &setup_progress(), 1)
-        .await
-        .unwrap();
+    full_index_with_seed(&pool_seq, dir.path()).await;
     let pool_par = setup_pool();
-    full_index_with_concurrency(&pool_par, &config_for(dir.path()), &setup_progress(), 4)
-        .await
-        .unwrap();
+    full_index_with_seed(&pool_par, dir.path()).await;
 
     // Modify 20 files (different text-chunk content → different size + checksum,
     // so the incremental size/mtime skip check cannot accidentally skip them).
@@ -542,7 +556,8 @@ async fn test_incremental_index_parallel_matches_sequential_state() {
         create_png_with_text_chunks(&path, &[("index", &format!("modified-{}", i))]);
     }
 
-    let stats_seq = incremental_index_with_concurrency(
+    let stats_seq = run_mode_with_concurrency(
+        IndexMode::Incremental,
         &pool_seq,
         &config_for(dir.path()),
         &setup_progress(),
@@ -550,7 +565,8 @@ async fn test_incremental_index_parallel_matches_sequential_state() {
     )
     .await
     .unwrap();
-    let stats_par = incremental_index_with_concurrency(
+    let stats_par = run_mode_with_concurrency(
+        IndexMode::Incremental,
         &pool_par,
         &config_for(dir.path()),
         &setup_progress(),
@@ -565,45 +581,59 @@ async fn test_incremental_index_parallel_matches_sequential_state() {
     assert_eq!(fetch_indexed_rows(&pool_seq), fetch_indexed_rows(&pool_par));
 }
 
-#[tokio::test]
-async fn test_stats_accurate_with_failures_under_concurrency() {
-    let dir = tempfile::Builder::new().prefix("imgviz_err_").tempdir().unwrap();
-    create_png_batch(dir.path(), 4);
-    for name in ["broken_1.jpg", "broken_2.jpg"] {
-        std::fs::write(dir.path().join(name), b"not a real jpeg").unwrap();
-    }
-
-    let pool = setup_pool();
-    let stats = full_index_with_concurrency(&pool, &config_for(dir.path()), &setup_progress(), 4)
+/// Seed `pool` with a full sequential index of `dir`'s contents.
+async fn full_index_with_seed(pool: &Pool<SqliteConnectionManager>, dir: &std::path::Path) {
+    run_mode_with_concurrency(IndexMode::Full, pool, &config_for(dir), &setup_progress(), 1)
         .await
         .unwrap();
+}
 
-    assert_eq!(stats.created, 4, "only valid PNGs created");
-    assert_eq!(stats.errors, 2, "both invalid files counted exactly once");
-    assert_eq!(stats.updated, 0);
-    assert_eq!(stats.skipped, 0);
+#[tokio::test]
+async fn test_stats_accurate_with_failures_under_concurrency() {
+    for mode in ALL_MODES {
+        let dir = tempfile::Builder::new().prefix("imgviz_err_").tempdir().unwrap();
+        create_png_batch(dir.path(), 4);
+        for name in ["broken_1.jpg", "broken_2.jpg"] {
+            std::fs::write(dir.path().join(name), b"not a real jpeg").unwrap();
+        }
 
-    let conn = pool.get().unwrap();
-    let count: i32 = conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).unwrap();
-    assert_eq!(count, 4, "only valid files stored");
+        let pool = setup_pool();
+        let stats =
+            run_mode_with_concurrency(mode, &pool, &config_for(dir.path()), &setup_progress(), 4)
+                .await
+                .unwrap();
+
+        assert_eq!(stats.created, 4, "{mode:?}: only valid PNGs created");
+        assert_eq!(stats.errors, 2, "{mode:?}: both invalid files counted exactly once");
+        assert_eq!(stats.updated, 0, "{mode:?}");
+        assert_eq!(stats.skipped, 0, "{mode:?}");
+
+        let conn = pool.get().unwrap();
+        let count: i32 =
+            conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 4, "{mode:?}: only valid files stored");
+    }
 }
 
 #[tokio::test]
 async fn test_progress_converges_under_concurrency() {
-    let dir = tempfile::Builder::new().prefix("imgviz_prog_").tempdir().unwrap();
-    create_png_batch(dir.path(), 150); // spans 2 chunks
+    for mode in ALL_MODES {
+        let dir = tempfile::Builder::new().prefix("imgviz_prog_").tempdir().unwrap();
+        create_png_batch(dir.path(), 150); // spans 2 chunks
 
-    let pool = setup_pool();
-    let progress = setup_progress();
-    let stats =
-        full_index_with_concurrency(&pool, &config_for(dir.path()), &progress, 4).await.unwrap();
+        let pool = setup_pool();
+        let progress = setup_progress();
+        let stats = run_mode_with_concurrency(mode, &pool, &config_for(dir.path()), &progress, 4)
+            .await
+            .unwrap();
 
-    let snap = progress.snapshot();
-    assert_eq!(snap.status, progress::IndexStatus::Complete);
-    assert_eq!(snap.total, 150);
-    assert_eq!(snap.processed, 150, "processed count must converge to total");
-    assert_eq!(snap.errors.len(), 0, "no errors recorded");
-    assert_eq!(stats.errors, 0);
+        let snap = progress.snapshot();
+        assert_eq!(snap.status, progress::IndexStatus::Complete, "{mode:?}");
+        assert_eq!(snap.total, 150, "{mode:?}");
+        assert_eq!(snap.processed, 150, "{mode:?}: processed count must converge to total");
+        assert_eq!(snap.errors.len(), 0, "{mode:?}: no errors recorded");
+        assert_eq!(stats.errors, 0, "{mode:?}");
+    }
 }
 
 #[tokio::test]

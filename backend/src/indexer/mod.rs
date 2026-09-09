@@ -69,138 +69,49 @@ fn resolve_concurrency(raw: Option<&str>, available: usize) -> usize {
 
 /// Run a full index of all watched folders.
 ///
-/// Scans folders, detects file types, computes hashes, extracts metadata,
-/// and stores everything in SQLite with upsert semantics.
-///
-/// The pipeline processes files in two phases per batch:
-/// 1. **Async phase** (no DB lock): compute hash, detect media, extract PNG metadata
-/// 2. **Sync phase** (DB lock held): query existing, compare checksum, upsert
-///
-/// Transactions are committed every [`BATCH_SIZE`] files for performance.
+/// Every scanned file goes through hash → detect → metadata; unchanged files
+/// are skipped only at the checksum comparison in [`store_file`], after the
+/// expensive Phase-1 work. Warm starts should prefer [`incremental_index`].
 pub async fn full_index(
     pool: &Pool<SqliteConnectionManager>,
     config: &AppConfig,
     progress: &progress::ProgressTracker,
 ) -> Result<IndexStats, IndexError> {
-    // Snapshot the concurrency once per run for a consistent execution profile.
-    full_index_with_concurrency(pool, config, progress, index_concurrency()).await
-}
-
-/// [`full_index`] with an injected Phase-1 concurrency (test seam).
-async fn full_index_with_concurrency(
-    pool: &Pool<SqliteConnectionManager>,
-    config: &AppConfig,
-    progress: &progress::ProgressTracker,
-    concurrency: usize,
-) -> Result<IndexStats, IndexError> {
-    // Ensure all watched folders have stable UUIDs before scanning.
-    let mut config = config.clone();
-    {
-        let conn = pool.get()?;
-        crate::config::assign_folder_ids(&conn, &mut config)?;
-    }
-
-    let fid_map = folder_id_map(&config);
-    let all_files = scan_all_folders(&config)?;
-    progress.set_total(all_files.len());
-
-    progress.set_status(progress::IndexStatus::Indexing);
-    let mut stats = IndexStats::default();
-
-    if all_files.is_empty() {
-        // Still need to clean up deleted items even when no files to index
-        let conn = pool.get()?;
-        let removed = remove_deleted_items(&conn, &config)?;
-        stats.deleted = removed;
-        progress.set_status(progress::IndexStatus::Complete);
-        return Ok(stats);
-    }
-
-    // Build a list of (folder_id, file) pairs by looking up each file's
-    // watched folder from the config.
-    let folder_file_pairs = resolve_folder_file_pairs(all_files, &fid_map);
-
-    // Process files in batches to limit transaction size
-    let mut remaining = folder_file_pairs;
-    while !remaining.is_empty() {
-        let chunk: Vec<FolderFileEntry> =
-            remaining.drain(..BATCH_SIZE.min(remaining.len())).collect();
-
-        // Phase 1: Async I/O — hash + detect + metadata, concurrently bounded
-        // by the resolved concurrency (no DB connection held)
-        for _ in 0..chunk.len() {
-            progress.increment_processed();
-        }
-        let results = process_chunk_concurrent(chunk, concurrency).await;
-
-        let mut batch_results: Vec<ProcessedFile> = Vec::with_capacity(results.len());
-        for (ff_entry, result) in results {
-            match result {
-                Ok(processed) => batch_results.push(processed),
-                Err(e) => {
-                    stats.errors += 1;
-                    progress.add_error(format!("{}: {}", ff_entry.file.relative_path, e));
-                }
-            }
-        }
-
-        // Phase 2: DB writes — acquire connection from pool, batch-transact, upsert
-        let conn = pool.get()?;
-        conn.execute_batch("BEGIN")?;
-        for processed in &batch_results {
-            match store_file(&conn, processed) {
-                Ok(change) => match change {
-                    IndexChange::Created => stats.created += 1,
-                    IndexChange::Updated => stats.updated += 1,
-                    IndexChange::Skipped => stats.skipped += 1,
-                },
-                Err(e) => {
-                    stats.errors += 1;
-                    progress.add_error(format!("{}: {}", processed.file.relative_path, e));
-                }
-            }
-        }
-        conn.execute_batch("COMMIT")?;
-        // DB lock released here (conn drops)
-    }
-
-    // Clean up: remove DB entries for files no longer on disk.
-    // Runs with its own connection from the pool.
-    {
-        let conn = pool.get()?;
-        let removed = remove_deleted_items(&conn, &config)?;
-        stats.deleted = removed;
-    }
-
-    progress.set_status(progress::IndexStatus::Complete);
-    Ok(stats)
+    run_index(pool, config, progress, index_concurrency(), |_, _| false).await
 }
 
 /// Run an incremental index — only processes new or modified files.
 ///
-/// Before scanning, loads all existing DB entries to build a map of
-/// `(folder_id, relative_path) → (file_size, file_modified_at)`.  During
-/// scanning, files whose size AND modification time match the DB entry
-/// are skipped entirely (no SHA-256 hashing, no media detection, no DB
-/// write).  New or modified files go through the full pipeline.
-///
-/// This avoids the O(n) hash + detect cost of a full re-scan for the
-/// common case where most files are unchanged.
+/// Files whose size AND modification time match their stored row skip the
+/// Phase-1 pipeline entirely (no SHA-256 hashing, no media detection, no DB
+/// write), avoiding the O(n) hash + detect cost of a full re-scan on warm
+/// starts. New or modified files go through the full pipeline.
 pub async fn incremental_index(
     pool: &Pool<SqliteConnectionManager>,
     config: &AppConfig,
     progress: &progress::ProgressTracker,
 ) -> Result<IndexStats, IndexError> {
-    // Snapshot the concurrency once per run for a consistent execution profile.
-    incremental_index_with_concurrency(pool, config, progress, index_concurrency()).await
+    run_index(pool, config, progress, index_concurrency(), is_unchanged).await
 }
 
-/// [`incremental_index`] with an injected Phase-1 concurrency (test seam).
-async fn incremental_index_with_concurrency(
+/// Core indexing pipeline shared by [`full_index`] and [`incremental_index`].
+///
+/// The two entry points differ only in which files `skip` exempts from
+/// Phase 1 (hash + detect + metadata); everything else — folder-ID
+/// assignment, folder scan, batching, upserts, progress events, stats
+/// counters, error accounting, and the remove-deleted epilogue — is defined
+/// exactly once here so the modes cannot drift.
+///
+/// `skip` receives the on-disk entry and the stored DB row for the file's
+/// `(folder_id, relative_path)` key. It is only consulted when a stored row
+/// exists, so never-indexed files are always processed. Exempted files count
+/// toward [`IndexStats::skipped`] and bypass Phase 1 entirely.
+async fn run_index(
     pool: &Pool<SqliteConnectionManager>,
     config: &AppConfig,
     progress: &progress::ProgressTracker,
     concurrency: usize,
+    skip: impl Fn(&FolderFileEntry, &FolderFileRow) -> bool,
 ) -> Result<IndexStats, IndexError> {
     // Ensure all watched folders have stable UUIDs before scanning.
     let mut config = config.clone();
@@ -209,21 +120,7 @@ async fn incremental_index_with_concurrency(
         crate::config::assign_folder_ids(&conn, &mut config)?;
     }
 
-    // Load existing entries from DB so we can skip unchanged files.
-    let existing: HashMap<(String, String), (i64, String)> = {
-        let conn = pool.get()?;
-        let mut stmt = conn.prepare(
-            "SELECT folder_id, relative_path, file_size, file_modified_at FROM media_items",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok((
-                (row.get::<_, Option<String>>(0)?.unwrap_or_default(), row.get::<_, String>(1)?),
-                (row.get::<_, i64>(2)?, row.get::<_, String>(3)?),
-            ))
-        })?;
-        rows.filter_map(|r| r.ok()).collect()
-    };
-
+    let stored = load_stored_rows(pool)?;
     let fid_map = folder_id_map(&config);
     let all_files = scan_all_folders(&config)?;
     progress.set_total(all_files.len());
@@ -231,46 +128,31 @@ async fn incremental_index_with_concurrency(
     progress.set_status(progress::IndexStatus::Indexing);
     let mut stats = IndexStats::default();
 
-    if all_files.is_empty() {
-        let conn = pool.get()?;
-        let removed = remove_deleted_items(&conn, &config)?;
-        stats.deleted = removed;
-        progress.set_status(progress::IndexStatus::Complete);
-        return Ok(stats);
-    }
-
-    let folder_file_pairs = resolve_folder_file_pairs(all_files, &fid_map);
-
-    let mut remaining = folder_file_pairs;
+    // Build a list of (folder_id, file) pairs by looking up each file's
+    // watched folder from the config.
+    let mut remaining = resolve_folder_file_pairs(all_files, &fid_map);
     while !remaining.is_empty() {
         let chunk: Vec<FolderFileEntry> =
             remaining.drain(..BATCH_SIZE.min(remaining.len())).collect();
 
-        // Partition the chunk: unchanged files (size AND mtime match the DB)
-        // are skipped outright; new/modified files go through Phase 1.
+        // Partition the chunk: files the `skip` predicate exempts count as
+        // processed and bypass Phase 1; the rest go through hash + detect
+        // + metadata.
         let mut to_process: Vec<FolderFileEntry> = Vec::with_capacity(chunk.len());
         for ff_entry in chunk {
             progress.increment_processed();
-
-            // Quick check against existing DB metadata — skip if size AND
-            // mtime match (file is extremely likely to be unchanged).
             let key = (ff_entry.folder_id.clone(), ff_entry.file.relative_path.clone());
-            if let Some((existing_size, existing_mtime)) = existing.get(&key)
-                && *existing_size == ff_entry.file.file_size as i64
-                && *existing_mtime == ff_entry.file.modified_at
-            {
+            if stored.get(&key).is_some_and(|row| skip(&ff_entry, row)) {
                 stats.skipped += 1;
             } else {
                 to_process.push(ff_entry);
             }
         }
 
-        // Phase 1: Async I/O — hash + detect + metadata, concurrently bounded
-        // by the resolved concurrency (no DB connection held)
-        let results = process_chunk_concurrent(to_process, concurrency).await;
-
-        let mut batch_results: Vec<ProcessedFile> = Vec::with_capacity(results.len());
-        for (ff_entry, result) in results {
+        // Phase 1: async I/O — hash + detect + metadata, concurrently bounded
+        // by `concurrency` (no DB connection held).
+        let mut batch_results: Vec<ProcessedFile> = Vec::new();
+        for (ff_entry, result) in process_chunk_concurrent(to_process, concurrency).await {
             match result {
                 Ok(processed) => batch_results.push(processed),
                 Err(e) => {
@@ -280,17 +162,16 @@ async fn incremental_index_with_concurrency(
             }
         }
 
-        // Phase 2: DB writes — batch-transact only if there are changes
+        // Phase 2: DB writes — batch-transact (skipped entirely when every
+        // file in the batch errored, so no empty transaction is opened).
         if !batch_results.is_empty() {
             let conn = pool.get()?;
             conn.execute_batch("BEGIN")?;
             for processed in &batch_results {
                 match store_file(&conn, processed) {
-                    Ok(change) => match change {
-                        IndexChange::Created => stats.created += 1,
-                        IndexChange::Updated => stats.updated += 1,
-                        IndexChange::Skipped => stats.skipped += 1,
-                    },
+                    Ok(IndexChange::Created) => stats.created += 1,
+                    Ok(IndexChange::Updated) => stats.updated += 1,
+                    Ok(IndexChange::Skipped) => stats.skipped += 1,
                     Err(e) => {
                         stats.errors += 1;
                         progress.add_error(format!("{}: {}", processed.file.relative_path, e));
@@ -298,18 +179,55 @@ async fn incremental_index_with_concurrency(
                 }
             }
             conn.execute_batch("COMMIT")?;
+            // DB lock released here (conn drops)
         }
     }
 
-    // Clean up: remove DB entries for files no longer on disk.
+    // Epilogue: remove DB entries for files no longer on disk.
+    // Runs with its own connection from the pool.
     {
         let conn = pool.get()?;
-        let removed = remove_deleted_items(&conn, &config)?;
-        stats.deleted = removed;
+        stats.deleted = remove_deleted_items(&conn, &config)?;
     }
 
     progress.set_status(progress::IndexStatus::Complete);
     Ok(stats)
+}
+
+/// Stored `media_items` fields the incremental skip check compares against.
+struct FolderFileRow {
+    file_size: i64,
+    file_modified_at: String,
+}
+
+/// Skip predicate for [`incremental_index`]: a file whose size AND
+/// modification time match the stored row is treated as unchanged.
+fn is_unchanged(entry: &FolderFileEntry, stored: &FolderFileRow) -> bool {
+    stored.file_size == entry.file.file_size as i64
+        && stored.file_modified_at == entry.file.modified_at
+}
+
+/// Load `(folder_id, relative_path) → stored row` for every indexed item.
+///
+/// Also runs for [`full_index`], whose predicate ignores the rows — one
+/// sequential SELECT is negligible next to re-hashing every file, and it
+/// keeps [`run_index`] mode-agnostic.
+fn load_stored_rows(
+    pool: &Pool<SqliteConnectionManager>,
+) -> Result<HashMap<(String, String), FolderFileRow>, IndexError> {
+    let conn = pool.get()?;
+    let mut stmt = conn
+        .prepare("SELECT folder_id, relative_path, file_size, file_modified_at FROM media_items")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            (row.get::<_, Option<String>>(0)?.unwrap_or_default(), row.get::<_, String>(1)?),
+            FolderFileRow {
+                file_size: row.get::<_, i64>(2)?,
+                file_modified_at: row.get::<_, String>(3)?,
+            },
+        ))
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
 // ---------------------------------------------------------------------------
