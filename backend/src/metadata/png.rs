@@ -74,6 +74,20 @@ pub fn parse_png_metadata(path: &Path) -> Result<Metadata, PngParseError> {
     Ok(metadata)
 }
 
+/// Serialize PNG metadata to a JSON string when it contains meaningful content.
+///
+/// This is the single gate deciding "has content → serialized JSON": metadata
+/// is stored/broadcast only when `prompt`, `workflow`, or at least one raw
+/// text chunk is present. Used by both the indexer and the watcher's extract
+/// stage so SSE consumers and the metadata panel always see the same shape.
+pub fn metadata_to_json(meta: &Metadata) -> Option<String> {
+    if meta.prompt.is_some() || meta.workflow.is_some() || !meta.raw_text_entries.is_empty() {
+        serde_json::to_string(meta).ok()
+    } else {
+        None
+    }
+}
+
 /// Extract metadata from uncompressed Latin-1 (tEXt) text chunks.
 fn extract_text_chunks(chunks: &[TEXtChunk], metadata: &mut Metadata) {
     for text_chunk in chunks {

@@ -9,6 +9,7 @@ pub mod routes;
 pub mod scanner;
 pub mod search;
 pub mod thumbnails;
+pub mod util;
 pub mod watcher;
 
 #[cfg(test)]

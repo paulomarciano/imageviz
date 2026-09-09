@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 use walkdir::WalkDir;
 
@@ -15,6 +14,7 @@ pub struct FileEntry {
 }
 
 use crate::media_types::{is_hidden_path, is_supported_extension};
+use crate::util::system_time_to_iso;
 
 /// Scan a folder recursively and return all supported media files.
 ///
@@ -73,10 +73,10 @@ pub fn scan_folder(root: &Path) -> Result<Vec<FileEntry>, WalkerError> {
         let created_at = metadata
             .created()
             .or_else(|_| metadata.modified())
-            .map(datetime_to_iso)
+            .map(system_time_to_iso)
             .unwrap_or_default();
 
-        let modified_at = metadata.modified().map(datetime_to_iso).unwrap_or_default();
+        let modified_at = metadata.modified().map(system_time_to_iso).unwrap_or_default();
 
         entries.push(FileEntry {
             filename,
@@ -89,15 +89,6 @@ pub fn scan_folder(root: &Path) -> Result<Vec<FileEntry>, WalkerError> {
     }
 
     Ok(entries)
-}
-
-/// Convert a SystemTime to ISO 8601 string with sub-second precision.
-fn datetime_to_iso(time: SystemTime) -> String {
-    let duration = time.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-    let secs = duration.as_secs() as i64;
-    let nsecs = duration.subsec_nanos();
-    let naive = chrono::DateTime::from_timestamp(secs, nsecs).unwrap_or_default();
-    naive.to_rfc3339()
 }
 
 #[derive(Debug)]

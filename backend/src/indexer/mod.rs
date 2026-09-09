@@ -15,7 +15,7 @@
 use crate::config::AppConfig;
 use crate::config::folder_id_map;
 use crate::metadata::detect::{MediaInfo, detect_media};
-use crate::metadata::png::parse_png_metadata;
+use crate::metadata::png::{metadata_to_json, parse_png_metadata};
 use crate::scanner::hasher::compute_file_hash;
 use crate::scanner::walker::{FileEntry, scan_folder};
 use futures_util::stream::{self, StreamExt};
@@ -291,14 +291,7 @@ async fn process_file_metadata(
 
     // Extract PNG metadata (tEXt/iTXt chunks) — prompt/workflow parsed as JSON, rest in raw_text_entries
     let metadata_json = if media_info.mime_type == "image/png" {
-        parse_png_metadata(abs_path).ok().and_then(|meta| {
-            if meta.prompt.is_some() || meta.workflow.is_some() || !meta.raw_text_entries.is_empty()
-            {
-                serde_json::to_string(&meta).ok()
-            } else {
-                None
-            }
-        })
+        parse_png_metadata(abs_path).ok().and_then(|meta| metadata_to_json(&meta))
     } else {
         None
     };

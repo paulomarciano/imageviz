@@ -29,7 +29,6 @@ use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::SystemTime;
 use tokio::sync::{broadcast, mpsc};
 #[cfg(test)]
 use uuid::Uuid;
@@ -258,15 +257,6 @@ async fn handle_file_deleted(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Convert a `SystemTime` to an RFC 3339 / ISO 8601 string with sub-second
-/// precision, matching the format used by the scanner walker.
-pub(crate) fn system_time_to_iso(time: SystemTime) -> String {
-    let duration = time.duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
-    let secs = duration.as_secs() as i64;
-    let nsecs = duration.subsec_nanos();
-    chrono::DateTime::from_timestamp(secs, nsecs).unwrap_or_default().to_rfc3339()
-}
 
 /// Load watched folder (path, id) pairs from the `watched_folders` table —
 /// the single source of truth for folder configuration.

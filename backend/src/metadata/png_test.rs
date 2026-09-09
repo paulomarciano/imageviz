@@ -267,3 +267,69 @@ fn test_metadata_serde_roundtrip() {
     assert_eq!(deserialized.prompt.unwrap()["text"], "test");
     assert_eq!(deserialized.raw_text_entries.get("key"), Some(&"val".to_string()));
 }
+
+// ---- metadata_to_json golden tests ----
+// These pin the exact serialized strings: SSE payloads and the metadata panel
+// depend on this shape. Single-entry raw_text_entries keeps HashMap ordering
+// deterministic so exact-string assertions are stable.
+
+#[test]
+fn test_metadata_to_json_empty_returns_none() {
+    let metadata = Metadata::default();
+    assert!(metadata_to_json(&metadata).is_none());
+}
+
+#[test]
+fn test_metadata_to_json_prompt_only() {
+    let metadata = Metadata {
+        prompt: Some(serde_json::json!({"seed": 42})),
+        workflow: None,
+        raw_text_entries: HashMap::new(),
+    };
+    assert_eq!(
+        metadata_to_json(&metadata).unwrap(),
+        r#"{"prompt":{"seed":42},"workflow":null,"raw_text_entries":{}}"#
+    );
+}
+
+#[test]
+fn test_metadata_to_json_workflow_only() {
+    let metadata = Metadata {
+        prompt: None,
+        workflow: Some(serde_json::json!({"nodes": []})),
+        raw_text_entries: HashMap::new(),
+    };
+    assert_eq!(
+        metadata_to_json(&metadata).unwrap(),
+        r#"{"prompt":null,"workflow":{"nodes":[]},"raw_text_entries":{}}"#
+    );
+}
+
+#[test]
+fn test_metadata_to_json_raw_entries_only() {
+    let metadata = Metadata {
+        prompt: None,
+        workflow: None,
+        raw_text_entries: HashMap::from([(
+            "Description".to_string(),
+            "@michiking's image".to_string(),
+        )]),
+    };
+    assert_eq!(
+        metadata_to_json(&metadata).unwrap(),
+        r#"{"prompt":null,"workflow":null,"raw_text_entries":{"Description":"@michiking's image"}}"#
+    );
+}
+
+#[test]
+fn test_metadata_to_json_combined() {
+    let metadata = Metadata {
+        prompt: Some(serde_json::json!({"text": "hi"})),
+        workflow: Some(serde_json::json!({"version": 1})),
+        raw_text_entries: HashMap::from([("k".to_string(), "v".to_string())]),
+    };
+    assert_eq!(
+        metadata_to_json(&metadata).unwrap(),
+        r#"{"prompt":{"text":"hi"},"workflow":{"version":1},"raw_text_entries":{"k":"v"}}"#
+    );
+}

@@ -5,9 +5,9 @@
 
 use crate::metadata::detect::MediaInfo;
 use crate::metadata::detect::detect_media;
-use crate::metadata::png::parse_png_metadata;
+use crate::metadata::png::{metadata_to_json, parse_png_metadata};
 use crate::scanner::hasher::compute_file_hash;
-use crate::watcher::handler::system_time_to_iso;
+use crate::util::system_time_to_iso;
 use std::path::Path;
 
 /// All data extracted from a file on disk, ready for storage.
@@ -45,17 +45,8 @@ pub async fn extract_file_data(
     let media_info = detect_media(path).await?;
 
     // Extract ComfyUI metadata and any tEXt/iTXt chunks for PNG files.
-    // Must match the indexer's logic: store metadata when prompt, workflow,
-    // OR raw_text_entries are present.
     let metadata_json = if media_info.mime_type == "image/png" {
-        parse_png_metadata(path).ok().and_then(|meta| {
-            if meta.prompt.is_some() || meta.workflow.is_some() || !meta.raw_text_entries.is_empty()
-            {
-                serde_json::to_string(&meta).ok()
-            } else {
-                None
-            }
-        })
+        parse_png_metadata(path).ok().and_then(|meta| metadata_to_json(&meta))
     } else {
         None
     };
