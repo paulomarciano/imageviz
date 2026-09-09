@@ -7,9 +7,9 @@
 //!
 //! The indexer separates async I/O (hashing, ffprobe) from synchronous DB writes.
 //! Async work runs without holding a database connection from the pool; DB
-//! operations are batched in transactions of [`BATCH_SIZE`] files for write
+//! operations are batched in transactions of `BATCH_SIZE` files for write
 //! throughput. Within a batch, Phase-1 file processing runs concurrently —
-//! bounded by [`index_concurrency()`] (env `INDEX_CONCURRENCY`, default:
+//! bounded by `index_concurrency()` (env `INDEX_CONCURRENCY`, default:
 //! available CPU cores capped at 8) — while DB writes stay sequential.
 
 use crate::config::AppConfig;
@@ -455,10 +455,10 @@ fn remove_deleted_items(conn: &Connection, config: &AppConfig) -> Result<usize, 
 pub struct IndexStats {
     pub created: usize,
     pub updated: usize,
-    /// Files already indexed whose content required no write. Aggregates
-    /// two mechanisms: files exempted by the mode's skip predicate before
-    /// Phase 1 (incremental's size+mtime gate; full never skips there) and
-    /// files whose checksum matched in `store_file`. Both count toward
+    /// Files already indexed whose content was judged to require no write.
+    /// Aggregates two mechanisms: files exempted by the mode's skip predicate
+    /// before Phase 1 (incremental's size+mtime gate; full never skips there)
+    /// and files whose checksum matched in `store_file`. Both count toward
     /// this single counter.
     pub skipped: usize,
     pub deleted: usize,

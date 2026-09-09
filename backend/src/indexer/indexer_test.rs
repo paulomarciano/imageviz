@@ -266,10 +266,13 @@ async fn test_modes_agree_on_fresh_and_unchanged_trees() {
 /// Phase 3 makes predicate drift on the full wrapper observable: a full mode
 /// that grew the incremental size+mtime gate would skip a same-size,
 /// same-mtime content change and leave a stale row, while the real
-/// never-skip predicate must re-hash and update it. (Incremental-wrapper
-/// predicate drift is inherently stats-invisible — the correct incremental
-/// predicate also skips same-mtime files — so that class is guarded by
-/// review, not by outcomes.)
+/// never-skip predicate must re-hash and update it.
+///
+/// Phase 4 pins the *public* incremental wrapper from over-skipping (the
+/// production-breaking direction: modified files never re-indexed). Lenient
+/// drift there — processing more than needed — stays outcome-invisible by
+/// design (it only costs extra hashing) and is guarded by review, as is
+/// incremental-predicate drift on unmodified trees generally.
 ///
 /// The concurrency asymmetry (seam at 4 vs the wrappers' env-derived value)
 /// is intentional: outcomes are pinned concurrency-invariant by the
@@ -327,6 +330,20 @@ async fn test_seam_matches_public_wrappers() {
     assert_eq!(api_full.updated, 1, "full mode must catch same-size/same-mtime change");
     assert_eq!(api_full.skipped, 4, "full mode skips only the untouched files, at checksum");
     assert_eq!(fetch_indexed_rows(&pool_seam), fetch_indexed_rows(&pool_api));
+
+    // Phase 4: a genuinely modified (size-changed) file through the *public*
+    // incremental wrapper. Over-skip predicate drift (e.g. `|_, _| true`)
+    // would leave the modified file permanently stale; the real predicate
+    // must re-process it. Phase 3 covers the full wrapper's direction; this
+    // covers incremental's, since no other test drives the public wrapper
+    // against a modification.
+    let path = dir.path().join("img_0001.png");
+    create_png_with_text_chunks(&path, &[("index", "longer-value-1")]); // size differs
+
+    let api_incr = incremental_index(&pool_api, &config, &setup_progress()).await.unwrap();
+
+    assert_eq!(api_incr.updated, 1, "incremental must catch a size-changed edit");
+    assert_eq!(api_incr.skipped, 4, "incremental skips only the genuinely unchanged files");
 }
 
 /// Full column set of a freshly indexed `media_items` row (all 12 columns).
