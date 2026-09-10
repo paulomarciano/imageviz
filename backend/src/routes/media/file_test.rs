@@ -115,7 +115,7 @@ fn resolve_media_row_dangling_folder_id_yields_file_not_found() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn resolve_media_path_returns_resolved_media_when_file_on_disk() {
+async fn resolve_and_verify_returns_media_when_file_on_disk() {
     let watched = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(watched.path().join("sub")).unwrap();
     std::fs::write(watched.path().join("sub/a.png"), b"png").unwrap();
@@ -131,7 +131,7 @@ async fn resolve_media_path_returns_resolved_media_when_file_on_disk() {
 }
 
 #[tokio::test]
-async fn resolve_media_path_missing_file_yields_file_not_found() {
+async fn resolve_and_verify_missing_file_yields_file_not_found() {
     let watched = tempfile::tempdir().unwrap();
 
     let conn = test_db();

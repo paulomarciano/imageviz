@@ -94,9 +94,9 @@ pub(super) fn resolve_media_row(
 /// Async existence check for a resolved path (`tokio::fs::try_exists`, never
 /// blocking the runtime; I/O errors count as "not found" like `Path::exists`).
 /// Consumes and returns the resolution so routes can destructure it after the
-/// check. Callers must release the pooled connection *before* awaiting this:
-/// `rusqlite::Connection` is not `Sync`, so its borrow must not cross the
-/// await point.
+/// check. No live `&rusqlite::Connection` borrow may cross this await
+/// (`Connection` is not `Sync`); handlers drop the pooled connection first so
+/// the pool slot is not held across disk I/O.
 pub(super) async fn verify_on_disk(
     resolved: ResolvedMedia,
 ) -> Result<ResolvedMedia, (StatusCode, Json<Value>)> {

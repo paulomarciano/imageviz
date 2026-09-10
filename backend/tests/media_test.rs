@@ -597,16 +597,16 @@ async fn seed_media_item_with_folder_id(
     folder_id: Option<&str>,
 ) {
     let conn = state.db.get().expect("Failed to get DB connection");
-    // Relax FK enforcement only for the dangling-id seed, restoring it after
-    // so the pooled connection keeps its normal semantics.
+    // Relax FK enforcement only for the dangling-id seed, restoring it before
+    // any panic so the pooled connection keeps its normal semantics.
     conn.execute_batch("PRAGMA foreign_keys = OFF").expect("Failed to relax FK");
-    conn.execute(
+    let result = conn.execute(
         "INSERT INTO media_items (id, filename, relative_path, mime_type, file_size, file_created_at, file_modified_at, checksum, folder_id)
          VALUES (?1, 'test.png', ?2, 'image/png', 1024, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z', 'cksum', ?3)",
         rusqlite::params![id, relative_path, folder_id],
-    )
-    .expect("Failed to seed media item");
+    );
     conn.execute_batch("PRAGMA foreign_keys = ON").expect("Failed to restore FK");
+    result.expect("Failed to seed media item");
 }
 
 #[tokio::test]
@@ -642,6 +642,31 @@ async fn test_file_returns_404_when_folder_id_dangling() {
         .oneshot(
             Request::builder()
                 .uri("/api/v1/media/00000000-0000-0000-0000-0000000000ab/file")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response_error(response).await, "File not found on disk");
+}
+
+#[tokio::test]
+async fn test_file_returns_404_when_folder_id_is_null() {
+    let (app, state, _cache_dir) = create_media_test_app();
+    seed_media_item_with_folder_id(
+        &state,
+        "00000000-0000-0000-0000-0000000000af",
+        "test.png",
+        None,
+    )
+    .await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/media/00000000-0000-0000-0000-0000000000af/file")
                 .body(Body::empty())
                 .unwrap(),
         )
