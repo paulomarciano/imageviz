@@ -58,21 +58,17 @@ pub(super) async fn serve_thumbnail(
     let width: u32 = params.get("width").and_then(|w| w.parse().ok()).unwrap_or(200);
     validation::validate_thumbnail_width(width)?;
 
-    // Look up media item, resolve file path, and get checksum
+    // One shared resolution statement supplies path, MIME type, and checksum.
+    // The connection is released before the await (rusqlite::Connection is
+    // not `Sync` — its borrow must not cross the await point).
     let conn = state.db.get().map_err(|e| {
         tracing::error!(error = %e, "Failed to acquire database connection");
         (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "Service temporarily unavailable"})))
     })?;
-    let (file_path, mime_type, _) = super::file::resolve_media_path(&conn, &id)?;
-
-    let checksum: String = conn
-        .query_row(
-            "SELECT COALESCE(checksum, '') FROM media_items WHERE id = ?1",
-            rusqlite::params![id],
-            |row| row.get(0),
-        )
-        .unwrap_or_default();
+    let resolved = super::file::resolve_media_row(&conn, &id)?;
     drop(conn);
+    let super::file::ResolvedMedia { full_path: file_path, mime_type, checksum, .. } =
+        super::file::verify_on_disk(resolved).await?;
 
     // Cache hit: serve directly — cached responses bypass the generation
     // limiter entirely (wave 8.9 / review P5).

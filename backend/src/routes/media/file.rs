@@ -14,21 +14,56 @@ use crate::middleware::validation;
 
 use super::MediaState;
 
-/// Resolve a media item's absolute file path, MIME type, and filename from the
-/// database by UUID.
+// Test-only count of SQL statements executed by the media resolver. Pins the
+// wave-8.17 contract: one resolution statement per request.
+#[cfg(test)]
+thread_local! {
+    pub(super) static RESOLVE_STATEMENTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Fully resolved location and caching metadata for a media item, produced by
+/// a single SQL statement (media row LEFT JOIN watched folder).
+#[derive(Debug)]
+pub(super) struct ResolvedMedia {
+    pub(super) full_path: PathBuf,
+    pub(super) mime_type: String,
+    pub(super) filename: String,
+    pub(super) checksum: String,
+    pub(super) modified_at: String,
+}
+
+/// Query half of the resolver: exactly one statement returning the media row
+/// joined with its watched folder's base path.
 ///
-/// Joins the item's `folder_id` against the `watched_folders` table (the
-/// single source of truth) to build the absolute path. Returns `404` when the
-/// item, its folder, or the file on disk cannot be found.
-pub(super) fn resolve_media_path(
+/// `COALESCE` keeps the empty-string contract the ETag/Last-Modified header
+/// code relies on. A `NULL` folder path (no `folder_id`, dangling `folder_id`,
+/// or deleted folder row) yields the same "missing folder" 404 as before the
+/// JOIN rewrite. Disk existence is checked separately by [`verify_on_disk`].
+pub(super) fn resolve_media_row(
     db: &rusqlite::Connection,
     id: &str,
-) -> Result<(PathBuf, String, String), (StatusCode, Json<Value>)> {
-    let (relative_path, mime_type, filename): (String, String, String) = db
+) -> Result<ResolvedMedia, (StatusCode, Json<Value>)> {
+    #[cfg(test)]
+    RESOLVE_STATEMENTS.with(|count| count.set(count.get() + 1));
+
+    let (relative_path, mime_type, filename, checksum, modified_at, folder_path): (
+        String,
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+    ) = db
         .query_row(
-            "SELECT relative_path, mime_type, filename FROM media_items WHERE id = ?1",
+            "SELECT m.relative_path, m.mime_type, m.filename, \
+                    COALESCE(m.checksum, ''), COALESCE(m.file_modified_at, ''), w.path \
+             FROM media_items m \
+             LEFT JOIN watched_folders w ON w.id = m.folder_id \
+             WHERE m.id = ?1",
             rusqlite::params![id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))
+            },
         )
         .map_err(|e| match e {
             rusqlite::Error::QueryReturnedNoRows => {
@@ -40,34 +75,35 @@ pub(super) fn resolve_media_path(
             }
         })?;
 
-    // Resolve via folder_id → watched_folders path. The watched_folders
-    // table is the single source of truth; there is no legacy fallback.
-    let folder_id: Option<String> = db
-        .query_row(
-            "SELECT folder_id FROM media_items WHERE id = ?1",
-            rusqlite::params![id],
-            |row| row.get(0),
-        )
-        .ok();
+    // LEFT JOIN: a NULL folder path means no folder_id, a dangling folder_id,
+    // or a deleted folder row — treat as missing folder (404) exactly as
+    // before. Never turn NULL into an empty path (which would resolve to CWD).
+    let Some(folder_path) = folder_path else {
+        return Err((StatusCode::NOT_FOUND, Json(json!({"error": "File not found on disk"}))));
+    };
 
-    if let Some(ref fid) = folder_id {
-        let folder_path: Option<String> = db
-            .query_row(
-                "SELECT path FROM watched_folders WHERE id = ?1",
-                rusqlite::params![fid],
-                |row| row.get(0),
-            )
-            .ok();
+    Ok(ResolvedMedia {
+        full_path: std::path::Path::new(&folder_path).join(relative_path),
+        mime_type,
+        filename,
+        checksum,
+        modified_at,
+    })
+}
 
-        if let Some(ref base) = folder_path {
-            let full = std::path::Path::new(base).join(&relative_path);
-            if full.exists() {
-                return Ok((full, mime_type, filename));
-            }
-        }
+/// Async existence check for a resolved path (`tokio::fs::try_exists`, never
+/// blocking the runtime; I/O errors count as "not found" like `Path::exists`).
+/// Consumes and returns the resolution so routes can destructure it after the
+/// check. Callers must release the pooled connection *before* awaiting this:
+/// `rusqlite::Connection` is not `Sync`, so its borrow must not cross the
+/// await point.
+pub(super) async fn verify_on_disk(
+    resolved: ResolvedMedia,
+) -> Result<ResolvedMedia, (StatusCode, Json<Value>)> {
+    if !tokio::fs::try_exists(&resolved.full_path).await.unwrap_or(false) {
+        return Err((StatusCode::NOT_FOUND, Json(json!({"error": "File not found on disk"}))));
     }
-
-    Err((StatusCode::NOT_FOUND, Json(json!({"error": "File not found on disk"}))))
+    Ok(resolved)
 }
 
 /// Parse a single Range header value.
@@ -113,20 +149,16 @@ pub(super) async fn serve_file(
 ) -> Result<Response, (StatusCode, Json<Value>)> {
     validation::validate_media_id(&id)?;
 
-    // Resolve file path and get caching info from DB
+    // One resolution statement supplies path, MIME type, and caching metadata.
+    // The connection is released before the await (see `verify_on_disk`).
     let conn = state.db.get().map_err(|e| {
         tracing::error!(error = %e, "Failed to acquire database connection");
         (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "Service temporarily unavailable"})))
     })?;
-    let (file_path, mime_type, filename) = resolve_media_path(&conn, &id)?;
-    let (checksum, modified_at): (String, String) = conn
-        .query_row(
-            "SELECT COALESCE(checksum, ''), COALESCE(file_modified_at, '') FROM media_items WHERE id = ?1",
-            rusqlite::params![id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap_or_default();
+    let resolved = resolve_media_row(&conn, &id)?;
     drop(conn);
+    let ResolvedMedia { full_path: file_path, mime_type, filename, checksum, modified_at } =
+        verify_on_disk(resolved).await?;
 
     // Get file metadata for size
     let metadata = tokio::fs::metadata(&file_path).await.map_err(|e| {
@@ -289,3 +321,7 @@ async fn serve_file_range(
     }
     Ok(res)
 }
+
+#[cfg(test)]
+#[path = "file_test.rs"]
+mod file_test;

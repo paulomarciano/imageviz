@@ -576,3 +576,163 @@ async fn test_file_304_not_modified() {
     let body_bytes = response2.into_body().collect().await.unwrap().to_bytes();
     assert!(body_bytes.is_empty(), "304 response must have empty body");
 }
+
+// ---------------------------------------------------------------------------
+// 404 matrix (wave 8.17 — single-query resolver preserves prior semantics)
+// ---------------------------------------------------------------------------
+
+/// Extract the `error` field from a JSON error response body.
+async fn response_error(response: axum::response::Response) -> String {
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&body).expect("JSON error body");
+    json["error"].as_str().expect("error field is a string").to_string()
+}
+
+/// Seed a media item with an explicit folder id (NULL or dangling) — unlike
+/// [`seed_media_item`], which always assigns the seeded folder.
+async fn seed_media_item_with_folder_id(
+    state: &Arc<MediaState>,
+    id: &str,
+    relative_path: &str,
+    folder_id: Option<&str>,
+) {
+    let conn = state.db.get().expect("Failed to get DB connection");
+    // Relax FK enforcement only for the dangling-id seed, restoring it after
+    // so the pooled connection keeps its normal semantics.
+    conn.execute_batch("PRAGMA foreign_keys = OFF").expect("Failed to relax FK");
+    conn.execute(
+        "INSERT INTO media_items (id, filename, relative_path, mime_type, file_size, file_created_at, file_modified_at, checksum, folder_id)
+         VALUES (?1, 'test.png', ?2, 'image/png', 1024, '2025-01-01T00:00:00Z', '2025-01-01T00:00:00Z', 'cksum', ?3)",
+        rusqlite::params![id, relative_path, folder_id],
+    )
+    .expect("Failed to seed media item");
+    conn.execute_batch("PRAGMA foreign_keys = ON").expect("Failed to restore FK");
+}
+
+#[tokio::test]
+async fn test_file_returns_media_not_found_for_unknown_id() {
+    let (app, _state, _cache_dir) = create_media_test_app();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/media/00000000-0000-0000-0000-0000000000aa/file")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response_error(response).await, "Media not found");
+}
+
+#[tokio::test]
+async fn test_file_returns_404_when_folder_id_dangling() {
+    let (app, state, _cache_dir) = create_media_test_app();
+    seed_media_item_with_folder_id(
+        &state,
+        "00000000-0000-0000-0000-0000000000ab",
+        "test.png",
+        Some("missing-fid"),
+    )
+    .await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/media/00000000-0000-0000-0000-0000000000ab/file")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response_error(response).await, "File not found on disk");
+}
+
+#[tokio::test]
+async fn test_file_returns_404_when_file_missing_on_disk() {
+    let (app, state, _cache_dir) = create_media_test_app();
+    let watched = tempfile::tempdir().unwrap();
+
+    seed_config(&state, watched.path()).await;
+    seed_media_item(
+        &state,
+        "00000000-0000-0000-0000-0000000000ac",
+        "test.png",
+        "test.png", // never created inside the watched dir
+        "image/png",
+        "cksum",
+    )
+    .await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/media/00000000-0000-0000-0000-0000000000ac/file")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response_error(response).await, "File not found on disk");
+}
+
+#[tokio::test]
+async fn test_thumbnail_returns_404_when_folder_id_dangling() {
+    let (app, state, _cache_dir) = create_media_test_app();
+    seed_media_item_with_folder_id(
+        &state,
+        "00000000-0000-0000-0000-0000000000ad",
+        "test.png",
+        Some("missing-fid"),
+    )
+    .await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/media/00000000-0000-0000-0000-0000000000ad/thumbnail")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response_error(response).await, "File not found on disk");
+}
+
+#[tokio::test]
+async fn test_thumbnail_returns_404_when_file_missing_on_disk() {
+    let (app, state, _cache_dir) = create_media_test_app();
+    let watched = tempfile::tempdir().unwrap();
+
+    seed_config(&state, watched.path()).await;
+    seed_media_item(
+        &state,
+        "00000000-0000-0000-0000-0000000000ae",
+        "test.png",
+        "test.png", // never created inside the watched dir
+        "image/png",
+        "cksum",
+    )
+    .await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/media/00000000-0000-0000-0000-0000000000ae/thumbnail")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response_error(response).await, "File not found on disk");
+}
