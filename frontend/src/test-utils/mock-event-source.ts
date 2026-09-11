@@ -15,6 +15,8 @@ export class MockEventSource {
   onmessage: ((event: MessageEvent) => void) | null = null;
   listeners: Map<string, MockEventListener[]> = new Map();
   url: string;
+  /** True once close() has been called (lets tests assert cleanup). */
+  closed = false;
 
   constructor(url: string) {
     this.url = url;
@@ -28,7 +30,7 @@ export class MockEventSource {
   }
 
   close() {
-    // cleanup
+    this.closed = true;
   }
 
   triggerOpen() {

@@ -113,7 +113,7 @@ describe('ConfigPanel stats refresh', () => {
     await advance(0);
     expect(statsCalls()).toBe(1); // initial fetch only
 
-    // Act — one hour of idle time.
+    // Act — 60 seconds of idle time.
     await advance(60_000);
 
     // Assert — no polling whatsoever.
@@ -216,8 +216,11 @@ describe('ConfigPanel stats refresh', () => {
     await advance(60_000);
 
     // Assert — no further fetches after close, and exactly one EventSource
-    // per mount (the App-owned bridge) — the panel itself opens none.
+    // per mount (the App-owned bridge) — the panel itself opens none, and
+    // unmount actually closes the connection.
     expect(statsCalls2()).toBe(2);
     expect(MockEventSource.instances).toHaveLength(2);
+    expect(MockEventSource.instances[0]!.closed).toBe(true);
+    expect(MockEventSource.instances[1]!.closed).toBe(true);
   });
 });
