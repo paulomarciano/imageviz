@@ -10,7 +10,12 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
-import { QueryClient, QueryClientProvider, useInfiniteQuery } from '@tanstack/react-query';
+import {
+  QueryClient,
+  QueryClientProvider,
+  useInfiniteQuery,
+  useQuery,
+} from '@tanstack/react-query';
 import { useSseGridUpdates } from '../use-sse-grid-updates';
 import { INITIAL_PAGE_PARAM, getNextPageParam } from '../use-cursor-pagination';
 import type { CursorPageParam } from '../use-cursor-pagination';
@@ -182,5 +187,30 @@ describe('useSseGridUpdates', () => {
     expect(data?.pages[0]!.data[0]!.id).toBe('1');
     const state = queryClient.getQueryState(['media', 'list', { limit: 1, mimeType: 'all' }]);
     expect(state?.isInvalidated).toBe(true);
+  });
+
+  it('invalidates the stats query on indexing_complete so an open panel refetches', async () => {
+    // Arrange — a mounted stats observer (e.g. ConfigPanel is open).
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const statsQueryFn = vi.fn(() => Promise.resolve({ total: 3, indexing: { status: 'Idle' } }));
+    const stats = renderHook(
+      () => useQuery<unknown, Error>({ queryKey: ['stats'], queryFn: statsQueryFn }),
+      { wrapper: createWrapper(queryClient) },
+    );
+    await waitFor(() => expect(stats.result.current.isSuccess).toBe(true));
+    expect(statsQueryFn).toHaveBeenCalledTimes(1);
+
+    renderHook(() => useSseGridUpdates(), { wrapper: createWrapper(queryClient) });
+    const es = MockEventSource.instances[0]!;
+
+    // Act
+    act(() => {
+      es.triggerEvent('indexing_complete', { total: 3, duration_ms: 100 });
+    });
+
+    // Assert — the observer refetches because the query was invalidated.
+    await waitFor(() => expect(statsQueryFn).toHaveBeenCalledTimes(2));
   });
 });

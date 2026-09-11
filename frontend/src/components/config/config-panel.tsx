@@ -33,6 +33,20 @@ async function saveConfig(config: AppConfig): Promise<AppConfig> {
   return response.json() as Promise<AppConfig>;
 }
 
+/**
+ * Poll interval for /stats while an index run is in progress, so live
+ * numbers advance between SSE events. Idle panels never poll — refreshes
+ * arrive via the SSE `indexing_complete` event (see use-sse-grid-updates).
+ */
+const INDEXING_ACTIVE_POLL_MS = 20_000;
+
+/** Tracker statuses during which stats change and a slow poll is warranted. */
+const ACTIVE_INDEX_STATUSES: ReadonlySet<string> = new Set(['Scanning', 'Indexing']);
+
+/** True while an index run is in progress (per the latest stats snapshot). */
+const isIndexingActive = (stats: IndexStats | undefined): boolean =>
+  stats !== undefined && ACTIVE_INDEX_STATUSES.has(stats.indexing.status);
+
 interface ConfigPanelProps {
   readonly onClose: () => void;
 }
@@ -63,11 +77,13 @@ export function ConfigPanel({ onClose }: ConfigPanelProps) {
     queryFn: fetchConfig,
   });
 
-  // Fetch stats
+  // Fetch stats — event-driven: SSE `indexing_complete` invalidates this
+  // query for an immediate refresh; the slow poll only runs mid-index-run.
   const statsQuery = useQuery<IndexStats, Error>({
     queryKey: ['stats'],
     queryFn: fetchStats,
-    refetchInterval: 5_000, // Poll every 5s for live updates
+    refetchInterval: (query) =>
+      isIndexingActive(query.state.data) ? INDEXING_ACTIVE_POLL_MS : false,
   });
 
   // Initialize local state from fetched config

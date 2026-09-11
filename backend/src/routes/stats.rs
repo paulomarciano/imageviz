@@ -47,18 +47,16 @@ async fn get_stats(
         (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "Service temporarily unavailable"})))
     })?;
 
-    // Total file count
-    let total: u64 =
-        conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).map_err(|e| {
-            tracing::error!(error = %e, "Failed to count media items");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
-        })?;
-
-    // Total file size
-    let total_file_size: u64 = conn
-        .query_row("SELECT COALESCE(SUM(file_size), 0) FROM media_items", [], |r| r.get(0))
+    // Consolidated totals: COUNT, SUM, and MAX fold into a single pass over
+    // media_items (review P7 — this endpoint is polled, so scan count matters).
+    let (total, total_file_size, last_indexed_at): (u64, u64, Option<String>) = conn
+        .query_row(
+            "SELECT COUNT(*), COALESCE(SUM(file_size), 0), MAX(indexed_at) FROM media_items",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
         .map_err(|e| {
-            tracing::error!(error = %e, "Failed to sum media file sizes");
+            tracing::error!(error = %e, "Failed to aggregate media item totals");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
         })?;
 
@@ -85,10 +83,6 @@ async fn get_stats(
         })?
         .filter_map(|r| r.ok())
         .collect();
-
-    // Last indexed timestamp (most recent `indexed_at` across all items)
-    let last_indexed_at: Option<String> =
-        conn.query_row("SELECT MAX(indexed_at) FROM media_items", [], |r| r.get(0)).unwrap_or(None);
 
     // Indexing status from the ProgressTracker
     let snapshot = state.progress.snapshot();

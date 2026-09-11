@@ -194,6 +194,10 @@ export function useSseGridUpdates() {
           truncateToFirstPage(queryClient, ['search']);
           queryClient.invalidateQueries({ queryKey: ['media', 'list'] });
           queryClient.invalidateQueries({ queryKey: ['search'] });
+          // Refresh stats (totals, size, last_indexed_at). A no-op
+          // network-wise unless a stats observer (e.g. ConfigPanel) is
+          // mounted — otherwise the query is just marked stale.
+          queryClient.invalidateQueries({ queryKey: ['stats'] });
           setNewFileCount(0);
           break;
         }
