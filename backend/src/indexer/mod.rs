@@ -434,7 +434,10 @@ fn collect_scanned_files(pairs: &[FolderFileEntry]) -> ScannedFiles {
 /// per-row `exists()` stat (review P8: one blocking stat per DB row, 1M at
 /// target scale, inside the async index run). One semantic edge versus the
 /// old raw `Path::exists()` check: a file the *walker* filters out (hidden
-/// paths) now counts as absent — `media_items` is meant to mirror the scan.
+/// paths, non-regular files, valid symlinks) now counts as absent —
+/// `media_items` is meant to mirror the scan. By the same snapshot design, a
+/// file deleted on disk *after* being scanned survives until the next run;
+/// the watcher covers live deletions in between.
 ///
 /// Semantics otherwise unchanged:
 /// - a row whose `(folder_id, relative_path)` is absent from the scan is
@@ -452,8 +455,11 @@ fn remove_deleted_items(conn: &Connection, scanned: &ScannedFiles) -> Result<usi
     // row-visit semantics when the scanned table is modified mid-scan, keeps
     // the returned count exact, and bounds peak memory to 8 bytes per stale
     // row rather than a second full (folder_id, path) copy at 1M rows.
+    // `ORDER BY rowid` pins delete order (a natural full scan, no sorter),
+    // which the transaction-atomicity test relies on.
     let stale_rowids: Vec<i64> = {
-        let mut stmt = conn.prepare("SELECT rowid, folder_id, relative_path FROM media_items")?;
+        let mut stmt =
+            conn.prepare("SELECT rowid, folder_id, relative_path FROM media_items ORDER BY rowid")?;
         let rows = stmt.query_map([], |r| {
             Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, String>(2)?))
         })?;
@@ -467,13 +473,19 @@ fn remove_deleted_items(conn: &Connection, scanned: &ScannedFiles) -> Result<usi
         .collect()
     };
 
+    // The stale set is snapshotted outside the transaction: a row the watcher
+    // writes between snapshot and commit could reuse a stale rowid and be
+    // caught by the delete — the same millisecond-scale exposure the previous
+    // delete-by-key form had, self-healing on the next index run. Counting
+    // actual `execute` results keeps the returned number exact regardless.
     let tx = conn.unchecked_transaction()?;
+    let mut removed = 0usize;
     for rowid in &stale_rowids {
-        tx.execute("DELETE FROM media_items WHERE rowid = ?1", params![rowid])?;
+        removed += tx.execute("DELETE FROM media_items WHERE rowid = ?1", params![rowid])?;
     }
     tx.commit()?;
 
-    Ok(stale_rowids.len())
+    Ok(removed)
 }
 
 // ---------------------------------------------------------------------------
