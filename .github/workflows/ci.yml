@@ -27,6 +27,8 @@ jobs:
           workspaces: backend
       - run: cargo fmt --check
       - run: cargo clippy -- -D warnings
+      # The dev-tools feature (tokio-console + pprof) must compile clean too.
+      - run: cargo clippy --features dev-tools -- -D warnings
 
   backend-test:
     runs-on: ubuntu-latest
@@ -42,6 +44,8 @@ jobs:
           workspaces: backend
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: cargo test
+      # profiler.rs unit tests only exist under the dev-tools feature.
+      - run: cargo test --features dev-tools
 
   frontend-lint:
     runs-on: ubuntu-latest
@@ -83,12 +87,6 @@ jobs:
     defaults:
       run:
         working-directory: frontend
-    env:
-      # Must include --cfg tokio_unstable (set in .cargo/config.toml) because
-      # the console-subscriber crate panics at runtime without it.
-      # The setup-rust-toolchain action only sets RUSTFLAGS if unset, so this
-      # job-level value is preserved through all steps.
-      RUSTFLAGS: -D warnings --cfg tokio_unstable
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1

@@ -11,9 +11,10 @@
 //! # Security
 //!
 //! The `/debug/pprof` endpoint is intended for local development and debugging only.
-//! It has no authentication and should not be exposed in production deployments.
-//! Consider using a firewall, a compile-time feature flag, or a reverse-proxy
-//! to restrict access to this endpoint.
+//! It has no authentication. This module is compiled only under the `dev-tools`
+//! cargo feature, so default and release builds never expose the endpoint. When
+//! running with the feature, keep the server bound to localhost (the default) or
+//! restrict access via a firewall or reverse proxy.
 
 use std::marker::PhantomData;
 use std::time::Duration;

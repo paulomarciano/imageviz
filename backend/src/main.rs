@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 
+#[cfg(feature = "dev-tools")]
 use console_subscriber::ConsoleLayer;
 use tokio::signal;
 use tokio::sync::Mutex;
@@ -19,6 +20,7 @@ use imageviz_backend::indexer::progress::ProgressTracker;
 use imageviz_backend::middleware::logging::logging_layer;
 use imageviz_backend::middleware::security::apply_security_headers;
 use imageviz_backend::middleware::timeout;
+#[cfg(feature = "dev-tools")]
 use imageviz_backend::profiler::ProfilerState;
 use imageviz_backend::routes::config::ConfigState;
 use imageviz_backend::routes::events::EventsState;
@@ -33,13 +35,18 @@ use imageviz_backend::watcher::handler::SseEvent;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() {
-    // Register tokio-console subscriber before the runtime starts so that
-    // every task spawned from this point on is instrumented.
-    // This is a no-op when TOKIO_CONSOLE_ADDR is not set (zero overhead at rest).
+    // Register tokio-console subscriber before spawning any other tasks so
+    // that every task spawned from this point on is instrumented.
+    // Compiled only under the `dev-tools` feature — default and release
+    // builds carry neither the layer nor the console server.
+    // Running with the feature requires tokio built with the unstable cfg:
+    // RUSTFLAGS="--cfg tokio_unstable" cargo run --features dev-tools
+    #[cfg(feature = "dev-tools")]
     let (console_layer, console_server) = ConsoleLayer::new();
 
     // The console server must be kept alive for the duration of the program.
     // We spawn it on the runtime so it runs independently of the main task.
+    #[cfg(feature = "dev-tools")]
     tokio::spawn(async move {
         if let Err(e) = console_server.serve().await {
             tracing::warn!(error = %e, "tokio-console server error");
@@ -55,7 +62,12 @@ async fn main() {
         .with_target(false)
         .compact();
 
-    tracing_subscriber::registry().with(env_filter).with(fmt_layer).with(console_layer).init();
+    let registry = tracing_subscriber::registry().with(env_filter).with(fmt_layer);
+
+    #[cfg(feature = "dev-tools")]
+    let registry = registry.with(console_layer);
+
+    registry.init();
 
     let settings = imageviz_backend::config::settings::Settings::from_env();
 
@@ -206,10 +218,14 @@ async fn main() {
                 imageviz_backend::routes::events::routes().with_state(events_state),
                 3600,
             ),
-        )
-        .nest("/debug/pprof", ProfilerState::new().router())
-        .layer(logging_layer())
-        .layer(CorsLayer::permissive());
+        );
+
+    // CPU profiling endpoint, compiled only under the `dev-tools` feature.
+    // Mounted outside `/api/v1`, like the health route.
+    #[cfg(feature = "dev-tools")]
+    let app = app.nest("/debug/pprof", ProfilerState::new().router());
+
+    let app = app.layer(logging_layer()).layer(CorsLayer::permissive());
 
     // Security headers are the outermost layer so they appear on every
     // response, including those from inner middleware (timeout, CORS,

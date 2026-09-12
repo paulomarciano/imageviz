@@ -3,6 +3,13 @@ name = "imageviz-backend"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# Development tooling: tokio-console task instrumentation + /debug/pprof
+# flamegraph endpoint. Off by default so release binaries carry neither.
+# Running the dev-tools binary additionally requires building tokio with
+# the unstable cfg: RUSTFLAGS="--cfg tokio_unstable" cargo run --features dev-tools
+dev-tools = ["dep:console-subscriber", "dep:pprof"]
+
 [dependencies]
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
@@ -29,8 +36,8 @@ notify-debouncer-mini = "0.7"
 r2d2 = "0.8"
 dashmap = "6"
 fs2 = "0.4"
-console-subscriber = "0.4"
-pprof = { version = "0.15", default-features = false, features = ["prost-codec", "flamegraph"] }
+console-subscriber = { version = "0.4", optional = true }
+pprof = { version = "0.15", default-features = false, features = ["prost-codec", "flamegraph"], optional = true }
 
 [profile.release]
 lto = "fat"

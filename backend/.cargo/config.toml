@@ -1,2 +1,10 @@
+# Warnings are errors for all builds on this target.
+#
+# NOTE: no `--cfg tokio_unstable` here — default and release builds must not
+# need it (tokio-console is gated behind the `dev-tools` cargo feature, and
+# console-subscriber panics at runtime if tokio lacks the unstable cfg).
+# For dev-tools sessions run:
+#   RUSTFLAGS="--cfg tokio_unstable" cargo run --features dev-tools
+# (RUSTFLAGS overrides the rustflags above, which is fine for a dev session.)
 [target.x86_64-unknown-linux-gnu]
-rustflags = ["-D", "warnings", "--cfg", "tokio_unstable"]
+rustflags = ["-D", "warnings"]

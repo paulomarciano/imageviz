@@ -50,10 +50,10 @@ Frontend package manager is **npm**. Path alias `@/` → `./src/`.
 - **File watcher**: `notify` + `notify-debouncer-mini` (500ms debounce). `mpsc` channel decouples watcher from indexer. Watcher is held in `Arc<Mutex<FileWatcher>>`; `_watcher_guard` in `main.rs:116` keeps an `Arc::clone()` alive for server lifetime.
 - **Security**: CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy applied as outermost Axum middleware layer.
 - **Input validation at route boundary**: limit [1–500], cursor ISO 8601, cursor_id UUID v4, search max 1000 chars, path max 4096 chars, no `..` traversal.
-- **`.cargo/config.toml`**: sets `-D warnings` + `--cfg tokio_unstable` for `x86_64-unknown-linux-gnu` **only** (not macOS). The CI `frontend-e2e` job explicitly sets `RUSTFLAGS` env to cover all platforms. On macOS you must set `RUSTFLAGS="--cfg tokio_unstable"` manually or `console-subscriber` panics.
+- **`.cargo/config.toml`**: sets `-D warnings` for `x86_64-unknown-linux-gnu` **only** (not macOS). Default and release builds need no `--cfg tokio_unstable` (dev tooling is feature-gated, see below). The CI `frontend-e2e` job runs the default backend build.
 - **Supported media extensions**: PNG, JPG/JPEG, WebP, GIF, MP4, WebM, MOV (shared constant in `backend/src/media_types.rs`).
 - **Hidden files/dirs**: `is_hidden_path()` in `media_types.rs` ignores any path whose component starts with `.` — applied consistently by both scanner and watcher.
-- **Debug tooling**: `GET /debug/pprof/profile?seconds=5&format=svg` (dev-only, mounted **outside** `/api/v1`) for CPU flamegraphs via `backend/src/profiler.rs`. Backend logging is filtered via `RUST_LOG` (`EnvFilter::try_from_default_env()`); tokio-console is registered as a tracing layer — requires `--cfg tokio_unstable`.
+- **Debug tooling** (feature-gated, off by default): `cargo run --features dev-tools` enables tokio-console plus `GET /debug/pprof/profile?seconds=5&format=svg` (mounted **outside** `/api/v1`, via `backend/src/profiler.rs`, compiled only under the feature). Running the dev-tools binary requires tokio built with the unstable cfg: `RUSTFLAGS="--cfg tokio_unstable" cargo run --features dev-tools` (note `RUSTFLAGS` overrides `.cargo/config.toml`). Backend logging is filtered via `RUST_LOG` (`EnvFilter::try_from_default_env()`).
 
 ## Test Conventions
 
