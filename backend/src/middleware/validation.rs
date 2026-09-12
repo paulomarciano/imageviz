@@ -35,12 +35,6 @@ impl ValidationError {
     }
 }
 
-impl From<ValidationError> for (StatusCode, Json<Value>) {
-    fn from(err: ValidationError) -> Self {
-        err.into_response()
-    }
-}
-
 /// Validate the `limit` query parameter (1..=500).
 pub fn validate_limit(limit: u32) -> Result<(), ValidationError> {
     if limit == 0 {

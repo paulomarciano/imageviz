@@ -20,7 +20,6 @@
 use axum::{
     Router,
     extract::{Query, State},
-    http::StatusCode,
     response::Json,
     routing::get,
 };
@@ -36,6 +35,8 @@ use tantivy::query::QueryParser;
 use tantivy::schema::Value as TantivyValue;
 
 use crate::middleware::validation;
+use crate::routes::error::AppError;
+use crate::routes::response::MediaItemSummary;
 use crate::search::IndexManager;
 
 // ---------------------------------------------------------------------------
@@ -96,7 +97,7 @@ pub fn routes() -> Router<Arc<SearchState>> {
 async fn search_handler(
     State(state): State<Arc<SearchState>>,
     Query(params): Query<SearchParams>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+) -> Result<Json<Value>, AppError> {
     validation::validate_search_query(&params.q)?;
     validation::validate_limit(params.limit)?;
     validation::validate_numeric_cursor(params.cursor.as_deref())?;
@@ -114,14 +115,8 @@ async fn search_handler(
     let reader = state.index_manager.reader();
     let searcher = reader.searcher();
 
-    let metadata_json_field = schema.get_field("metadata_json").map_err(|e| {
-        tracing::error!(error = %e, "Missing metadata_json field in Tantivy schema");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
-    })?;
-    let filename_field = schema.get_field("filename").map_err(|e| {
-        tracing::error!(error = %e, "Missing filename field in Tantivy schema");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
-    })?;
+    let metadata_json_field = schema_field(schema, "metadata_json")?;
+    let filename_field = schema_field(schema, "filename")?;
 
     let mut query_parser = QueryParser::for_index(
         state.index_manager.index(),
@@ -136,15 +131,9 @@ async fn search_handler(
         query_parser.set_conjunction_by_default();
     }
 
-    let query = match query_parser.parse_query(&query_str) {
-        Ok(q) => q,
-        Err(e) => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": format!("Invalid query: {}", e)})),
-            ));
-        }
-    };
+    let query = query_parser
+        .parse_query(&query_str)
+        .map_err(|e| AppError::BadRequest(format!("Invalid query: {e}")))?;
 
     let id_field = schema.get_field("id").unwrap();
 
@@ -170,16 +159,11 @@ async fn search_handler(
         search_single_traversal(&searcher, &query, collector.order_by(score_fn))
     };
 
-    let (total_hits, top_docs): (usize, Vec<(f32, tantivy::DocAddress)>) = match search_result {
-        Ok(result) => result,
-        Err(e) => {
+    let (total_hits, top_docs): (usize, Vec<(f32, tantivy::DocAddress)>) =
+        search_result.map_err(|e| {
             tracing::error!(error = %e, "Tantivy search failed");
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Search failed"})),
-            ));
-        }
-    };
+            AppError::Internal("Search failed")
+        })?;
 
     // ---- Resolve Tantivy hits → SQLite records ----
     let has_more = top_docs.len() > limit;
@@ -201,15 +185,12 @@ async fn search_handler(
         .collect();
 
     // Single DB connection + single batch query instead of N per-hit queries.
-    let conn = state.db.get().map_err(|e| {
-        tracing::error!(error = %e, "Failed to acquire database connection");
-        (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "Service temporarily unavailable"})))
-    })?;
+    let conn = state.db.get()?;
 
     let mut media_items = batch_get_media_items(&conn, &item_ids, params.mime_type.as_deref())
         .map_err(|e| {
             tracing::error!(error = %e, "Batch DB lookup failed for search hits");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Search lookup failed"})))
+            AppError::Internal("Search lookup failed")
         })?;
 
     // ---- Sort results ----
@@ -265,22 +246,16 @@ where
 // Response types
 // ---------------------------------------------------------------------------
 
-/// Lightweight media item returned in search results.
-///
-/// Matches the list-view format defined in the API contract so that the
-/// frontend can reuse the same rendering components.
-#[derive(serde::Serialize)]
-struct MediaItemSummary {
-    id: String,
-    filename: String,
-    path: String,
-    mime_type: String,
-    thumbnail_url: String,
-    width: Option<i64>,
-    height: Option<i64>,
-    file_size: i64,
-    created_at: String,
-    modified_at: String,
+/// Look up a Tantivy schema field, mapping a missing field to the standard
+/// internal-server-error response (a missing field means index/schema drift).
+fn schema_field(
+    schema: &tantivy::schema::Schema,
+    name: &str,
+) -> Result<tantivy::schema::Field, AppError> {
+    schema.get_field(name).map_err(|e| {
+        tracing::error!(error = %e, field = name, "Missing field in Tantivy schema");
+        AppError::Internal("Internal server error")
+    })
 }
 
 // ---------------------------------------------------------------------------

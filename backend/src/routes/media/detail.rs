@@ -1,6 +1,5 @@
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
     response::Json,
 };
 use serde::Serialize;
@@ -8,6 +7,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 use crate::middleware::validation;
+use crate::routes::error::AppError;
 
 use super::MediaState;
 
@@ -36,13 +36,10 @@ struct MediaItemDetail {
 pub(super) async fn get_media_item(
     State(state): State<Arc<MediaState>>,
     Path(id): Path<String>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+) -> Result<Json<Value>, AppError> {
     validation::validate_media_id(&id)?;
 
-    let conn = state.db.get().map_err(|e| {
-        tracing::error!(error = %e, "Failed to acquire database connection");
-        (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "Service temporarily unavailable"})))
-    })?;
+    let conn = state.db.get()?;
 
     let row = conn
         .query_row(
@@ -70,13 +67,8 @@ pub(super) async fn get_media_item(
             },
         )
         .map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => {
-                (StatusCode::NOT_FOUND, Json(json!({"error": "Media not found"})))
-            }
-            _ => {
-                tracing::error!(error = %e, "Database error fetching media item");
-                (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
-            }
+            rusqlite::Error::QueryReturnedNoRows => AppError::NotFound("Media not found"),
+            other => other.into(),
         })?;
 
     Ok(Json(json!(row)))
@@ -86,13 +78,10 @@ pub(super) async fn get_media_item(
 pub(super) async fn get_media_metadata(
     State(state): State<Arc<MediaState>>,
     Path(id): Path<String>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+) -> Result<Json<Value>, AppError> {
     validation::validate_media_id(&id)?;
 
-    let conn = state.db.get().map_err(|e| {
-        tracing::error!(error = %e, "Failed to acquire database connection");
-        (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "Service temporarily unavailable"})))
-    })?;
+    let conn = state.db.get()?;
 
     let metadata_json: Option<String> = conn
         .query_row(
@@ -101,13 +90,8 @@ pub(super) async fn get_media_metadata(
             |row| row.get(0),
         )
         .map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => {
-                (StatusCode::NOT_FOUND, Json(json!({"error": "Media not found"})))
-            }
-            _ => {
-                tracing::error!(error = %e, "Database error fetching metadata");
-                (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
-            }
+            rusqlite::Error::QueryReturnedNoRows => AppError::NotFound("Media not found"),
+            other => other.into(),
         })?;
 
     match metadata_json {

@@ -1,5 +1,8 @@
 use super::*;
-use axum::{body::Body, http::Request};
+use axum::{
+    body::Body,
+    http::{Request, StatusCode},
+};
 use http_body_util::BodyExt;
 use tantivy::doc;
 use tower::ServiceExt;

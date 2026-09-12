@@ -1,14 +1,15 @@
 use axum::{
     extract::{Query, State},
-    http::StatusCode,
     response::Json,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::middleware::validation;
+use crate::routes::error::AppError;
+use crate::routes::response::MediaItemSummary;
 
 use super::{CountCache, MediaState};
 
@@ -88,20 +89,6 @@ fn default_limit() -> u32 {
     100
 }
 
-#[derive(Serialize)]
-pub(super) struct MediaItemSummary {
-    pub id: String,
-    pub filename: String,
-    pub path: String,
-    pub mime_type: String,
-    pub thumbnail_url: String,
-    pub width: Option<i64>,
-    pub height: Option<i64>,
-    pub file_size: i64,
-    pub created_at: String,
-    pub modified_at: String,
-}
-
 /// GET /api/v1/media — list media items with cursor-based pagination.
 ///
 /// Query parameters:
@@ -115,7 +102,7 @@ pub(super) struct MediaItemSummary {
 pub(super) async fn list_media(
     State(state): State<Arc<MediaState>>,
     Query(params): Query<MediaListParams>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+) -> Result<Json<Value>, AppError> {
     validation::validate_limit(params.limit)?;
     validation::validate_cursor(params.cursor.as_deref())?;
     validation::validate_cursor_id(params.cursor_id.as_deref())?;
@@ -125,10 +112,7 @@ pub(super) async fn list_media(
     let has_cursor = params.cursor.is_some() && params.cursor_id.is_some();
     let has_mime = params.mime_type.is_some();
 
-    let conn = state.db.get().map_err(|e| {
-        tracing::error!(error = %e, "Failed to acquire database connection");
-        (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "Service temporarily unavailable"})))
-    })?;
+    let conn = state.db.get()?;
 
     // Total count — cached per mime-filter key for 30s to avoid a full index
     // scan on every page load, including mime-filtered pages. The cache mutex
@@ -189,52 +173,35 @@ pub(super) async fn list_media(
         values.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
 
     let mut items: Vec<MediaItemSummary> = {
-        let mut stmt = conn.prepare(&sql).map_err(|e| {
-            tracing::error!(error = %e, "Failed to prepare media list query");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
-        })?;
+        let mut stmt = conn.prepare(&sql)?;
 
-        let rows = stmt
-            .query_map(param_refs.as_slice(), |row| {
-                let id: String = row.get(0)?;
-                let filename: String = row.get(1)?;
-                let relative_path: String = row.get(2)?;
-                let mime_type: String = row.get(3)?;
-                let width: Option<i64> = row.get(4)?;
-                let height: Option<i64> = row.get(5)?;
-                let file_size: i64 = row.get(6)?;
-                let file_created_at: String = row.get(7)?;
-                let file_modified_at: String = row.get(8)?;
-                Ok(MediaItemSummary {
-                    thumbnail_url: format!("/api/v1/media/{}/thumbnail", id),
-                    id,
-                    filename,
-                    path: relative_path,
-                    mime_type,
-                    width,
-                    height,
-                    file_size,
-                    created_at: file_created_at,
-                    modified_at: file_modified_at,
-                })
+        let rows = stmt.query_map(param_refs.as_slice(), |row| {
+            let id: String = row.get(0)?;
+            let filename: String = row.get(1)?;
+            let relative_path: String = row.get(2)?;
+            let mime_type: String = row.get(3)?;
+            let width: Option<i64> = row.get(4)?;
+            let height: Option<i64> = row.get(5)?;
+            let file_size: i64 = row.get(6)?;
+            let file_created_at: String = row.get(7)?;
+            let file_modified_at: String = row.get(8)?;
+            Ok(MediaItemSummary {
+                thumbnail_url: format!("/api/v1/media/{}/thumbnail", id),
+                id,
+                filename,
+                path: relative_path,
+                mime_type,
+                width,
+                height,
+                file_size,
+                created_at: file_created_at,
+                modified_at: file_modified_at,
             })
-            .map_err(|e| {
-                tracing::error!(error = %e, "Failed to query media items");
-                (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
-            })?;
+        })?;
 
         let mut items: Vec<MediaItemSummary> = Vec::new();
         for row in rows {
-            match row {
-                Ok(item) => items.push(item),
-                Err(e) => {
-                    tracing::error!(error = %e, "Failed to read media row");
-                    return Err((
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({"error": "Internal server error"})),
-                    ));
-                }
-            }
+            items.push(row?);
         }
         items
     };

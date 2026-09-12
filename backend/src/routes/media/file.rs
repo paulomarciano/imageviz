@@ -1,16 +1,15 @@
 use axum::{
-    Json,
     extract::{Path, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
-    response::{IntoResponse, Response},
+    response::Response,
 };
-use serde_json::{Value, json};
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt as _, AsyncSeekExt as _};
 
 use crate::middleware::validation;
+use crate::routes::error::AppError;
 
 use super::MediaState;
 
@@ -42,7 +41,7 @@ pub(super) struct ResolvedMedia {
 pub(super) fn resolve_media_row(
     db: &rusqlite::Connection,
     id: &str,
-) -> Result<ResolvedMedia, (StatusCode, Json<Value>)> {
+) -> Result<ResolvedMedia, AppError> {
     #[cfg(test)]
     RESOLVE_STATEMENTS.with(|count| count.set(count.get() + 1));
 
@@ -66,20 +65,15 @@ pub(super) fn resolve_media_row(
             },
         )
         .map_err(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => {
-                (StatusCode::NOT_FOUND, Json(json!({"error": "Media not found"})))
-            }
-            _ => {
-                tracing::error!(error = %e, "Database error fetching media item");
-                (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
-            }
+            rusqlite::Error::QueryReturnedNoRows => AppError::NotFound("Media not found"),
+            other => other.into(),
         })?;
 
     // LEFT JOIN: a NULL folder path means no folder_id, a dangling folder_id,
     // or a deleted folder row — treat as missing folder (404) exactly as
     // before. Never turn NULL into an empty path (which would resolve to CWD).
     let Some(folder_path) = folder_path else {
-        return Err((StatusCode::NOT_FOUND, Json(json!({"error": "File not found on disk"}))));
+        return Err(AppError::NotFound("File not found on disk"));
     };
 
     Ok(ResolvedMedia {
@@ -97,11 +91,9 @@ pub(super) fn resolve_media_row(
 /// check. No live `&rusqlite::Connection` borrow may cross this await
 /// (`Connection` is not `Sync`); handlers drop the pooled connection first so
 /// the pool slot is not held across disk I/O.
-pub(super) async fn verify_on_disk(
-    resolved: ResolvedMedia,
-) -> Result<ResolvedMedia, (StatusCode, Json<Value>)> {
+pub(super) async fn verify_on_disk(resolved: ResolvedMedia) -> Result<ResolvedMedia, AppError> {
     if !tokio::fs::try_exists(&resolved.full_path).await.unwrap_or(false) {
-        return Err((StatusCode::NOT_FOUND, Json(json!({"error": "File not found on disk"}))));
+        return Err(AppError::NotFound("File not found on disk"));
     }
     Ok(resolved)
 }
@@ -146,15 +138,12 @@ pub(super) async fn serve_file(
     State(state): State<Arc<MediaState>>,
     Path(id): Path<String>,
     headers: HeaderMap,
-) -> Result<Response, (StatusCode, Json<Value>)> {
+) -> Result<Response, AppError> {
     validation::validate_media_id(&id)?;
 
     // One resolution statement supplies path, MIME type, and caching metadata.
     // The connection is released before the await (see `verify_on_disk`).
-    let conn = state.db.get().map_err(|e| {
-        tracing::error!(error = %e, "Failed to acquire database connection");
-        (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "Service temporarily unavailable"})))
-    })?;
+    let conn = state.db.get()?;
     let resolved = resolve_media_row(&conn, &id)?;
     drop(conn);
     let ResolvedMedia { full_path: file_path, mime_type, filename, checksum, modified_at } =
@@ -163,7 +152,7 @@ pub(super) async fn serve_file(
     // Get file metadata for size
     let metadata = tokio::fs::metadata(&file_path).await.map_err(|e| {
         tracing::error!(error = %e, path = %file_path.display(), "Failed to stat file");
-        (StatusCode::NOT_FOUND, Json(json!({"error": "File not found on disk"})))
+        AppError::NotFound("File not found on disk")
     })?;
     let file_size = metadata.len();
 
@@ -192,23 +181,14 @@ pub(super) async fn serve_file(
             return serve_file_range(
                 &file_path, range, file_size, &mime_type, &filename, &checksum,
             )
-            .await
-            .map(IntoResponse::into_response);
+            .await;
         } else {
-            return Err((
-                StatusCode::RANGE_NOT_SATISFIABLE,
-                Json(json!({
-                    "error": "Range not satisfiable",
-                    "content_range": format!("bytes */{}", file_size)
-                })),
-            ));
+            return Err(AppError::RangeNotSatisfiable(file_size));
         }
     }
 
     // No Range header → serve full file with caching headers
-    serve_full_file(&file_path, file_size, &mime_type, &filename, &checksum, &modified_at)
-        .await
-        .map(IntoResponse::into_response)
+    serve_full_file(&file_path, file_size, &mime_type, &filename, &checksum, &modified_at).await
 }
 
 /// Serve the full file (200 OK) with caching headers.
@@ -223,10 +203,10 @@ async fn serve_full_file(
     filename: &str,
     checksum: &str,
     modified_at: &str,
-) -> Result<Response, (StatusCode, Json<Value>)> {
+) -> Result<Response, AppError> {
     let file = tokio::fs::File::open(path).await.map_err(|e| {
         tracing::error!(error = %e, path = %path.display(), "Failed to open file");
-        (StatusCode::NOT_FOUND, Json(json!({"error": "File not found on disk"})))
+        AppError::NotFound("File not found on disk")
     })?;
 
     let stream = tokio_util::io::ReaderStream::new(file);
@@ -272,20 +252,20 @@ async fn serve_file_range(
     mime_type: &str,
     filename: &str,
     checksum: &str,
-) -> Result<Response, (StatusCode, Json<Value>)> {
+) -> Result<Response, AppError> {
     let start = *range.start();
     let end = *range.end();
     let length = end - start + 1;
 
     let file = tokio::fs::File::open(path).await.map_err(|e| {
         tracing::error!(error = %e, path = %path.display(), "Failed to open file");
-        (StatusCode::NOT_FOUND, Json(json!({"error": "File not found on disk"})))
+        AppError::NotFound("File not found on disk")
     })?;
 
     let mut file = file;
     file.seek(std::io::SeekFrom::Start(start)).await.map_err(|e| {
         tracing::error!(error = %e, "Failed to seek in file");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
+        AppError::Internal("Internal server error")
     })?;
 
     // Take only the requested range of bytes

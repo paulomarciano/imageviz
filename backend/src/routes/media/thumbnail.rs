@@ -1,15 +1,15 @@
 use axum::{
     body::Body,
     extract::{Path, Query, State},
-    http::{StatusCode, header},
-    response::{IntoResponse, Json},
+    http::header,
+    response::IntoResponse,
 };
-use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio_util::io::ReaderStream;
 
 use crate::middleware::validation;
+use crate::routes::error::AppError;
 use crate::thumbnails::cache::{CacheError, probe_thumbnail};
 
 use super::MediaState;
@@ -18,19 +18,17 @@ use super::MediaState;
 ///
 /// Shared by the cache-hit and cache-miss paths so both responses carry
 /// identical headers (content type, length, immutable cache policy).
-async fn serve_thumbnail_file(
-    path: std::path::PathBuf,
-) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+async fn serve_thumbnail_file(path: std::path::PathBuf) -> Result<impl IntoResponse, AppError> {
     let file = tokio::fs::File::open(&path).await.map_err(|e| {
         tracing::error!(error = %e, "Failed to open thumbnail file");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
+        AppError::Internal("Internal server error")
     })?;
     let content_length = file
         .metadata()
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "Failed to read thumbnail metadata");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
+            AppError::Internal("Internal server error")
         })?
         .len();
     let stream = ReaderStream::new(file);
@@ -51,7 +49,7 @@ pub(super) async fn serve_thumbnail(
     State(state): State<Arc<MediaState>>,
     Path(id): Path<String>,
     Query(params): Query<HashMap<String, String>>,
-) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+) -> Result<impl IntoResponse, AppError> {
     validation::validate_media_id(&id)?;
 
     // Parse optional width parameter (default 200, range 100-500)
@@ -61,10 +59,7 @@ pub(super) async fn serve_thumbnail(
     // One shared resolution statement supplies path, MIME type, and checksum.
     // The connection is released before the await (rusqlite::Connection is
     // not `Sync` — its borrow must not cross the await point).
-    let conn = state.db.get().map_err(|e| {
-        tracing::error!(error = %e, "Failed to acquire database connection");
-        (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "Service temporarily unavailable"})))
-    })?;
+    let conn = state.db.get()?;
     let resolved = super::file::resolve_media_row(&conn, &id)?;
     drop(conn);
     let super::file::ResolvedMedia { full_path: file_path, mime_type, checksum, .. } =
@@ -82,10 +77,7 @@ pub(super) async fn serve_thumbnail(
     // re-check inside `get_or_generate_thumbnail` dedup generation, so at
     // most one generation runs per cache key regardless of limiter order.
     let _permit = state.thumbnail_limiter.acquire().await.map_err(|_| {
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({"error": "Too many thumbnail requests. Try again later."})),
-        )
+        AppError::ServiceUnavailable("Too many thumbnail requests. Try again later.")
     })?;
 
     // Generate or retrieve cached thumbnail (re-checks the cache under the
@@ -101,13 +93,8 @@ pub(super) async fn serve_thumbnail(
     .map_err(|e| {
         tracing::error!(error = %e, "Failed to generate thumbnail");
         match e {
-            CacheError::SourceNotFound(_) => {
-                (StatusCode::NOT_FOUND, Json(json!({"error": "File not found on disk"})))
-            }
-            _ => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to generate thumbnail"})),
-            ),
+            CacheError::SourceNotFound(_) => AppError::NotFound("File not found on disk"),
+            _ => AppError::Internal("Failed to generate thumbnail"),
         }
     })?;
 

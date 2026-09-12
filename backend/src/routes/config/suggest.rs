@@ -1,6 +1,6 @@
-use axum::{extract::Query, http::StatusCode, response::Json};
+use axum::extract::Query;
+use axum::response::Json;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::path::Path;
 
 /// Query parameters for `GET /config/suggest`.
@@ -43,9 +43,8 @@ fn resolve_path(path: &str) -> String {
 ///
 /// Used by the frontend config panel to power a folder autocomplete.  This
 /// is a stateless filesystem operation — no database access is needed.
-pub(super) async fn suggest_folders(
-    Query(params): Query<SuggestParams>,
-) -> Result<Json<SuggestResponse>, (StatusCode, Json<Value>)> {
+/// Infallible: unreadable/missing directories simply yield no suggestions.
+pub(super) async fn suggest_folders(Query(params): Query<SuggestParams>) -> Json<SuggestResponse> {
     let resolved = resolve_path(&params.path);
     let path = Path::new(&resolved);
 
@@ -85,5 +84,5 @@ pub(super) async fn suggest_folders(
     suggestions.sort_by(|a, b| a.name.cmp(&b.name));
     suggestions.truncate(50);
 
-    Ok(Json(SuggestResponse { suggestions }))
+    Json(SuggestResponse { suggestions })
 }

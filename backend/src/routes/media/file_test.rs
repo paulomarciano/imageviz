@@ -8,11 +8,11 @@
 use std::cell::Cell;
 use std::path::Path;
 
-use axum::http::StatusCode;
 use rusqlite::Connection;
 
 use super::{RESOLVE_STATEMENTS, resolve_media_row, verify_on_disk};
 use crate::db::migrations::run_migrations;
+use crate::routes::error::AppError;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -50,9 +50,13 @@ fn resolve_count() -> usize {
     RESOLVE_STATEMENTS.with(Cell::get)
 }
 
-fn assert_not_found_with(err: (StatusCode, axum::Json<serde_json::Value>), message: &str) {
-    assert_eq!(err.0, StatusCode::NOT_FOUND);
-    assert_eq!(err.1.0["error"], message);
+/// Assert `err` is the 404 `NotFound` variant with exactly `message`.
+/// (The variant's status/body rendering is pinned by `routes::error::error_test`.)
+fn assert_not_found_with(err: AppError, message: &str) {
+    match err {
+        AppError::NotFound(msg) => assert_eq!(msg, message),
+        other => panic!("expected NotFound (404), got: {other:?}"),
+    }
 }
 
 // ---------------------------------------------------------------------------

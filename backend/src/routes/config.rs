@@ -1,8 +1,7 @@
-use axum::{Router, extract::State, http::StatusCode, response::Json, routing::get};
+use axum::{Router, extract::State, response::Json, routing::get};
 use r2d2::Pool;
 
 use crate::db::SqliteConnectionManager;
-use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -10,6 +9,7 @@ use tokio::sync::Mutex;
 use crate::config::AppConfig;
 use crate::indexer::progress::ProgressTracker;
 use crate::middleware::validation;
+use crate::routes::error::AppError;
 use crate::search::IndexManager;
 use crate::watcher::FileWatcher;
 
@@ -41,16 +41,11 @@ pub fn routes() -> Router<Arc<ConfigState>> {
 }
 
 /// GET /api/v1/config — return the current watched-folder configuration.
-async fn get_config(
-    State(state): State<Arc<ConfigState>>,
-) -> Result<Json<AppConfig>, (StatusCode, Json<Value>)> {
-    let conn = state.db.get().map_err(|e| {
-        tracing::error!(error = %e, "Failed to acquire database connection");
-        (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "Service temporarily unavailable"})))
-    })?;
+async fn get_config(State(state): State<Arc<ConfigState>>) -> Result<Json<AppConfig>, AppError> {
+    let conn = state.db.get()?;
     let config = crate::config::load_config(&conn).map_err(|e| {
         tracing::error!(error = %e, "Failed to load config from database");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Failed to load configuration"})))
+        AppError::Internal("Failed to load configuration")
     })?;
     Ok(Json(config))
 }
@@ -67,26 +62,17 @@ async fn get_config(
 async fn update_config(
     State(state): State<Arc<ConfigState>>,
     Json(mut config): Json<AppConfig>,
-) -> Result<Json<AppConfig>, (StatusCode, Json<Value>)> {
+) -> Result<Json<AppConfig>, AppError> {
     // Validate watched folder paths
     validation::validate_watched_folders(&config.watched_folders)?;
 
     // Load the old config from the database *before* overwriting so that
     // we can diff the folder lists and know which paths to add/remove.
     let old_config = {
-        let conn = state.db.get().map_err(|e| {
-            tracing::error!(error = %e, "Failed to acquire database connection");
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({"error": "Service temporarily unavailable"})),
-            )
-        })?;
+        let conn = state.db.get()?;
         crate::config::load_config(&conn).map_err(|e| {
             tracing::error!(error = %e, "Failed to load config from database");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to load configuration"})),
-            )
+            AppError::Internal("Failed to load configuration")
         })?
     };
 
@@ -95,19 +81,10 @@ async fn update_config(
     // transactional write to the watched_folders table (the single source
     // of truth).
     {
-        let conn = state.db.get().map_err(|e| {
-            tracing::error!(error = %e, "Failed to acquire database connection");
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({"error": "Service temporarily unavailable"})),
-            )
-        })?;
+        let conn = state.db.get()?;
         crate::config::save_config(&conn, &mut config).map_err(|e| {
             tracing::error!(error = %e, "Failed to save config to database");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to save configuration"})),
-            )
+            AppError::Internal("Failed to save configuration")
         })?;
     }
 

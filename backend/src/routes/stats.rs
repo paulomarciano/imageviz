@@ -1,13 +1,13 @@
-use axum::{Router, extract::State, http::StatusCode, response::Json, routing::get};
+use axum::{Router, extract::State, response::Json, routing::get};
 use r2d2::Pool;
 
 use crate::db::SqliteConnectionManager;
 use serde::Serialize;
-use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::indexer::progress::{IndexStatus, ProgressTracker};
+use crate::routes::error::AppError;
 
 /// Shared application state for the stats endpoint.
 pub struct StatsState {
@@ -39,47 +39,28 @@ pub struct IndexingInfo {
 }
 
 /// GET /api/v1/stats — return aggregate index statistics.
-async fn get_stats(
-    State(state): State<Arc<StatsState>>,
-) -> Result<Json<IndexStats>, (StatusCode, Json<Value>)> {
-    let conn = state.db.get().map_err(|e| {
-        tracing::error!(error = %e, "Failed to acquire database connection");
-        (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "Service temporarily unavailable"})))
-    })?;
+async fn get_stats(State(state): State<Arc<StatsState>>) -> Result<Json<IndexStats>, AppError> {
+    let conn = state.db.get()?;
 
     // Consolidated totals: COUNT, SUM, and MAX fold into a single pass over
     // media_items (review P7 — this endpoint is polled, so scan count matters).
-    let (total, total_file_size, last_indexed_at): (u64, u64, Option<String>) = conn
-        .query_row(
-            "SELECT COUNT(*), COALESCE(SUM(file_size), 0), MAX(indexed_at) FROM media_items",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .map_err(|e| {
-            tracing::error!(error = %e, "Failed to aggregate media item totals");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
-        })?;
+    let (total, total_file_size, last_indexed_at): (u64, u64, Option<String>) = conn.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(file_size), 0), MAX(indexed_at) FROM media_items",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
 
     // MIME type histogram
-    let mut stmt = conn
-        .prepare(
-            "SELECT mime_type, COUNT(*) as cnt FROM media_items \
-             GROUP BY mime_type ORDER BY cnt DESC",
-        )
-        .map_err(|e| {
-            tracing::error!(error = %e, "Failed to prepare mime_type histogram query");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
-        })?;
+    let mut stmt = conn.prepare(
+        "SELECT mime_type, COUNT(*) as cnt FROM media_items \
+              GROUP BY mime_type ORDER BY cnt DESC",
+    )?;
 
     let by_mime_type: HashMap<String, u64> = stmt
         .query_map([], |row| {
             let mime: String = row.get(0)?;
             let count: u64 = row.get(1)?;
             Ok((mime, count))
-        })
-        .map_err(|e| {
-            tracing::error!(error = %e, "Failed to execute mime_type histogram query");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "Internal server error"})))
         })?
         .filter_map(|r| r.ok())
         .collect();
@@ -105,8 +86,12 @@ async fn get_stats(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{body::Body, http::Request};
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
     use http_body_util::BodyExt;
+    use serde_json::Value;
     use tower::ServiceExt;
 
     /// Build a test `StatsState` with an in-memory SQLite database and a fresh
