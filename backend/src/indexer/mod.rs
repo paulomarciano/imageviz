@@ -24,7 +24,7 @@ use r2d2::Pool;
 use crate::db::SqliteConnectionManager;
 use rusqlite::OptionalExtension;
 use rusqlite::{Connection, params};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use uuid::Uuid;
 
@@ -131,6 +131,10 @@ async fn run_index(
     // Build a list of (folder_id, file) pairs by looking up each file's
     // watched folder from the config.
     let mut remaining = resolve_folder_file_pairs(all_files, &fid_map);
+    // Snapshot what the scan found (ticket 8.18): the removal epilogue diffs
+    // DB rows against this set in memory instead of statting the disk once
+    // per row. Must be built before `remaining` is drained below.
+    let scanned = collect_scanned_files(&remaining);
     while !remaining.is_empty() {
         let chunk: Vec<FolderFileEntry> =
             remaining.drain(..BATCH_SIZE.min(remaining.len())).collect();
@@ -183,11 +187,11 @@ async fn run_index(
         }
     }
 
-    // Epilogue: remove DB entries for files no longer on disk.
+    // Epilogue: remove DB entries for files the scan did not find.
     // Runs with its own connection from the pool.
     {
         let conn = pool.get()?;
-        stats.deleted = remove_deleted_items(&conn, &config)?;
+        stats.deleted = remove_deleted_items(&conn, &scanned)?;
     }
 
     progress.set_status(progress::IndexStatus::Complete);
@@ -394,47 +398,80 @@ fn scan_all_folders(config: &AppConfig) -> Result<Vec<FileEntry>, IndexError> {
     Ok(all)
 }
 
-/// Remove items from DB that no longer exist on disk.
+/// Files the current scan found, keyed by watched-folder ID.
 ///
-/// Iterates over all items in the DB (with folder_id + relative_path) and
-/// checks whether the corresponding file still exists in its watched folder.
-/// Deleted items are removed to keep the database in sync with the filesystem.
-fn remove_deleted_items(conn: &Connection, config: &AppConfig) -> Result<usize, IndexError> {
-    let mut stmt = conn.prepare("SELECT folder_id, relative_path FROM media_items")?;
-    let db_items: Vec<(Option<String>, String)> =
-        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.filter_map(|r| r.ok()).collect();
+/// A nested map rather than a flat `(folder_id, relative_path)` pair set:
+/// folder IDs repeat across the whole scan but are stored once per folder,
+/// and `HashSet<String>::contains(&str)` keeps the DB-row diff clone-free.
+/// At 1M files this holds ~1M path strings (~100–150 MB worst case) — the
+/// ticket's accepted trade-off against re-statting the disk once per DB row.
+type ScannedFiles = HashMap<String, HashSet<String>>;
 
-    let fid_map = folder_id_map(config);
+/// Snapshot the scan results as [`ScannedFiles`] for the removal epilogue.
+///
+/// Only files whose path resolved to a watched folder appear — a DB row whose
+/// folder is absent from the snapshot is thereby treated as deleted, which is
+/// exactly the "folder no longer configured" semantics of the old
+/// disk-stat-based implementation.
+fn collect_scanned_files(pairs: &[FolderFileEntry]) -> ScannedFiles {
+    let mut scanned: ScannedFiles = HashMap::new();
+    for entry in pairs {
+        scanned
+            .entry(entry.folder_id.clone())
+            .or_default()
+            .insert(entry.file.relative_path.clone());
+    }
+    scanned
+}
 
+/// Remove DB rows for files the current scan did not find.
+///
+/// Pure diff — no disk access at all: the scanned-file set arrives prebuilt
+/// from [`collect_scanned_files`], so the function cannot repeat the old
+/// per-row `exists()` stat (review P8: one blocking stat per DB row, 1M at
+/// target scale, inside the async index run). One semantic edge versus the
+/// old raw `Path::exists()` check: a file the *walker* filters out (hidden
+/// paths) now counts as absent — `media_items` is meant to mirror the scan.
+///
+/// Semantics otherwise unchanged:
+/// - a row whose `(folder_id, relative_path)` is absent from the scan is
+///   deleted — this covers files removed from disk *and* rows whose watched
+///   folder is no longer configured;
+/// - legacy rows with NULL `folder_id` are always deleted: there is no
+///   folder key to match against the scan.
+///
+/// All deletes execute inside a single transaction; on any error the
+/// transaction is rolled back and nothing is removed.
+fn remove_deleted_items(conn: &Connection, scanned: &ScannedFiles) -> Result<usize, IndexError> {
+    let db_items: Vec<(Option<String>, String)> = {
+        let mut stmt = conn.prepare("SELECT folder_id, relative_path FROM media_items")?;
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.filter_map(|r| r.ok()).collect()
+    };
+
+    let tx = conn.unchecked_transaction()?;
     let mut removed = 0;
     for (db_folder_id, db_path) in &db_items {
-        // Check if this item's watched folder still has the file on disk
-        let exists = db_folder_id
+        let still_scanned = db_folder_id
             .as_ref()
-            .and_then(|fid| {
-                fid_map.iter().find_map(|(folder_path, folder_id)| {
-                    if folder_id == fid {
-                        let full_path = Path::new(folder_path).join(db_path);
-                        if full_path.exists() { Some(true) } else { None }
-                    } else {
-                        None
-                    }
-                })
-            })
-            .unwrap_or(false);
+            .is_some_and(|fid| scanned.get(fid).is_some_and(|paths| paths.contains(db_path)));
+        if still_scanned {
+            continue;
+        }
 
-        if !exists {
-            if let Some(fid) = db_folder_id {
-                conn.execute(
+        match db_folder_id {
+            Some(fid) => {
+                tx.execute(
                     "DELETE FROM media_items WHERE folder_id = ?1 AND relative_path = ?2",
                     params![fid.as_str(), db_path],
                 )?;
-            } else {
-                conn.execute("DELETE FROM media_items WHERE relative_path = ?1", params![db_path])?;
             }
-            removed += 1;
+            None => {
+                tx.execute("DELETE FROM media_items WHERE relative_path = ?1", params![db_path])?;
+            }
         }
+        removed += 1;
     }
+    tx.commit()?;
 
     Ok(removed)
 }

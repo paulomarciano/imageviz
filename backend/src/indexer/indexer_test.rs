@@ -723,6 +723,193 @@ async fn test_progress_converges_under_concurrency() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Removal epilogue — in-memory diff (ticket 8.18)
+// ---------------------------------------------------------------------------
+
+/// Insert a `media_items` row directly, bypassing the scan/hash pipeline.
+///
+/// Only NOT NULL columns are populated; everything else stays at its default.
+/// The referenced `watched_folders` row is upserted first (FK enforced).
+fn seed_media_item(conn: &Connection, folder_id: Option<&str>, relative_path: &str) {
+    if let Some(fid) = folder_id {
+        conn.execute(
+            "INSERT OR IGNORE INTO watched_folders (id, path, label) VALUES (?1, ?2, NULL)",
+            params![fid, format!("/{fid}")],
+        )
+        .unwrap();
+    }
+    conn.execute(
+        "INSERT INTO media_items
+            (id, filename, relative_path, mime_type, file_size,
+             file_created_at, file_modified_at, indexed_at, folder_id)
+         VALUES (?1, ?2, ?3, 'image/png', 1,
+                 '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z',
+                 '2026-01-01T00:00:00Z', ?4)",
+        params![Uuid::new_v4().to_string(), relative_path, relative_path, folder_id],
+    )
+    .unwrap();
+}
+
+/// All `(folder_id, relative_path)` rows, ordered by relative path — the
+/// surviving DB state after a removal run.
+fn fetch_folder_path_rows(conn: &Connection) -> Vec<(Option<String>, String)> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT folder_id, relative_path FROM media_items ORDER BY relative_path, folder_id",
+        )
+        .unwrap();
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(|r| r.unwrap()).collect()
+}
+
+/// Build a scan snapshot in the `folder → relative paths` form the epilogue
+/// diffs against.
+fn scanned_of(entries: &[(&str, &[&str])]) -> ScannedFiles {
+    entries
+        .iter()
+        .map(|(folder, paths)| {
+            ((*folder).to_string(), paths.iter().map(|p| (*p).to_string()).collect::<HashSet<_>>())
+        })
+        .collect()
+}
+
+#[test]
+fn test_remove_deleted_items_diffs_db_against_scanned_set() {
+    let pool = setup_pool();
+    let conn = pool.get().unwrap();
+    seed_media_item(&conn, Some("f1"), "A.png");
+    seed_media_item(&conn, Some("f1"), "B.png");
+    seed_media_item(&conn, Some("f1"), "C.png");
+
+    // The scan saw A and C on disk; B was deleted from the filesystem.
+    let scanned = scanned_of(&[("f1", &["A.png", "C.png"])]);
+
+    let removed = remove_deleted_items(&conn, &scanned).unwrap();
+
+    assert_eq!(removed, 1, "only B.png is absent from the scan");
+    assert_eq!(
+        fetch_folder_path_rows(&conn),
+        vec![
+            (Some("f1".to_string()), "A.png".to_string()),
+            (Some("f1".to_string()), "C.png".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn test_remove_deleted_items_empty_scanned_set_deletes_everything() {
+    let pool = setup_pool();
+    let conn = pool.get().unwrap();
+    seed_media_item(&conn, Some("f1"), "A.png");
+    seed_media_item(&conn, Some("f2"), "B.png");
+
+    let removed = remove_deleted_items(&conn, &ScannedFiles::new()).unwrap();
+
+    assert_eq!(removed, 2, "nothing on disk → nothing kept");
+    assert!(fetch_folder_path_rows(&conn).is_empty());
+}
+
+#[test]
+fn test_remove_deleted_items_empty_db_is_a_noop() {
+    let pool = setup_pool();
+    let conn = pool.get().unwrap();
+    let scanned = scanned_of(&[("f1", &["A.png"])]);
+
+    let removed = remove_deleted_items(&conn, &scanned).unwrap();
+
+    assert_eq!(removed, 0);
+    assert!(fetch_folder_path_rows(&conn).is_empty());
+}
+
+#[test]
+fn test_remove_deleted_items_same_path_in_two_folders_is_per_folder() {
+    let pool = setup_pool();
+    let conn = pool.get().unwrap();
+    seed_media_item(&conn, Some("f1"), "same.png");
+    seed_media_item(&conn, Some("f2"), "same.png");
+
+    // The scan still sees f1's copy; f2's was removed from disk.
+    let scanned = scanned_of(&[("f1", &["same.png"])]);
+
+    let removed = remove_deleted_items(&conn, &scanned).unwrap();
+
+    assert_eq!(removed, 1, "f2's copy is gone; f1's must survive");
+    assert_eq!(
+        fetch_folder_path_rows(&conn),
+        vec![(Some("f1".to_string()), "same.png".to_string())]
+    );
+}
+
+#[test]
+fn test_remove_deleted_items_drops_rows_of_unconfigured_folders() {
+    let pool = setup_pool();
+    let conn = pool.get().unwrap();
+    seed_media_item(&conn, Some("f_gone"), "x.png");
+    seed_media_item(&conn, Some("f1"), "y.png");
+
+    // f_gone is no longer watched, so the scan only contains f1.
+    let scanned = scanned_of(&[("f1", &["y.png"])]);
+
+    let removed = remove_deleted_items(&conn, &scanned).unwrap();
+
+    assert_eq!(removed, 1, "rows of de-configured folders have nothing to match");
+    assert_eq!(fetch_folder_path_rows(&conn), vec![(Some("f1".to_string()), "y.png".to_string())]);
+}
+
+#[test]
+fn test_remove_deleted_items_always_deletes_legacy_null_folder_rows() {
+    let pool = setup_pool();
+    let conn = pool.get().unwrap();
+    seed_media_item(&conn, None, "legacy.png");
+    seed_media_item(&conn, Some("f1"), "kept.png");
+
+    let scanned = scanned_of(&[("f1", &["kept.png"])]);
+
+    let removed = remove_deleted_items(&conn, &scanned).unwrap();
+
+    assert_eq!(removed, 1, "NULL folder_id rows are always removed (prior semantics)");
+    assert_eq!(
+        fetch_folder_path_rows(&conn),
+        vec![(Some("f1".to_string()), "kept.png".to_string())]
+    );
+}
+
+/// The deletes must share a single transaction: a mid-run failure (simulated
+/// by a `RAISE(ABORT)` trigger on the second target row) rolls back the first
+/// row's delete, leaving the DB exactly as it was.
+#[test]
+fn test_remove_deleted_items_deletes_run_in_one_transaction() {
+    let pool = setup_pool();
+    let conn = pool.get().unwrap();
+    seed_media_item(&conn, Some("f1"), "kept.png");
+    seed_media_item(&conn, Some("f1"), "first_to_go.png");
+    seed_media_item(&conn, Some("f1"), "abort_here.png");
+    conn.execute(
+        "CREATE TRIGGER abort_delete BEFORE DELETE ON media_items
+         WHEN OLD.relative_path = 'abort_here.png'
+         BEGIN
+             SELECT RAISE(ABORT, 'simulated delete failure');
+         END",
+        [],
+    )
+    .unwrap();
+
+    let scanned = scanned_of(&[("f1", &["kept.png"])]);
+
+    let result = remove_deleted_items(&conn, &scanned);
+
+    assert!(result.is_err(), "the aborted delete must propagate");
+    assert_eq!(
+        fetch_folder_path_rows(&conn),
+        vec![
+            (Some("f1".to_string()), "abort_here.png".to_string()),
+            (Some("f1".to_string()), "first_to_go.png".to_string()),
+            (Some("f1".to_string()), "kept.png".to_string()),
+        ],
+        "first_to_go.png's delete must have been rolled back with the transaction"
+    );
+}
+
 #[tokio::test]
 async fn test_process_chunk_concurrent_pairs_results_with_entries() {
     let dir = tempfile::Builder::new().prefix("imgviz_pair_").tempdir().unwrap();
