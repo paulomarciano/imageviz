@@ -1,8 +1,9 @@
 # ImageViz — Task Tickets
 
-> Generated from `documents/plans/development-plan.md`  
-> 78 tickets across 8 development waves  
-> Last updated: 2026-05-16
+> Waves 0–7 generated from `documents/plans/development-plan.md`  
+> Wave 8 generated from `documents/code-review-kiss-dry-performance-resources.md` (v0.7.0 audit)  
+> 108 tickets across 9 development waves  
+> Last updated: 2026-09-05
 
 ---
 
@@ -140,6 +141,69 @@
 
 ---
 
+## Wave 8 — Post-Audit: Performance, Resources & Hygiene (30 tickets, ~32–36h)
+
+> Source: `documents/code-review-kiss-dry-performance-resources.md` (v0.7.0 full-stack audit).  
+> Ticket numbers in "Covers" refer to the review's finding IDs. Phases follow the review's
+> Recommended Order of Work.
+
+### Phase 1 — Startup & Disk (biggest wins)
+
+| # | Ticket | Est. | Deps | Covers | Description |
+|---|--------|------|------|--------|-------------|
+| 8.1 | [Startup incremental index](./wave-8-01-startup-incremental-index.md) | 1.5h | — | P1a | Wire startup to the existing mtime+size incremental indexer (no full re-hash) |
+| 8.2 | [Parallel Phase-1 processing](./wave-8-02-parallel-phase1-processing.md) | 2h | 8.1 | P1b | `buffer_unordered(N)` file processing; `INDEX_CONCURRENCY` env |
+| 8.3 | [Remove /tmp thumbnail cache](./wave-8-03-remove-tmp-thumbnail-cache.md) | 1.5h | — | R2 | Generate directly into content-addressed cache; delete never-cleaned temp cache |
+
+### Phase 2 — Data Model
+
+| # | Ticket | Est. | Deps | Covers | Description |
+|---|--------|------|------|--------|-------------|
+| 8.4 | [Single watched-folder source](./wave-8-04-single-watched-folder-source.md) | 2h | — | K1, D1 | `watched_folders` table as only source of truth; delete JSON blob + fallbacks |
+| 8.5 | [.mov file detection](./wave-8-05-mov-file-detection.md) | 1h | — | P2 | ffprobe video path for `.mov`; extension/detection drift guard |
+
+### Phase 3 — Thumbnail Path
+
+| # | Ticket | Est. | Deps | Covers | Description |
+|---|--------|------|------|--------|-------------|
+| 8.6 | [Bound thumbnail lock map](./wave-8-06-bound-thumbnail-lock-map.md) | 1.5h | — | R1 | Checksum-keyed locks + weak-value eviction (was: unbounded DashMap) |
+| 8.7 | [Drop thumbnail_path column](./wave-8-07-drop-thumbnail-path-column.md) | 30m | — | R5 | Remove unread-column write per thumbnail request + migration |
+| 8.8 | [Remove inline eviction scan](./wave-8-08-remove-inline-eviction-scan.md) | 30m | 8.6 | R3 | Kill per-miss full-directory scan; timer covers eviction |
+| 8.9 | [Semaphore on cache miss only](./wave-8-09-semaphore-on-cache-miss.md) | 1h | 8.7, 8.8 | P5 | Cache hits bypass `THUMBNAIL_CONCURRENCY` limiter |
+
+### Phase 4 — Search & Frontend Correctness
+
+| # | Ticket | Est. | Deps | Covers | Description |
+|---|--------|------|------|--------|-------------|
+| 8.10 | [Single frontend data layer](./wave-8-10-single-frontend-data-layer.md) | 2h | — | D7 | Jotai atom for grid→detail data; kills duplicate hooks + nav-order drift |
+| 8.11 | [Tantivy MultiCollector](./wave-8-11-tantivy-multicollector.md) | 45m | — | P3 | One index traversal per search (count + top-docs) |
+| 8.12 | [Count cache by filter](./wave-8-12-count-cache-by-filter.md) | 1h | — | P4 | Per-mime-filter 30s count cache; no lock held across query |
+
+### Phase 5 — Hygiene Batch
+
+| # | Ticket | Est. | Deps | Covers | Description |
+|---|--------|------|------|--------|-------------|
+| 8.13 | [Consolidate indexer paths](./wave-8-13-consolidate-indexer-paths.md) | 1.5h | 8.1, 8.2 | D2 | One `run_index` core with skip closure; wrappers become thin |
+| 8.14 | [Tantivy index_rows core](./wave-8-14-tantivy-index-rows-core.md) | 1h | 8.13 | D3 | Shared Tantivy row indexing (or delete dead incremental path) |
+| 8.15 | [Shared metadata + timestamp utils](./wave-8-15-shared-metadata-timestamp-utils.md) | 45m | — | D4, D5 | One `metadata_to_json`; one ISO timestamp formatter |
+| 8.16 | [AppError + shared responses](./wave-8-16-app-error-shared-responses.md) | 2h | 8.11, 8.12, 8.17, 8.19 | D6 | `AppError` enum with `IntoResponse`; single `MediaItemSummary` |
+| 8.17 | [Media path single query](./wave-8-17-media-path-single-query.md) | 1.5h | 8.4 | P6 | One LEFT JOIN per request; `tokio::fs::try_exists` (no blocking `exists()`) |
+| 8.18 | [remove_deleted_items in-memory diff](./wave-8-18-remove-deleted-in-memory-diff.md) | 1h | 8.13 | P8 | HashSet diff + single transaction (was: 1M disk stats) |
+| 8.19 | [Stats single scan + SSE refresh](./wave-8-19-stats-single-scan-sse-refresh.md) | 1.5h | — | P7, R4 | 4 scans → 2; frontend driven by SSE, not 5s polling |
+| 8.20 | [Feature-gate dev tools](./wave-8-20-feature-gate-dev-tools.md) | 1h | — | K3 | `dev-tools` feature for tokio-console + pprof; clean release builds |
+| 8.21 | [Backend KISS & dead-code sweep](./wave-8-21-backend-kiss-dead-code-sweep.md) | 1.5h | 8.13 | K2, K4, K5, K6 | `Mutex<IndexWriter>`, drop `unsafe impl`s, fix in-memory pool, dead code |
+| 8.22 | [Backend minor simplifications](./wave-8-22-backend-minor-simplifications.md) | 1h | 8.4, 8.12, 8.16 | K7 | `params_from_iter` SQL builder, single config write, explicit tokio features |
+| 8.23 | [Frontend DRY cleanup](./wave-8-23-frontend-dry-cleanup.md) | 1.5h | 8.10, 8.19 | D8, K6, K7 | Shared `formatFileSize`, `useEscape`, typed `put<T>()`, dead `onmessage` |
+| 8.24 | [Quiet release: logging + runtime](./wave-8-24-quiet-release-logging-runtime.md) | 30m | 8.20 | R6, R7 | One log line per request; default worker threads (no hard-coded 4) |
+| 8.25 | [Watcher batch config load](./wave-8-25-watcher-batch-config-load.md) | 30m | 8.4 | R8 | One watched-folder load per event batch (was: per deletion event) |
+| 8.26 | [Restrict CORS origins](./wave-8-26-restrict-cors-origins.md) | 30m | 8.20 | R9 | Allowlist `localhost:5173` via env (was: `CorsLayer::permissive()`) |
+| 8.27 | [Thumbnail decode memory](./wave-8-27-thumbnail-decode-memory.md) | 45m | 8.3 | R10 | Single-pass downscale via `ImageReader` + `thumbnail()` |
+| 8.28 | [Wave 8 verification & release](./wave-8-28-wave8-verification.md) | 45m | 8.1–8.27 | all | Full checklist, finding audit, docs, v0.8.0 |
+| 8.29 | [Serialize index runs vs config updates](./wave-8-29-concurrent-index-folder-resurrection.md) | 1h | 8.4 | W-2 | Folder resurrection race: index runs read the table, runs serialized |
+| 8.30 | [Count-cache hygiene](./wave-8-30-count-cache-hygiene.md) | 1h | 8.12 | M2, M3 | Validate mime filter (≤ 100 chars); failed COUNT is not cached |
+
+---
+
 ## Estimates Summary
 
 | Wave | Name | Tickets | Est. Range |
@@ -152,7 +216,8 @@
 | 5 | Frontend: Search + Detail + Drag | 9 | 12–16h |
 | 6 | Frontend: SSE + Config + Polish | 11 | 10–14h |
 | 7 | Production Hardening | 12 | 12–14h |
-| **Total** | | **78** | **78–104h** |
+| 8 | Post-Audit: Performance, Resources & Hygiene | 30 | 32–36h |
+| **Total** | | **108** | **110–140h** |
 
 ---
 
