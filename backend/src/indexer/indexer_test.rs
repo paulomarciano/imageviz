@@ -874,9 +874,33 @@ fn test_remove_deleted_items_always_deletes_legacy_null_folder_rows() {
     );
 }
 
+/// A legacy NULL-`folder_id` row whose relative path collides with a live,
+/// still-scanned row in a configured folder: only the NULL row may go.
+#[test]
+fn test_remove_deleted_items_null_folder_row_spares_live_same_path_row() {
+    let pool = setup_pool();
+    let conn = pool.get().unwrap();
+    seed_media_item(&conn, None, "dup.png");
+    seed_media_item(&conn, Some("f1"), "dup.png");
+
+    // f1's copy is still on disk.
+    let scanned = scanned_of(&[("f1", &["dup.png"])]);
+
+    let removed = remove_deleted_items(&conn, &scanned).unwrap();
+
+    assert_eq!(removed, 1, "only the legacy NULL-folder row is stale");
+    assert_eq!(
+        fetch_folder_path_rows(&conn),
+        vec![(Some("f1".to_string()), "dup.png".to_string())]
+    );
+}
+
 /// The deletes must share a single transaction: a mid-run failure (simulated
 /// by a `RAISE(ABORT)` trigger on the second target row) rolls back the first
 /// row's delete, leaving the DB exactly as it was.
+///
+/// Delete order follows rowid (insertion) order, so `first_to_go.png` is
+/// attempted before `abort_here.png` — the rollback proof depends on it.
 #[test]
 fn test_remove_deleted_items_deletes_run_in_one_transaction() {
     let pool = setup_pool();

@@ -188,7 +188,10 @@ async fn run_index(
     }
 
     // Epilogue: remove DB entries for files the scan did not find.
-    // Runs with its own connection from the pool.
+    // Runs with its own connection from the pool. The Phase-1 skip-check rows
+    // are dead weight from here on — release them before the epilogue
+    // allocates its diff structures.
+    drop(stored);
     {
         let conn = pool.get()?;
         stats.deleted = remove_deleted_items(&conn, &scanned)?;
@@ -438,42 +441,39 @@ fn collect_scanned_files(pairs: &[FolderFileEntry]) -> ScannedFiles {
 ///   deleted — this covers files removed from disk *and* rows whose watched
 ///   folder is no longer configured;
 /// - legacy rows with NULL `folder_id` are always deleted: there is no
-///   folder key to match against the scan.
+///   folder key to match against the scan. Deletion is per-rowid, so a live
+///   row sharing the same relative path in a configured folder is untouched.
 ///
 /// All deletes execute inside a single transaction; on any error the
 /// transaction is rolled back and nothing is removed.
 fn remove_deleted_items(conn: &Connection, scanned: &ScannedFiles) -> Result<usize, IndexError> {
-    let db_items: Vec<(Option<String>, String)> = {
-        let mut stmt = conn.prepare("SELECT folder_id, relative_path FROM media_items")?;
-        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.filter_map(|r| r.ok()).collect()
+    // Rowids of rows absent from the scan. Collecting rowids first (instead
+    // of issuing DELETEs while stepping the SELECT) avoids SQLite's undefined
+    // row-visit semantics when the scanned table is modified mid-scan, keeps
+    // the returned count exact, and bounds peak memory to 8 bytes per stale
+    // row rather than a second full (folder_id, path) copy at 1M rows.
+    let stale_rowids: Vec<i64> = {
+        let mut stmt = conn.prepare("SELECT rowid, folder_id, relative_path FROM media_items")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, String>(2)?))
+        })?;
+        rows.filter_map(|row| {
+            let (rowid, folder_id, path) = row.ok()?;
+            let kept = folder_id
+                .as_ref()
+                .is_some_and(|fid| scanned.get(fid).is_some_and(|paths| paths.contains(&path)));
+            (!kept).then_some(rowid)
+        })
+        .collect()
     };
 
     let tx = conn.unchecked_transaction()?;
-    let mut removed = 0;
-    for (db_folder_id, db_path) in &db_items {
-        let still_scanned = db_folder_id
-            .as_ref()
-            .is_some_and(|fid| scanned.get(fid).is_some_and(|paths| paths.contains(db_path)));
-        if still_scanned {
-            continue;
-        }
-
-        match db_folder_id {
-            Some(fid) => {
-                tx.execute(
-                    "DELETE FROM media_items WHERE folder_id = ?1 AND relative_path = ?2",
-                    params![fid.as_str(), db_path],
-                )?;
-            }
-            None => {
-                tx.execute("DELETE FROM media_items WHERE relative_path = ?1", params![db_path])?;
-            }
-        }
-        removed += 1;
+    for rowid in &stale_rowids {
+        tx.execute("DELETE FROM media_items WHERE rowid = ?1", params![rowid])?;
     }
     tx.commit()?;
 
-    Ok(removed)
+    Ok(stale_rowids.len())
 }
 
 // ---------------------------------------------------------------------------
