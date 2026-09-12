@@ -6,7 +6,6 @@
 
 use r2d2::{ManageConnection, Pool};
 use rusqlite::Connection;
-use std::marker::{Send, Sync};
 use std::path::Path;
 use std::time::Duration;
 
@@ -72,11 +71,6 @@ impl ManageConnection for SqliteConnectionManager {
     }
 }
 
-// Safety: `SqliteConnectionManager` contains only an `Option<PathBuf>` and a `bool`,
-// both of which are `Send + Sync`.
-unsafe impl Send for SqliteConnectionManager {}
-unsafe impl Sync for SqliteConnectionManager {}
-
 /// Create a connection pool for a file-based SQLite database.
 ///
 /// Each connection is initialised with WAL mode, foreign keys, and a busy
@@ -92,10 +86,16 @@ pub fn create_pool(path: &Path) -> Result<Pool<SqliteConnectionManager>, r2d2::E
 
 /// Create an in-memory connection pool for testing.
 ///
-/// Max 3 connections — enough for concurrent test helpers without
-/// being wasteful.
+/// Capped at **one** connection: every `sqlite::memory:` connection is a
+/// separate, empty database, so a multi-connection pool would hand each
+/// caller a different database. A single connection makes every pooled
+/// handle observe the same data.
 pub fn create_in_memory_pool() -> Pool<SqliteConnectionManager> {
     let manager = SqliteConnectionManager::memory();
 
-    Pool::builder().max_size(3).build(manager).expect("in-memory pool")
+    Pool::builder().max_size(1).build(manager).expect("in-memory pool")
 }
+
+#[cfg(test)]
+#[path = "pool_test.rs"]
+mod tests;

@@ -17,7 +17,7 @@ use super::MediaState;
 
 /// Full media item response for the detail view.
 #[derive(Serialize)]
-struct MediaItemDetail {
+pub(super) struct MediaItemDetail {
     id: String,
     filename: String,
     path: String,
@@ -36,7 +36,7 @@ struct MediaItemDetail {
 pub(super) async fn get_media_item(
     State(state): State<Arc<MediaState>>,
     Path(id): Path<String>,
-) -> Result<Json<Value>, AppError> {
+) -> Result<Json<MediaItemDetail>, AppError> {
     validation::validate_media_id(&id)?;
 
     let conn = state.db.get()?;
@@ -71,7 +71,7 @@ pub(super) async fn get_media_item(
             other => other.into(),
         })?;
 
-    Ok(Json(json!(row)))
+    Ok(Json(row))
 }
 
 /// GET /api/v1/media/{id}/metadata — return the structured metadata for an item.

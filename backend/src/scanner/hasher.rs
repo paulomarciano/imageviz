@@ -36,14 +36,6 @@ fn compute_file_hash_sync(path: &Path) -> Result<String, HashError> {
     Ok(hex::encode(hash))
 }
 
-/// Compute SHA-256 hash synchronously (for use in blocking contexts).
-///
-/// Useful when already in a blocking context (e.g., inside another
-/// `spawn_blocking` or during startup).
-pub fn compute_file_hash_blocking(path: &Path) -> Result<String, HashError> {
-    compute_file_hash_sync(path)
-}
-
 #[derive(Debug)]
 pub enum HashError {
     /// Wraps standard I/O errors (file not found, permission denied, etc.)

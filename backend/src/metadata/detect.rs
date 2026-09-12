@@ -1,4 +1,3 @@
-use crate::metadata::png::{Metadata, parse_png_metadata};
 use crate::metadata::video::parse_video_metadata;
 use serde::Serialize;
 use std::path::Path;
@@ -83,11 +82,6 @@ fn detect_image_dimensions(path: &Path) -> Result<(Option<u32>, Option<u32>), De
 
     let dimensions = reader.into_dimensions().map_err(DetectionError::Image)?;
     Ok((Some(dimensions.0), Some(dimensions.1)))
-}
-
-/// Extract all metadata from a PNG file (both dimensions and text chunks).
-pub fn extract_png_metadata(path: &Path) -> Result<Metadata, crate::metadata::png::PngParseError> {
-    parse_png_metadata(path)
 }
 
 #[derive(Debug)]

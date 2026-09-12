@@ -72,20 +72,3 @@ async fn test_hash_nonexistent_file() {
         _ => panic!("Expected HashError::Io for nonexistent file"),
     }
 }
-
-#[tokio::test]
-async fn test_blocking_api() {
-    // Arrange
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("test.txt");
-    let mut f = std::fs::File::create(&path).unwrap();
-    f.write_all(b"test data").unwrap();
-    drop(f);
-
-    // Act
-    let hash = compute_file_hash_blocking(&path).unwrap();
-
-    // Assert
-    assert!(!hash.is_empty());
-    assert_eq!(hash.len(), 64); // SHA-256 hex = 64 chars
-}
