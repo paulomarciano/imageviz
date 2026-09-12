@@ -17,8 +17,9 @@ fn in_memory_pool_connections_share_one_database() {
         conn.execute_batch("CREATE TABLE t (v TEXT); INSERT INTO t VALUES ('x');").unwrap();
     }
 
-    // A different pooled handle must observe the same data. This only holds
-    // if every handle is backed by the same underlying connection.
+    // Sanity check that handles draw from one shared database (under the old
+    // max_size(3) this was nondeterministic — r2d2 usually hands back the
+    // recently-returned connection, masking the bug).
     {
         let conn = pool.get().unwrap();
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM t", [], |row| row.get(0)).unwrap();
