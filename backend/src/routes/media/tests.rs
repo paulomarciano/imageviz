@@ -889,14 +889,17 @@ async fn test_media_list_mime_type_filter() {
 /// Filter + cursor + limit exercised together (wave-8-22): the WHERE clause
 /// built by the list route carries all three parameter kinds at once — this is
 /// the combination most likely to break in a SQL-builder rewrite. Videos are
-/// seeded *between* image timestamps so a dropped or reordered parameter would
-/// surface as duplicates, videos leaking through, or lost items.
+/// interleaved *inside* the image timestamp range (not merely newer than all
+/// of them) so that dropping the mime filter on any continuation page leaks
+/// videos past the cursor and fails the per-page mime assertion; a global
+/// filter drop is caught on page 1 the same way.
 #[tokio::test]
 async fn test_media_list_mime_filter_with_cursor_and_limit() {
     let (state, _cache_dir) = test_state();
-    // 30 images at :29..:00 and 10 videos at :59..:50 — a filter-less walk
-    // interleaves them, so every page must re-apply the mime filter. Ids are
-    // UUIDs (cursor_id round-trips through validation on page 2+).
+    // 30 images at :29..:00 and 10 videos woven between them at
+    // :28,:25,:22,…,:01 — every continuation-page window has videos beyond
+    // the cursor. Ids are UUIDs (cursor_id round-trips through validation on
+    // page 2+); same-second collisions with images are fine (id tiebreaker).
     for i in 0..30u32 {
         let date_str = format!("2025-06-15T14:{:02}:00", 29 - i);
         seed_media_item_full(
@@ -914,7 +917,7 @@ async fn test_media_list_mime_filter_with_cursor_and_limit() {
         .await;
     }
     for i in 0..10u32 {
-        let date_str = format!("2025-06-15T14:{:02}:00", 59 - i);
+        let date_str = format!("2025-06-15T14:{:02}:00", 28 - 3 * i);
         seed_media_item_full(
             &state,
             &format!("00000000-0000-4000-9000-{i:012}"),
@@ -937,8 +940,12 @@ async fn test_media_list_mime_filter_with_cursor_and_limit() {
     let mut cursor = String::new();
     let mut cursor_id = String::new();
     let mut has_more = true;
+    let mut pages = 0;
 
     while has_more {
+        pages += 1;
+        assert!(pages <= 5, "paging must terminate: got past page 5");
+
         // `%` must be percent-encoded (`%25`) when followed by more params.
         let uri = if seen_ids.is_empty() {
             "/media?limit=10&mime_type=image/%25".to_string()
@@ -955,6 +962,8 @@ async fn test_media_list_mime_filter_with_cursor_and_limit() {
         let body: Value =
             serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
                 .unwrap();
+
+        assert_eq!(body["meta"]["total"], 30, "filtered total must hold on every page");
 
         let data = body["data"].as_array().unwrap();
         assert_eq!(data.len(), 10, "each page must return exactly `limit` items");
@@ -973,6 +982,7 @@ async fn test_media_list_mime_filter_with_cursor_and_limit() {
         }
     }
 
+    assert_eq!(pages, 3, "30 images at limit 10 must take exactly 3 pages");
     assert_eq!(seen_ids.len(), 30, "paging must collect exactly the filtered images");
 }
 
