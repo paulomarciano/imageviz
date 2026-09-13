@@ -9,7 +9,6 @@ use r2d2::Pool;
 use imageviz_backend::db::SqliteConnectionManager;
 use std::sync::Arc;
 use tower::ServiceExt;
-use tower_http::cors::CorsLayer;
 
 use imageviz_backend::routes::media::{MediaState, routes};
 
@@ -54,7 +53,7 @@ fn create_media_test_app_with_permits(
 
     let app = imageviz_backend::health_router()
         .nest("/api/v1", routes().with_state(Arc::clone(&media_state)))
-        .layer(CorsLayer::permissive());
+        .layer(imageviz_backend::middleware::cors::cors_layer_from_env());
 
     (app, media_state, cache_dir)
 }

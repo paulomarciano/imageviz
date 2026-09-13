@@ -34,6 +34,7 @@ Frontend package manager is **npm**. Path alias `@/` → `./src/`.
 | `THUMBNAIL_CACHE_MAX_MB` | `2000` | Max cache size (0 = unlimited) |
 | `INDEX_CONCURRENCY` | CPU cores capped at `8` | Max concurrent Phase-1 indexing files (hash/ffprobe) |
 | `MIN_FREE_DISK_MB` | `500` | Min free disk before aggressive eviction |
+| `CORS_ALLOW_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Comma-separated CORS origin allowlist (`backend/src/middleware/cors.rs`) |
 | `IMAGEVIZ_DB_PATH` | `{data_dir}/imageviz.db` | SQLite database location |
 | `IMAGEVIZ_CACHE_DIR` | `{data_dir}/thumbnails` | Thumbnail cache location |
 | `IMAGEVIZ_TANTIVY_DIR` | `{data_dir}/tantivy` | Tantivy index directory |

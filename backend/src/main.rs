@@ -8,7 +8,6 @@ use console_subscriber::ConsoleLayer;
 use tokio::signal;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
-use tower_http::cors::CorsLayer;
 use tracing_subscriber::{layer::SubscriberExt, prelude::*};
 
 use r2d2::Pool;
@@ -17,6 +16,7 @@ use imageviz_backend::db::SqliteConnectionManager;
 
 use imageviz_backend::config::AppConfig;
 use imageviz_backend::indexer::progress::ProgressTracker;
+use imageviz_backend::middleware::cors::cors_layer_from_env;
 use imageviz_backend::middleware::logging::logging_layer;
 use imageviz_backend::middleware::security::apply_security_headers;
 use imageviz_backend::middleware::timeout;
@@ -228,7 +228,10 @@ async fn main() {
     #[cfg(feature = "dev-tools")]
     let app = app.nest("/debug/pprof", ProfilerState::new().router());
 
-    let app = app.layer(logging_layer()).layer(CorsLayer::permissive());
+    // CORS is allow-listed to the Vite dev origin: the frontend is same-origin
+    // in production and proxied by Vite in dev, so nothing else may read the
+    // API cross-origin (wave 8.26, review §4 R9).
+    let app = app.layer(logging_layer()).layer(cors_layer_from_env());
 
     // Security headers are the outermost layer so they appear on every
     // response, including those from inner middleware (timeout, CORS,

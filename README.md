@@ -119,6 +119,7 @@ When files are added, deleted, or modified in watched folders, the grid updates 
 | `THUMBNAIL_CONCURRENCY` | `4` | Max concurrent thumbnail generations |
 | `THUMBNAIL_CACHE_MAX_MB` | `2000` | Max thumbnail cache size in MB (0 = unlimited) |
 | `MIN_FREE_DISK_MB` | `500` | Minimum free disk space before aggressive eviction |
+| `CORS_ALLOW_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Comma-separated CORS origin allowlist |
 
 Where `{data_dir}` = `$XDG_DATA_HOME/imageviz` (Linux), `~/Library/Application Support/imageviz` (macOS), or `./data` (fallback).
 

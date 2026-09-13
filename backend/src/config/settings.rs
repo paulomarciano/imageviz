@@ -31,6 +31,31 @@ impl Settings {
     }
 }
 
+/// Default CORS origin allowlist — the Vite dev server (overridable via
+/// `CORS_ALLOW_ORIGINS`).
+pub const DEFAULT_CORS_ORIGINS: &[&str] = &["http://localhost:5173", "http://127.0.0.1:5173"];
+
+/// Parse a comma-separated origin list, trimming whitespace and dropping
+/// empty entries.
+pub fn parse_cors_origins(raw: &str) -> Vec<String> {
+    raw.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect()
+}
+
+/// Resolve the origin allowlist from a raw `CORS_ALLOW_ORIGINS` value,
+/// falling back to [`DEFAULT_CORS_ORIGINS`] when unset, empty, or
+/// whitespace-only.
+pub fn cors_origins_from_raw(raw: Option<&str>) -> Vec<String> {
+    match raw {
+        Some(raw) if !raw.trim().is_empty() => parse_cors_origins(raw),
+        _ => DEFAULT_CORS_ORIGINS.iter().map(|s| (*s).to_string()).collect(),
+    }
+}
+
+/// Allowed CORS origins from `CORS_ALLOW_ORIGINS` (comma-separated).
+pub fn cors_allow_origins() -> Vec<String> {
+    cors_origins_from_raw(std::env::var("CORS_ALLOW_ORIGINS").ok().as_deref())
+}
+
 /// Get the platform-appropriate data directory for ImageViz.
 ///
 /// Order of precedence:
@@ -88,5 +113,28 @@ mod tests {
         // but verify the parser doesn't crash with missing env vars
         let settings = Settings::from_env();
         assert!(settings.port >= 1024 || settings.port == 3001);
+    }
+
+    #[test]
+    fn test_parse_cors_origins_trims_and_skips_empty() {
+        assert_eq!(
+            parse_cors_origins(" http://a.example , http://b.example ,,"),
+            vec!["http://a.example".to_string(), "http://b.example".to_string()]
+        );
+        assert!(parse_cors_origins("").is_empty());
+        assert!(parse_cors_origins("  ,  ").is_empty());
+    }
+
+    #[test]
+    fn test_cors_origins_from_raw_env_semantics() {
+        // Pure function — no env mutation required.
+        assert_eq!(
+            cors_origins_from_raw(Some("http://dev.example:8080")),
+            vec!["http://dev.example:8080".to_string()],
+            "override must be honored"
+        );
+        let defaults = DEFAULT_CORS_ORIGINS.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(cors_origins_from_raw(None), defaults, "unset env uses defaults");
+        assert_eq!(cors_origins_from_raw(Some("  ")), defaults, "empty override uses defaults");
     }
 }
