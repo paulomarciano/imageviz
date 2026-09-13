@@ -5,7 +5,7 @@
 //! and cached to disk using a content-addressed scheme.
 //!
 //! # Sub-modules
-//! - `image` — Image thumbnail resampling via Lanczos3 + WebP encoding
+//! - `image` — Image thumbnail single-pass downscale + WebP encoding
 //! - `video` — Video keyframe extraction via ffmpeg sidecar (task 2.2)
 //! - `cache` — Content-addressed on-disk cache (task 2.3)
 
@@ -37,6 +37,17 @@ pub enum ThumbnailError {
     },
     /// The source file does not exist at the given path
     SourceNotFound(PathBuf),
+    /// The source image exceeds the maximum decodable side length (see
+    /// [`image::MAX_DECODE_SIDE_PX`]); rejected before decode to avoid an
+    /// unbounded allocation on the thumbnail path
+    SourceTooLarge {
+        /// Actual image width in pixels
+        width: u32,
+        /// Actual image height in pixels
+        height: u32,
+        /// Maximum supported side length in pixels
+        max_side: u32,
+    },
     /// Generic encoding/writing failure
     Encode(String),
 }
@@ -51,6 +62,12 @@ impl std::fmt::Display for ThumbnailError {
             }
             ThumbnailError::SourceNotFound(path) => {
                 write!(f, "Source not found: {}", path.display())
+            }
+            ThumbnailError::SourceTooLarge { width, height, max_side } => {
+                write!(
+                    f,
+                    "Source image {width}x{height} exceeds maximum decodable side of {max_side}px"
+                )
             }
             ThumbnailError::Encode(msg) => write!(f, "Encoding error: {msg}"),
         }

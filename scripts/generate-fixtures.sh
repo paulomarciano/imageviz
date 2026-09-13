@@ -82,6 +82,13 @@ create_png('$FIXTURES_DIR/sample_no_metadata.png', 1, 1)
 " 2>/dev/null || echo "    WARNING: could not create PNG — Python3 unavailable"
 }
 
+echo "==> Generating sample_large_01.png (testsrc2 frame, 6000x4000)"
+# Large source for thumbnail decode-memory tests (wave-8-27): exercises the
+# single-pass downscale path on a 24-megapixel image.
+ffmpeg -y -f lavfi -i "testsrc2=s=6000x4000:d=1" -vframes 1 \
+    "$FIXTURES_DIR/sample_large_01.png" 2>/dev/null \
+    || echo "    WARNING: could not create large PNG — ffmpeg unavailable"
+
 echo "==> Regenerating sample metadata PNGs (with tEXt chunks)"
 # Generate PNGs with embedded prompt/workflow metadata using the project's
 # own PNG encoder via a minimal Rust program.

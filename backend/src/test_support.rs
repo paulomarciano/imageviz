@@ -36,3 +36,11 @@ pub fn project_root() -> &'static Path {
 pub fn fixture_path(name: &str) -> PathBuf {
     project_root().join("test-fixtures").join(name)
 }
+
+/// Return the absolute path to a file in `backend/src/thumbnails/testdata/`.
+///
+/// Unlike `fixture_path`, files here are committed to the repository (small
+/// deterministic golden outputs used for regression/equivalence tests).
+pub fn testdata_path(name: &str) -> PathBuf {
+    project_root().join("backend/src/thumbnails/testdata").join(name)
+}
