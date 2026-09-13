@@ -8,6 +8,9 @@
 //! The app mirrors `main.rs` assembly: `health_router()` + the env-configured
 //! CORS layer. Preflights are answered by the CORS layer before routing, so
 //! no route/state setup is required beyond the health endpoint.
+//!
+//! Note: these tests read the ambient `CORS_ALLOW_ORIGINS` environment
+//! variable — unset it for deterministic runs.
 
 use axum::{
     Router,

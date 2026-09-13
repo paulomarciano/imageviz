@@ -3,8 +3,13 @@
 //! The API is same-origin in production and proxied by the Vite dev server
 //! during development, so cross-origin access is only expected from Vite.
 //! `CorsLayer::permissive()` used to let any website the user visits read the
-//! local API (enumerate the library, trigger thumbnail generation); origins
-//! are now allow-listed instead.
+//! local API (enumerate the library); origins are now allow-listed instead.
+//! CORS governs readability of responses — foreign sites can still send
+//! blind simple requests, but cannot read the results.
+//!
+//! Matching is exact: each request `Origin` is compared byte-for-byte against
+//! the allowlist, so wildcard (`*`) and pattern entries (`*.example.com`)
+//! would never match and are rejected/skipped rather than granted.
 //!
 //! # Env-var configuration
 //!
@@ -35,12 +40,21 @@ pub fn cors_layer(origins: Vec<HeaderValue>) -> CorsLayer {
 pub fn cors_layer_from_origins(origins: Vec<String>) -> CorsLayer {
     let values: Vec<HeaderValue> = origins
         .into_iter()
-        .filter_map(|origin| match HeaderValue::from_str(&origin) {
-            Ok(value) => Some(value),
-            Err(e) => {
-                tracing::warn!(origin = %origin, error = %e, "Ignoring invalid CORS_ALLOW_ORIGINS entry");
+        .filter_map(|origin| match origin.as_str() {
+            // `*` parses as a HeaderValue but `AllowOrigin::list` panics on a
+            // wildcard entry — treat it like an invalid value (warn + skip)
+            // instead of crashing at startup.
+            "*" => {
+                tracing::warn!("CORS_ALLOW_ORIGINS entry \"*\" is unsupported; list explicit origins");
                 None
             }
+            _ => match HeaderValue::from_str(&origin) {
+                Ok(value) => Some(value),
+                Err(e) => {
+                    tracing::warn!(origin = %origin, error = %e, "Ignoring invalid CORS_ALLOW_ORIGINS entry");
+                    None
+                }
+            },
         })
         .collect();
     cors_layer(values)

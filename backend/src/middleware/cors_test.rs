@@ -106,6 +106,43 @@ async fn invalid_origin_entries_are_skipped_not_fatal() {
 }
 
 #[tokio::test]
+async fn wildcard_origin_entry_is_skipped_not_fatal() {
+    // `*` parses as a valid HeaderValue, but `AllowOrigin::list` panics on a
+    // wildcard entry — the builder must skip it (with a warning) instead of
+    // crashing startup, and keep honoring the remaining valid entries.
+    let layer = layer_for(&["*", "http://good.example:8080"]);
+
+    let res = send(app_with(layer), get_request("http://good.example:8080")).await;
+    assert_eq!(
+        res.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN).expect("ACAO header"),
+        "http://good.example:8080",
+        "valid origins must be honored alongside a skipped wildcard entry"
+    );
+}
+
+#[tokio::test]
+async fn preflight_allowed_origin_succeeds_for_all_api_methods() {
+    // The API uses exactly GET/PUT/POST/DELETE (ticket AC3) — every one of
+    // them must be preflightable for an allowed origin. A preflight is always
+    // an OPTIONS request carrying `Access-Control-Request-Method`.
+    for method in ["GET", "PUT", "POST", "DELETE"] {
+        let req = Request::options("/ping")
+            .header(header::ORIGIN, ALLOWED)
+            .header(header::ACCESS_CONTROL_REQUEST_METHOD, method)
+            .body(Body::empty())
+            .unwrap();
+        let res = send(app_with(layer_for(&[ALLOWED])), req).await;
+
+        assert_eq!(res.status(), StatusCode::OK, "preflight for {method}");
+        let methods = res.headers().get(header::ACCESS_CONTROL_ALLOW_METHODS).expect("methods");
+        assert!(
+            methods.to_str().unwrap().contains(method),
+            "{method} must be listed in Access-Control-Allow-Methods"
+        );
+    }
+}
+
+#[tokio::test]
 async fn empty_allowlist_grants_nothing() {
     // Edge case: an allowlist with no valid entries denies every cross-origin
     // read (fail closed).
