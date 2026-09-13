@@ -186,7 +186,9 @@ describe('useSse', () => {
       es.triggerMessage({ some: 'payload' });
     });
 
-    // Assert — no crash, no synthesized event, no handler fired.
+    // Assert — the hook never wires onmessage (branch deleted), so the
+    // event is a no-op: no crash, no synthesized event, no handler fired.
+    expect(es.onmessage).toBeNull();
     expect(onEvent).not.toHaveBeenCalled();
   });
 

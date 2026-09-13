@@ -39,7 +39,7 @@ describe('api client', () => {
 
     it('requests the path under /api/v1 and decodes JSON', async () => {
       await expect(get<{ hello: string }>('/thing')).resolves.toEqual({ hello: 'world' });
-      expect(fetch).toHaveBeenCalledWith('http://localhost:3000/api/v1/thing', undefined);
+      expect(fetch).toHaveBeenCalledWith(`${window.location.origin}/api/v1/thing`, undefined);
     });
 
     it('appends defined query params and skips undefined ones', async () => {

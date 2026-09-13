@@ -7,8 +7,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { renderHook } from '@testing-library/react';
-import { fireEvent } from '@testing-library/react';
+import { renderHook, fireEvent } from '@testing-library/react';
 import { useEscape } from '../use-escape';
 
 describe('useEscape', () => {
