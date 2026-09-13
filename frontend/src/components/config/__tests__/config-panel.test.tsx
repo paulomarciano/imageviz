@@ -11,7 +11,7 @@
  * EventSource connections.
  */
 
-import { render, act, cleanup } from '@testing-library/react';
+import { render, act, cleanup, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { ReactNode } from 'react';
@@ -222,5 +222,44 @@ describe('ConfigPanel stats refresh', () => {
     expect(MockEventSource.instances).toHaveLength(2);
     expect(MockEventSource.instances[0]!.closed).toBe(true);
     expect(MockEventSource.instances[1]!.closed).toBe(true);
+  });
+});
+
+describe('ConfigPanel Escape key', () => {
+  beforeEach(() => {
+    mocks.get.mockClear();
+    mocks.get.mockImplementation((path: string) => {
+      if (path === '/config') {
+        return Promise.resolve({ watched_folders: [] });
+      }
+      return Promise.resolve(makeStats());
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  it('calls onClose exactly once when Escape is pressed', async () => {
+    // Arrange
+    const onClose = vi.fn();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ConfigPanel onClose={onClose} />
+      </QueryClientProvider>,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Act
+    fireEvent.keyDown(window, { key: 'Escape' });
+
+    // Assert
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

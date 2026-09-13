@@ -16,6 +16,7 @@ import { ImageViewer } from './image-viewer';
 import { VideoViewer } from './video-viewer';
 import { MetadataPanel } from './metadata-panel';
 import { useFocusTrap } from '@/hooks/use-focus-trap';
+import { useEscape } from '@/hooks/use-escape';
 
 interface DetailViewProps {
   readonly items: readonly MediaItem[];
@@ -53,13 +54,10 @@ export function DetailView({ items, currentIndex, onNavigate, onClose }: DetailV
     closeButtonRef.current?.focus();
   }, []);
 
-  // Keyboard navigation: ← → navigate, Escape closes.
+  // Keyboard navigation: ← → navigate (Escape-to-close via useEscape below).
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       switch (e.key) {
-        case 'Escape':
-          onClose();
-          break;
         case 'ArrowLeft':
           if (currentIndex > 0) onNavigate(currentIndex - 1);
           break;
@@ -71,7 +69,7 @@ export function DetailView({ items, currentIndex, onNavigate, onClose }: DetailV
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentIndex, items.length, onNavigate, onClose]);
+  }, [currentIndex, items.length, onNavigate]);
 
   // Lock body scroll while the modal is open.
   useEffect(() => {
@@ -81,8 +79,9 @@ export function DetailView({ items, currentIndex, onNavigate, onClose }: DetailV
     };
   }, []);
 
-  // Focus trap inside the modal.
+  // Focus trap inside the modal; Escape closes the view.
   useFocusTrap(overlayRef);
+  useEscape(onClose);
 
   // Guard: all hooks must be called before this point.
   if (!item) return null;

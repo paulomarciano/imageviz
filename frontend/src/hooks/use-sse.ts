@@ -58,24 +58,8 @@ export function useSse({ onEvent, onError, autoConnect = true }: UseSseOptions):
       reconnectAttemptRef.current = 0;
     };
 
-    es.onmessage = (event: MessageEvent) => {
-      try {
-        const data: Record<string, unknown> = JSON.parse(event.data);
-        if (data.event) {
-          onEvent(data as unknown as SseEvent);
-        } else {
-          // Broadcast messages from the server that carry no event type.
-          onEvent({
-            event: 'connected',
-            data: { timestamp: new Date().toISOString() },
-          } as SseEvent);
-        }
-      } catch {
-        // Some messages may not be JSON (e.g., keep-alive comments).
-      }
-    };
-
-    // Named event listeners for specific SSE event types.
+    // Named event listeners for specific SSE event types. The backend only
+    // ever sends named events, so unnamed 'message' events are not handled.
     const eventTypes = [
       'connected',
       'file_created',

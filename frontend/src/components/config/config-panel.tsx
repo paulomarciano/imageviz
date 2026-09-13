@@ -1,17 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { useFocusTrap } from '@/hooks/use-focus-trap';
+import { useEscape } from '@/hooks/use-escape';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { get } from '@/api/client';
+import { get, put } from '@/api/client';
 import type { AppConfig, WatchedFolder, IndexStats } from '@/types/api';
 import { CloseIcon, TrashIcon } from '@/components/shared/icons';
-
-/** Format bytes to human-readable string. */
-function formatBytes(bytes: number): string {
-  if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
-  if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
-  if (bytes >= 1_000) return `${(bytes / 1_000).toFixed(1)} KB`;
-  return `${bytes} B`;
-}
+import { formatFileSize } from '@/utils/format';
 
 async function fetchConfig(): Promise<AppConfig> {
   return get<AppConfig>('/config');
@@ -22,15 +16,7 @@ async function fetchStats(): Promise<IndexStats> {
 }
 
 async function saveConfig(config: AppConfig): Promise<AppConfig> {
-  const response = await fetch('/api/v1/config', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(config),
-  });
-  if (!response.ok) {
-    throw new Error(`Failed to save config: ${response.statusText}`);
-  }
-  return response.json() as Promise<AppConfig>;
+  return put<AppConfig>('/config', config);
 }
 
 /**
@@ -61,15 +47,7 @@ export function ConfigPanel({ onClose }: ConfigPanelProps) {
   const [error, setError] = useState<string | null>(null);
 
   useFocusTrap(panelRef);
-
-  // Close panel on Escape key.
-  useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
-  }, [onClose]);
+  useEscape(onClose);
 
   // Fetch current config
   const configQuery = useQuery<AppConfig, Error>({
@@ -237,7 +215,9 @@ export function ConfigPanel({ onClose }: ConfigPanelProps) {
               </div>
               <div className="flex justify-between">
                 <span className="text-gray-400">Total size</span>
-                <span className="text-white">{formatBytes(statsQuery.data.total_file_size)}</span>
+                <span className="text-white">
+                  {formatFileSize(statsQuery.data.total_file_size)}
+                </span>
               </div>
               {Object.entries(statsQuery.data.by_mime_type).map(([type, count]) => (
                 <div key={type} className="flex justify-between">

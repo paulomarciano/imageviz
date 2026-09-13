@@ -1,5 +1,6 @@
-import { useEffect, useRef } from 'react';
+import { useRef } from 'react';
 import { useFocusTrap } from '../../hooks/use-focus-trap';
+import { useEscape } from '../../hooks/use-escape';
 import { CloseIcon } from './icons';
 
 interface Shortcut {
@@ -60,20 +61,7 @@ interface ShortcutsPanelProps {
 export function ShortcutsPanel({ isOpen, onClose }: ShortcutsPanelProps) {
   const panelRef = useRef<HTMLDivElement>(null);
 
-  // Close on Escape
-  useEffect(() => {
-    if (!isOpen) return;
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        onClose();
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onClose]);
-
+  useEscape(onClose, isOpen);
   useFocusTrap(panelRef, isOpen);
 
   if (!isOpen) return null;

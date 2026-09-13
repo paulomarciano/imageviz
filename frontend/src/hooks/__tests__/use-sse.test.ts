@@ -174,19 +174,35 @@ describe('useSse', () => {
     expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({ event: 'lagged' }));
   });
 
-  it('handles malformed JSON gracefully', () => {
+  it('ignores default-message events (backend only sends named events)', () => {
     // Arrange
     const onEvent = vi.fn();
     renderHook(() => useSse({ onEvent }));
     const es = MockEventSource.instances[0]!;
 
-    // Act — simulate onmessage with invalid JSON
+    // Act — an unnamed ('message') event, valid JSON but no event type.
+    // The backend never sends these; the hook must not synthesize anything.
+    act(() => {
+      es.triggerMessage({ some: 'payload' });
+    });
+
+    // Assert — no crash, no synthesized event, no handler fired.
+    expect(onEvent).not.toHaveBeenCalled();
+  });
+
+  it('does not crash on malformed default-message events', () => {
+    // Arrange
+    const onEvent = vi.fn();
+    renderHook(() => useSse({ onEvent }));
+    const es = MockEventSource.instances[0]!;
+
+    // Act — an unnamed event whose payload is not JSON.
     act(() => {
       const event = new MessageEvent('message', { data: 'not valid json' });
       es.onmessage?.(event);
     });
 
-    // Assert — no crash, no calls
+    // Assert — no crash, no calls.
     expect(onEvent).not.toHaveBeenCalled();
   });
 });
