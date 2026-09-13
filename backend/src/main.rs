@@ -33,7 +33,10 @@ use imageviz_backend::watcher::FileEvent;
 use imageviz_backend::watcher::FileWatcher;
 use imageviz_backend::watcher::handler::SseEvent;
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
+// Multi-threaded runtime with tokio's default worker count — the pool is
+// sized to `std::thread::available_parallelism()`, adapting to the machine
+// instead of pinning a fixed number of workers (wave 8.24 R7).
+#[tokio::main]
 async fn main() {
     // Register tokio-console subscriber before spawning any other tasks so
     // that every task spawned from this point on is instrumented.
