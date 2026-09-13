@@ -89,7 +89,7 @@ async fn test_thumbnail_aspect_ratio_preserved() {
     assert!(result.is_ok(), "thumbnail generation failed: {:?}", result.err());
     let thumb_path = result.unwrap();
 
-    // Assert: the image crate's resize (Lanczos3) preserves aspect ratio.
+    // Assert: the image crate's aspect-fit downscale preserves aspect ratio.
     // We verify this by checking that the output file has a reasonable size
     // for a 200px-wide WebP. We skip re-decoding the WebP because the
     // image crate v0.25 WebP decoder doesn't roundtrip all variants.
@@ -256,7 +256,9 @@ fn write_gradient_png(path: &Path, w: u32, h: u32) {
 #[tokio::test]
 async fn test_source_too_large_is_rejected() {
     // 9000×100 exceeds MAX_DECODE_SIDE_PX on the width side but is cheap to
-    // create — the rejection must happen at the header probe, before decode.
+    // create. This test pins the rejection and its structured fields; the
+    // "before decode" property is guaranteed by code inspection (the cap
+    // check precedes any decode call in `generate_thumbnail_sync`).
     let source_dir = tempdir().unwrap();
     let source = source_dir.path().join("wide.png");
     image::RgbaImage::new(9000, 100).save_with_format(&source, image::ImageFormat::Png).unwrap();
