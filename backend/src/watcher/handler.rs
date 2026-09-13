@@ -37,6 +37,29 @@ use uuid::Uuid;
 // Types
 // ---------------------------------------------------------------------------
 
+// Test-only hook (R8 / wave-8-25): counts watched-folder config loads on the
+// current thread so the query-count tests can assert exactly one load per
+// event batch. `#[tokio::test]` uses a current-thread runtime and the counter
+// is only touched from `run_event_handler`, so every increment for a test
+// happens on that test's own thread — no locking, no cross-test interference.
+#[cfg(test)]
+thread_local! {
+    static CONFIG_LOAD_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Test-only: read and reset the thread-local config-load counter.
+#[cfg(test)]
+fn take_config_load_count() -> usize {
+    CONFIG_LOAD_COUNT.with(|c| c.replace(0))
+}
+
+/// Immutable per-batch snapshot of the watched-folder configuration:
+/// `(absolute folder path, folder id)` pairs.
+///
+/// Loaded once per event batch in [`run_event_handler`] and shared by
+/// reference through the stage pipeline (R8: avoid per-event config reloads).
+pub(crate) type WatchedFolderSnapshot = Arc<[(PathBuf, String)]>;
+
 /// An event to broadcast to SSE (Server-Sent Events) clients.
 ///
 /// The `event_type` field identifies the kind of event (e.g. `"file_created"`,
@@ -71,11 +94,17 @@ pub enum ChangeType {
 /// After processing all events in a batch, the Tantivy index is committed so
 /// new documents are immediately visible to search queries.
 ///
+/// The watched-folder configuration is loaded **once per batch** and shared
+/// with every event in it as an immutable snapshot (R8): folders change
+/// rarely, so a folder added mid-batch is picked up on the next batch.
+///
 /// # Errors
 ///
-/// Individual event errors are logged but do not crash the loop. Tantivy commit
-/// failures are also logged. The loop runs indefinitely until the `mpsc` channel
-/// is closed (i.e., the watcher is dropped).
+/// Individual event errors are logged but do not crash the loop. If the
+/// watched-folder snapshot cannot be loaded, the batch is skipped with an
+/// error log (no event in it can be resolved against folders). Tantivy commit
+/// failures are also logged. The loop runs indefinitely until the `mpsc`
+/// channel is closed (i.e., the watcher is dropped).
 pub async fn run_event_handler(
     mut file_events_rx: mpsc::Receiver<Vec<FileEvent>>,
     pool: Pool<SqliteConnectionManager>,
@@ -83,10 +112,22 @@ pub async fn run_event_handler(
     sse_tx: broadcast::Sender<SseEvent>,
 ) {
     while let Some(events) = file_events_rx.recv().await {
-        for event in &events {
-            if let Err(e) = handle_single_event(event, &pool, &index_manager, &sse_tx).await {
-                tracing::error!("Error handling event {:?}: {}", event.path(), e);
+        // R8: load the watched-folder config once per batch, not per event.
+        match load_watched_snapshot(&pool) {
+            Ok(watched) => {
+                for event in &events {
+                    if let Err(e) =
+                        handle_single_event(event, &pool, &index_manager, &sse_tx, &watched).await
+                    {
+                        tracing::error!("Error handling event {:?}: {}", event.path(), e);
+                    }
+                }
             }
+            Err(e) => tracing::error!(
+                "Failed to load watched folders for batch of {} events: {} — skipping batch",
+                events.len(),
+                e
+            ),
         }
         // Commit Tantivy after each batch so new documents are searchable.
         if let Err(e) = index_manager.commit() {
@@ -111,21 +152,22 @@ async fn handle_single_event(
     pool: &Pool<SqliteConnectionManager>,
     index_manager: &Arc<IndexManager>,
     sse_tx: &broadcast::Sender<SseEvent>,
+    watched: &WatchedFolderSnapshot,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     match event {
         FileEvent::Modified { path } | FileEvent::Created { path } => {
             if path.exists() {
-                handle_file_created_or_modified(path, pool, index_manager, sse_tx).await?;
+                handle_file_created_or_modified(path, pool, index_manager, sse_tx, watched).await?;
             } else {
                 tracing::debug!(
                     "Modified event for non-existent file — treating as delete: {}",
                     path.display()
                 );
-                handle_file_deleted(path, pool, index_manager, sse_tx).await?;
+                handle_file_deleted(path, pool, index_manager, sse_tx, watched).await?;
             }
         }
         FileEvent::Deleted { path } => {
-            handle_file_deleted(path, pool, index_manager, sse_tx).await?;
+            handle_file_deleted(path, pool, index_manager, sse_tx, watched).await?;
         }
     }
     Ok(())
@@ -142,6 +184,7 @@ async fn handle_file_created_or_modified(
     pool: &Pool<SqliteConnectionManager>,
     index_manager: &Arc<IndexManager>,
     sse_tx: &broadcast::Sender<SseEvent>,
+    watched: &WatchedFolderSnapshot,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
     // Phase 1: Extract file data from disk (async I/O, no DB lock held).
     let extracted = stages::extract::extract_file_data(path).await?;
@@ -149,11 +192,18 @@ async fn handle_file_created_or_modified(
     // Phase 2: Store in SQLite + Tantivy (blocking, spawned on a dedicated thread).
     let pool_clone = pool.clone();
     let im_clone = Arc::clone(index_manager);
+    let watched_clone = Arc::clone(watched);
     let path_buf = path.to_path_buf();
     let extracted_for_blocking = extracted.clone();
 
     let outcome = tokio::task::spawn_blocking(move || {
-        stages::store::store_media(&pool_clone, &im_clone, &extracted_for_blocking, &path_buf)
+        stages::store::store_media(
+            &pool_clone,
+            &im_clone,
+            &extracted_for_blocking,
+            &path_buf,
+            &watched_clone,
+        )
     })
     .await
     .map_err(|e| format!("Blocking task join error: {}", e))?
@@ -173,27 +223,25 @@ async fn handle_file_created_or_modified(
 
 /// Handle a file deletion.
 ///
-/// Looks up the file by relative path in SQLite, removes the row and the
+/// Resolves the file against the per-batch watched-folder snapshot (no DB
+/// access), looks it up by relative path in SQLite, removes the row and the
 /// corresponding Tantivy document, and broadcasts a `"file_deleted"` event.
 async fn handle_file_deleted(
     path: &Path,
     pool: &Pool<SqliteConnectionManager>,
     index_manager: &Arc<IndexManager>,
     sse_tx: &broadcast::Sender<SseEvent>,
+    watched: &WatchedFolderSnapshot,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync + 'static>> {
-    // Resolve relative path and folder_id.
-    let (relative_path, folder_id) = {
-        let conn = pool.get()?;
-        let watched = load_watched_folders(&conn)?;
-        match resolve_relative_path(path, &watched) {
-            Some(result) => result,
-            None => {
-                tracing::warn!(
-                    "Deleted file {} is not inside any watched folder — ignoring",
-                    path.display()
-                );
-                return Ok(());
-            }
+    // Resolve relative path and folder_id from the per-batch snapshot.
+    let (relative_path, folder_id) = match resolve_relative_path(path, watched) {
+        Some(result) => result,
+        None => {
+            tracing::warn!(
+                "Deleted file {} is not inside any watched folder — ignoring",
+                path.display()
+            );
+            return Ok(());
         }
     };
 
@@ -257,6 +305,21 @@ async fn handle_file_deleted(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Load the watched-folder configuration once per event batch.
+///
+/// Opens one pooled connection, reads the `watched_folders` table via
+/// [`load_watched_folders`], and returns an immutable snapshot that is cheap
+/// to clone into the blocking stage tasks. Counted under `cfg(test)` so the
+/// query-count tests can assert exactly one load per batch.
+fn load_watched_snapshot(
+    pool: &Pool<SqliteConnectionManager>,
+) -> Result<WatchedFolderSnapshot, Box<dyn std::error::Error + Send + Sync + 'static>> {
+    let conn = pool.get()?;
+    #[cfg(test)]
+    CONFIG_LOAD_COUNT.with(|c| c.set(c.get() + 1));
+    Ok(load_watched_folders(&conn)?.into())
+}
 
 /// Load watched folder (path, id) pairs from the `watched_folders` table —
 /// the single source of truth for folder configuration.
@@ -353,6 +416,13 @@ mod tests {
     fn create_test_png(path: &Path) {
         let img = image::RgbaImage::new(64, 48);
         img.save_with_format(path, image::ImageFormat::Png).expect("create test PNG");
+    }
+
+    /// Load the context's watched-folder table as an immutable snapshot,
+    /// mirroring what `run_event_handler` passes to each event.
+    fn ctx_snapshot(ctx: &TestContext) -> WatchedFolderSnapshot {
+        let conn = ctx.pool.get().expect("get conn");
+        load_watched_folders(&conn).expect("load watched folders").into()
     }
 
     // -----------------------------------------------------------------------
@@ -467,6 +537,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_file_created() {
         let mut ctx = test_context();
+        let watched = ctx_snapshot(&ctx);
 
         // Create a test PNG in the watched folder.
         let file_path = ctx.watched_path.path().join("created.png");
@@ -474,7 +545,7 @@ mod tests {
 
         let event = FileEvent::Modified { path: file_path.clone() };
 
-        handle_single_event(&event, &ctx.pool, &ctx.index_manager, &ctx.sse_tx)
+        handle_single_event(&event, &ctx.pool, &ctx.index_manager, &ctx.sse_tx, &watched)
             .await
             .expect("handle single event");
 
@@ -512,6 +583,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_file_modified() {
         let mut ctx = test_context();
+        let watched = ctx_snapshot(&ctx);
 
         // First: create a file and index it.
         let file_path = ctx.watched_path.path().join("modified.png");
@@ -522,6 +594,7 @@ mod tests {
             &ctx.pool,
             &ctx.index_manager,
             &ctx.sse_tx,
+            &watched,
         )
         .await
         .expect("first handle (create)");
@@ -545,6 +618,7 @@ mod tests {
             &ctx.pool,
             &ctx.index_manager,
             &ctx.sse_tx,
+            &watched,
         )
         .await
         .expect("second handle (modify)");
@@ -573,6 +647,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_file_unchanged_skips() {
         let mut ctx = test_context();
+        let watched = ctx_snapshot(&ctx);
 
         let file_path = ctx.watched_path.path().join("unchanged.png");
         create_test_png(&file_path);
@@ -583,6 +658,7 @@ mod tests {
             &ctx.pool,
             &ctx.index_manager,
             &ctx.sse_tx,
+            &watched,
         )
         .await
         .expect("first handle");
@@ -594,6 +670,7 @@ mod tests {
             &ctx.pool,
             &ctx.index_manager,
             &ctx.sse_tx,
+            &watched,
         )
         .await
         .expect("second handle (no change)");
@@ -606,6 +683,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_file_deleted() {
         let mut ctx = test_context();
+        let watched = ctx_snapshot(&ctx);
 
         // Create and index a file.
         let file_path = ctx.watched_path.path().join("delete_me.png");
@@ -616,6 +694,7 @@ mod tests {
             &ctx.pool,
             &ctx.index_manager,
             &ctx.sse_tx,
+            &watched,
         )
         .await
         .expect("create");
@@ -629,6 +708,7 @@ mod tests {
             &ctx.pool,
             &ctx.index_manager,
             &ctx.sse_tx,
+            &watched,
         )
         .await
         .expect("delete");
@@ -657,6 +737,7 @@ mod tests {
     #[tokio::test]
     async fn test_handle_delete_unknown_file_silently_ignored() {
         let mut ctx = test_context();
+        let watched = ctx_snapshot(&ctx);
 
         let fake_path = ctx.watched_path.path().join("never_indexed.png");
 
@@ -665,6 +746,7 @@ mod tests {
             &ctx.pool,
             &ctx.index_manager,
             &ctx.sse_tx,
+            &watched,
         )
         .await
         .expect("delete unknown");
@@ -677,6 +759,7 @@ mod tests {
     #[tokio::test]
     async fn test_modified_event_for_removed_file_triggers_delete() {
         let mut ctx = test_context();
+        let watched = ctx_snapshot(&ctx);
 
         // Create and index a file.
         let file_path = ctx.watched_path.path().join("removed.png");
@@ -687,6 +770,7 @@ mod tests {
             &ctx.pool,
             &ctx.index_manager,
             &ctx.sse_tx,
+            &watched,
         )
         .await
         .expect("create");
@@ -700,6 +784,7 @@ mod tests {
             &ctx.pool,
             &ctx.index_manager,
             &ctx.sse_tx,
+            &watched,
         )
         .await
         .expect("modified-without-file");
@@ -714,6 +799,7 @@ mod tests {
     #[tokio::test]
     async fn test_event_outside_watched_folder_is_skipped() {
         let ctx = test_context();
+        let watched = ctx_snapshot(&ctx);
 
         // Create a file outside the watched folder.
         let outside = tempfile::tempdir().expect("tempdir");
@@ -725,9 +811,120 @@ mod tests {
             &ctx.pool,
             &ctx.index_manager,
             &ctx.sse_tx,
+            &watched,
         )
         .await;
 
         assert!(result.is_err(), "file outside watched folder should error");
+    }
+
+    // -----------------------------------------------------------------------
+    // Batch config-load counting (R8 / wave-8-25)
+    // -----------------------------------------------------------------------
+
+    /// Run one event batch through [`run_event_handler`] and return.
+    ///
+    /// Drops the sender after sending so the handler loop exits after
+    /// processing the batch (matching production shutdown behavior).
+    async fn run_batch(ctx: &TestContext, batch: Vec<FileEvent>) {
+        let (tx, rx) = mpsc::channel::<Vec<FileEvent>>(16);
+        tx.send(batch).await.expect("send batch");
+        drop(tx);
+        run_event_handler(rx, ctx.pool.clone(), Arc::clone(&ctx.index_manager), ctx.sse_tx.clone())
+            .await;
+    }
+
+    #[tokio::test]
+    async fn test_batch_of_50_deletes_loads_config_exactly_once() {
+        let mut ctx = test_context();
+
+        // Setup: index 50 files inside the watched folder (one create batch).
+        let mut paths = Vec::with_capacity(50);
+        let creates = (0..50)
+            .map(|i| {
+                let path = ctx.watched_path.path().join(format!("bulk_{i:02}.png"));
+                create_test_png(&path);
+                paths.push(path.clone());
+                FileEvent::Modified { path }
+            })
+            .collect();
+        run_batch(&ctx, creates).await;
+        while ctx.sse_rx.try_recv().is_ok() {} // drain the 50 file_created events
+
+        // Delete all files from disk and enqueue ONE batch of 50 delete events.
+        for path in &paths {
+            std::fs::remove_file(path).expect("remove file");
+        }
+        let deletes = paths.into_iter().map(|path| FileEvent::Deleted { path }).collect();
+
+        let loads_before = take_config_load_count(); // also resets the counter
+        run_batch(&ctx, deletes).await;
+
+        // Exactly one watched-folder load for the whole batch.
+        assert_eq!(
+            take_config_load_count(),
+            1,
+            "a batch of N deletes must perform exactly one watched-folder load \
+             (setup batch consumed {loads_before})"
+        );
+
+        // All 50 removals processed.
+        let conn = ctx.pool.get().expect("get conn");
+        let count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).expect("count");
+        assert_eq!(count, 0, "all 50 items should be removed from the DB");
+        drop(conn);
+
+        let mut deleted_events = 0;
+        while let Ok(sse) = ctx.sse_rx.try_recv() {
+            assert_eq!(sse.event_type, "file_deleted");
+            deleted_events += 1;
+        }
+        assert_eq!(deleted_events, 50, "all 50 deletions should broadcast");
+    }
+
+    #[tokio::test]
+    async fn test_batch_with_unwatched_delete_ignored_without_extra_config_loads() {
+        let mut ctx = test_context();
+
+        // Setup: index one file inside the watched folder.
+        let path = ctx.watched_path.path().join("watched_delete.png");
+        create_test_png(&path);
+        run_batch(&ctx, vec![FileEvent::Modified { path: path.clone() }]).await;
+        while ctx.sse_rx.try_recv().is_ok() {} // drain the file_created event
+
+        std::fs::remove_file(&path).expect("remove file");
+
+        // One delete inside a watched folder + one outside any watched folder.
+        let outside_dir = tempfile::tempdir().expect("tempdir");
+        let outside_path = outside_dir.path().join("outside.png");
+        create_test_png(&outside_path);
+
+        let batch = vec![FileEvent::Deleted { path }, FileEvent::Deleted { path: outside_path }];
+
+        let _ = take_config_load_count(); // reset the counter
+        run_batch(&ctx, batch).await;
+
+        // The unwatched event must not trigger any additional config loads.
+        assert_eq!(
+            take_config_load_count(),
+            1,
+            "unwatched deletes in the batch must not cause extra config loads"
+        );
+
+        // The watched deletion was processed; the unwatched one ignored.
+        let conn = ctx.pool.get().expect("get conn");
+        let count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0)).expect("count");
+        assert_eq!(count, 0, "watched deletion should be removed from the DB");
+        drop(conn);
+
+        let sse = ctx.sse_rx.try_recv().expect("one file_deleted event");
+        assert_eq!(sse.event_type, "file_deleted");
+        assert!(
+            sse.data["path"].as_str().unwrap().contains("watched_delete.png"),
+            "broadcast must reference the watched deletion"
+        );
+        assert!(ctx.sse_rx.try_recv().is_err(), "unwatched delete must not broadcast");
     }
 }

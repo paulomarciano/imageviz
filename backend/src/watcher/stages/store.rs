@@ -1,13 +1,14 @@
 //! Stage 2: Store file data in SQLite and update the Tantivy search index.
 //!
 //! This module is designed to run inside `tokio::task::spawn_blocking` — all
-//! operations are synchronous and CPU-bound.  It loads watched folders from
-//! the database, resolves the relative path, checks for existing entries by
-//! checksum, upserts, and re-indexes.
+//! operations are synchronous and CPU-bound.  It receives the watched-folder
+//! snapshot loaded once per event batch by the handler (R8), resolves the
+//! relative path, checks for existing entries by checksum, upserts, and
+//! re-indexes.
 
 use crate::db::SqliteConnectionManager;
 use crate::search::IndexManager;
-use crate::watcher::handler::{ChangeType, load_watched_folders, resolve_relative_path};
+use crate::watcher::handler::{ChangeType, WatchedFolderSnapshot, resolve_relative_path};
 use crate::watcher::stages::extract::ExtractedData;
 use r2d2::Pool;
 use rusqlite::OptionalExtension;
@@ -32,8 +33,8 @@ pub struct StoreOutcome {
 ///
 /// # Operations
 ///
-/// 1. Loads watched folders from the database and resolves the file's
-///    relative path.
+/// 1. Resolves the file's relative path against the watched-folder snapshot
+///    loaded once per batch by the handler (R8 — no per-event config reload).
 /// 2. Checks for an existing row keyed by `(folder_id, relative_path)`.
 /// 3. If the row exists and its checksum matches, returns `Skipped`.
 /// 4. Otherwise, upserts the SQLite row and updates the Tantivy index.
@@ -45,17 +46,14 @@ pub fn store_media(
     index_manager: &Arc<IndexManager>,
     data: &ExtractedData,
     path: &Path,
+    watched: &WatchedFolderSnapshot,
 ) -> Result<StoreOutcome, String> {
     let conn = pool.get().map_err(|e| format!("Pool error: {}", e))?;
 
     // Resolve relative path and folder_id by stripping the watched folder prefix.
-    let (relative_path, folder_id) = {
-        let watched =
-            load_watched_folders(&conn).map_err(|e| format!("Load watched folders: {}", e))?;
-        resolve_relative_path(path, &watched).ok_or_else(|| {
-            format!("File {} is not inside any configured watched folder", path.display())
-        })?
-    };
+    let (relative_path, folder_id) = resolve_relative_path(path, watched).ok_or_else(|| {
+        format!("File {} is not inside any configured watched folder", path.display())
+    })?;
 
     // Check whether this file is already tracked in SQLite (by folder + path).
     let existing: Option<(String, Option<String>)> = conn
