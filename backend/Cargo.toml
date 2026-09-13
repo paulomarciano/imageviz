@@ -12,7 +12,11 @@ dev-tools = ["dep:console-subscriber", "dep:pprof"]
 
 [dependencies]
 axum = "0.8"
-tokio = { version = "1", features = ["full"] }
+# Features enumerated against actual usage (wave-8-22): rt-multi-thread +
+# macros (#[tokio::main]), signal (graceful shutdown), fs (streamed files),
+# sync (semaphore/broadcast/watch), time (timeouts), net (axum serve),
+# process + io-util (ffmpeg probes/thumbnails).
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "fs", "sync", "time", "net", "process", "io-util"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip", "limit", "timeout", "set-header"] }
 serde = { version = "1", features = ["derive"] }

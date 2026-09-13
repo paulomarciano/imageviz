@@ -89,6 +89,23 @@ fn default_limit() -> u32 {
     100
 }
 
+/// Map a `media_items` row (list projection) to its summary representation.
+fn media_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MediaItemSummary> {
+    let id: String = row.get(0)?;
+    Ok(MediaItemSummary {
+        thumbnail_url: format!("/api/v1/media/{id}/thumbnail"),
+        id,
+        filename: row.get(1)?,
+        path: row.get(2)?,
+        mime_type: row.get(3)?,
+        width: row.get(4)?,
+        height: row.get(5)?,
+        file_size: row.get(6)?,
+        created_at: row.get(7)?,
+        modified_at: row.get(8)?,
+    })
+}
+
 /// GET /api/v1/media — list media items with cursor-based pagination.
 ///
 /// Query parameters:
@@ -133,21 +150,19 @@ pub(super) async fn list_media(
         })
     };
 
-    // Build SQL dynamically for cursor-based pagination
+    // Build SQL dynamically with anonymous `?` placeholders — bound in
+    // order of appearance via `params_from_iter` below.
     let mut sql = String::from(
         "SELECT id, filename, relative_path, mime_type, width, height, file_size, \
          file_created_at, file_modified_at FROM media_items",
     );
 
-    let mut where_parts: Vec<String> = Vec::new();
-    let mut next_param = 1;
+    let mut where_parts: Vec<&str> = Vec::new();
     if has_cursor {
-        where_parts.push(format!("(file_created_at, id) < (?{}, ?{})", next_param, next_param + 1));
-        next_param += 2;
+        where_parts.push("(file_created_at, id) < (?, ?)");
     }
     if has_mime {
-        where_parts.push(format!("mime_type LIKE ?{}", next_param));
-        next_param += 1;
+        where_parts.push("mime_type LIKE ?");
     }
 
     if !where_parts.is_empty() {
@@ -156,9 +171,8 @@ pub(super) async fn list_media(
     }
 
     sql.push_str(" ORDER BY file_created_at DESC, id DESC LIMIT ?");
-    sql.push_str(&next_param.to_string());
 
-    // Collect parameter values in the same order as their placeholders
+    // Parameter values in the same order as their placeholders.
     let mut values: Vec<rusqlite::types::Value> = Vec::new();
     if let (Some(cursor), Some(cursor_id)) = (&params.cursor, &params.cursor_id) {
         values.push(rusqlite::types::Value::Text(cursor.clone()));
@@ -169,41 +183,10 @@ pub(super) async fn list_media(
     }
     values.push(rusqlite::types::Value::Integer(fetch_limit as i64));
 
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-        values.iter().map(|v| v as &dyn rusqlite::types::ToSql).collect();
-
     let mut items: Vec<MediaItemSummary> = {
         let mut stmt = conn.prepare(&sql)?;
-
-        let rows = stmt.query_map(param_refs.as_slice(), |row| {
-            let id: String = row.get(0)?;
-            let filename: String = row.get(1)?;
-            let relative_path: String = row.get(2)?;
-            let mime_type: String = row.get(3)?;
-            let width: Option<i64> = row.get(4)?;
-            let height: Option<i64> = row.get(5)?;
-            let file_size: i64 = row.get(6)?;
-            let file_created_at: String = row.get(7)?;
-            let file_modified_at: String = row.get(8)?;
-            Ok(MediaItemSummary {
-                thumbnail_url: format!("/api/v1/media/{}/thumbnail", id),
-                id,
-                filename,
-                path: relative_path,
-                mime_type,
-                width,
-                height,
-                file_size,
-                created_at: file_created_at,
-                modified_at: file_modified_at,
-            })
-        })?;
-
-        let mut items: Vec<MediaItemSummary> = Vec::new();
-        for row in rows {
-            items.push(row?);
-        }
-        items
+        let rows = stmt.query_map(rusqlite::params_from_iter(values), media_summary_from_row)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
     };
 
     drop(conn);

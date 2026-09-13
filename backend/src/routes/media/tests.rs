@@ -886,6 +886,96 @@ async fn test_media_list_mime_type_filter() {
     }
 }
 
+/// Filter + cursor + limit exercised together (wave-8-22): the WHERE clause
+/// built by the list route carries all three parameter kinds at once — this is
+/// the combination most likely to break in a SQL-builder rewrite. Videos are
+/// seeded *between* image timestamps so a dropped or reordered parameter would
+/// surface as duplicates, videos leaking through, or lost items.
+#[tokio::test]
+async fn test_media_list_mime_filter_with_cursor_and_limit() {
+    let (state, _cache_dir) = test_state();
+    // 30 images at :29..:00 and 10 videos at :59..:50 — a filter-less walk
+    // interleaves them, so every page must re-apply the mime filter. Ids are
+    // UUIDs (cursor_id round-trips through validation on page 2+).
+    for i in 0..30u32 {
+        let date_str = format!("2025-06-15T14:{:02}:00", 29 - i);
+        seed_media_item_full(
+            &state,
+            &format!("00000000-0000-4000-8000-{i:012}"),
+            &format!("img_{i}.png"),
+            &format!("img_{i}.png"),
+            "image/png",
+            "chk",
+            Some(100),
+            Some(100),
+            &date_str,
+            &date_str,
+        )
+        .await;
+    }
+    for i in 0..10u32 {
+        let date_str = format!("2025-06-15T14:{:02}:00", 59 - i);
+        seed_media_item_full(
+            &state,
+            &format!("00000000-0000-4000-9000-{i:012}"),
+            &format!("vid_{i}.mp4"),
+            &format!("vid_{i}.mp4"),
+            "video/mp4",
+            "chk",
+            None,
+            None,
+            &date_str,
+            &date_str,
+        )
+        .await;
+    }
+
+    let app = routes().with_state(state);
+
+    // Walk every page using filter + cursor + limit together.
+    let mut seen_ids: Vec<String> = Vec::new();
+    let mut cursor = String::new();
+    let mut cursor_id = String::new();
+    let mut has_more = true;
+
+    while has_more {
+        // `%` must be percent-encoded (`%25`) when followed by more params.
+        let uri = if seen_ids.is_empty() {
+            "/media?limit=10&mime_type=image/%25".to_string()
+        } else {
+            format!("/media?limit=10&mime_type=image/%25&cursor={cursor}&cursor_id={cursor_id}")
+        };
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body: Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+
+        let data = body["data"].as_array().unwrap();
+        assert_eq!(data.len(), 10, "each page must return exactly `limit` items");
+        for item in data {
+            let mime = item["mime_type"].as_str().unwrap();
+            assert!(mime.starts_with("image/"), "filter must hold on every page, got: {mime}");
+            let id = item["id"].as_str().unwrap().to_string();
+            assert!(!seen_ids.contains(&id), "no duplicates across pages: {id}");
+            seen_ids.push(id);
+        }
+
+        has_more = body["meta"]["has_more"].as_bool().unwrap();
+        if has_more {
+            cursor = body["meta"]["next_cursor"].as_str().unwrap().to_string();
+            cursor_id = body["meta"]["next_cursor_id"].as_str().unwrap().to_string();
+        }
+    }
+
+    assert_eq!(seen_ids.len(), 30, "paging must collect exactly the filtered images");
+}
+
 #[tokio::test]
 async fn test_media_list_invalid_limit() {
     let (state, _cache_dir) = test_state();
