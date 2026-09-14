@@ -47,9 +47,6 @@ data/thumbnails/
 data/
 !data/.gitkeep
 
-# ComfyUI test data (do not commit actual dataset)
-~/ComfyUI/
-
 # Test fixtures (binary media files — generated or copied from ComfyUI output)
 # These are real ComfyUI outputs with metadata; do not commit to GitHub
 test-fixtures/*.png
@@ -63,6 +60,3 @@ test-fixtures/*.jpeg
 
 # scripts
 scripts/start.sh
-
-#documents
-documents/
