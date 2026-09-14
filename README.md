@@ -2,7 +2,9 @@
 
 A browser-based image and video visualization tool for large datasets (100K–1M media files). Designed primarily for viewing ComfyUI generation outputs with embedded metadata.
 
-![screenshot placeholder](https://img.shields.io/badge/status-active--development-blue)
+[![CI](https://github.com/paulomarciano/imageviz/actions/workflows/ci.yml/badge.svg)](https://github.com/paulomarciano/imageviz/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/badge/release-v0.8.0-blue)](https://github.com/paulomarciano/imageviz/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 ## Features
 
@@ -155,6 +157,7 @@ imageviz/
 │   │   ├── db/                 # SQLite schema, migrations, queries
 │   │   ├── indexer/            # File scan + index orchestration
 │   │   ├── metadata/           # PNG tEXt/iTXt, video (ffmpeg), MIME detection
+│   │   ├── middleware/         # CORS, logging, security headers, timeouts, validation
 │   │   ├── routes/             # HTTP handlers (media, search, config, events, stats)
 │   │   ├── scanner/            # Directory walker and file hasher
 │   │   ├── search/             # Tantivy schema, indexer, searcher
@@ -196,6 +199,15 @@ imageviz/
 | Type check | `cargo check` | `npm run typecheck` |
 | Build | `cargo build --release` | `npm run build` |
 | E2E tests | — | `npx playwright test` |
+
+### Production
+
+```bash
+./scripts/build.sh   # release build: backend (cargo build --release) + frontend (npm run build)
+./scripts/start.sh   # build + run backend on :3001 + frontend on http://localhost:4173
+```
+
+The backend binds to `127.0.0.1` (local-only; no authentication — do not expose to a network).
 
 ### Running E2E Tests
 
@@ -252,4 +264,4 @@ See [documents/plans/development-plan.md§7](documents/plans/development-plan.md
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).

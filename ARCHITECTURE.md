@@ -65,9 +65,9 @@ ImageViz is a desktop-first media browser and search application for large datas
 | Video Thumbnails     | **ffmpeg** (subprocess)   | system  | Keyframe extraction (`-ss 00:00:01 -vframes 1`)                |
 | File Watching        | **notify** + debouncer    | 8       | Cross-platform file system change detection (inotify/FSEvents) |
 | SSE                  | `tokio::sync::broadcast`  | —       | Fan-out real-time events to all connected clients              |
-| PNG Metadata         | **png** crate             | —       | Read tEXt/iTXt chunks; parse ComfyUI JSON workflow             |
+| PNG Metadata         | **png** crate             | 0.18    | Read tEXt/iTXt chunks; parse ComfyUI JSON workflow             |
 | Serialization        | **serde** + serde_json    | 1       | Request/response (de)serialization                             |
-| CORS                 | **tower-http**            | 0.6     | CORS, compression (gzip), trace middleware layers              |
+| CORS / HTTP layers   | **tower-http**            | 0.6     | CORS allowlist (`middleware/cors.rs`), gzip compression, trace  |
 | Logging              | **tracing** + subscriber  | 0.1     | Structured async-aware logging with env-filter                 |
 | HTTP Client (tests)  | **reqwest**               | 0.12    | Integration test HTTP client                                   |
 
@@ -110,7 +110,7 @@ Replaced the earlier `Arc<Mutex<Connection>>` pattern with an r2d2 pool. Pool si
 
 ### Content-Addressed Thumbnail Cache
 
-Cache key is `{sha256_prefix[:16]}_{width}.webp`. Same content always maps to the same cache entry — no invalidation needed. Content change produces a different checksum and a new cache entry. Background eviction runs every 5 minutes; an inline fire-and-forget spawn serves as an additional safety net for cache bursts.
+Cache key is `{sha256_prefix[:16]}_{width}.webp`. Same content always maps to the same cache entry — no invalidation needed. Content change produces a different checksum and a new cache entry. Thumbnails are generated directly into the cache directory (`{key}.tmp` + atomic rename — no `/tmp` staging). Eviction runs solely on a 5-minute background timer (`evict_if_needed`); cache generations never trigger inline scans. Concurrent requests for the same checksum are deduplicated by weak-valued per-checksum `Mutex`es in a `DashMap` (entries evicted when the last holder releases), and the concurrency semaphore is acquired only on cache misses.
 
 ### SSE Over WebSocket
 
@@ -120,12 +120,12 @@ Server-Sent Events are simpler for unidirectional server → client streaming. T
 
 A `DashMap` of per-key mutexes ensures only the first caller generates a thumbnail; concurrent callers block and then read the cached result. This prevents wasted CPU on duplicate generation when the same thumbnail is requested simultaneously.
 
-### Background Indexing
+### Incremental Startup Indexing
 
-- **Phase 1** (`full_index`): scan watched folders → SHA-256 hash → media detection → metadata extraction → SQLite upsert
-- **Phase 2** (`full_reindex`): read all SQLite rows → populate Tantivy index
+- **Phase 1** (`incremental_index`): scan watched folders → skip files whose size+mtime are unchanged (no re-hash, no ffprobe) → for new/modified files: SHA-256 hash → media detection → metadata extraction → SQLite upsert. Hash/ffprobe work runs with bounded concurrency (`INDEX_CONCURRENCY`, default: CPU cores capped at 8). Deletion cleanup diffs in memory and deletes in a single transaction.
+- **Phase 2** (`full_reindex`): read all SQLite rows through a **separate read-only connection** → rebuild the Tantivy index on a blocking thread.
 
-Phase 2 runs in a background `tokio::spawn` task. The API becomes available as soon as Phase 1 completes.
+Both phases run in a background `tokio::spawn` task, so the API is available immediately. The file-watcher event handler activates only after initial indexing completes; events accumulated during the scan are drained first (the full reindex captures those files anyway).
 
 ### Streaming File Serving
 
@@ -160,18 +160,20 @@ lib.rs                          ─── health_router() — mounts /api/v1/hea
 │   └── detect.rs               ─── MIME type + dimension detection
 ├── middleware/                  ─── Axum middleware layers
 │   ├── mod.rs
-│   ├── logging.rs              ─── Request logging + trace ID
+│   ├── cors.rs                 ─── CORS allowlist built from CORS_ALLOW_ORIGINS
+│   ├── logging.rs              ─── Request logging (one line per request)
 │   ├── security.rs             ─── Security headers (CSP, X-Frame-Options, etc.)
-│   ├── timeout.rs              ─── Per-route timeout middleware
+│   ├── timeout.rs              ─── Per-group timeout middleware
 │   └── validation.rs           ─── Input validation and sanitization
 ├── routes/                     ─── HTTP handlers — all under /api/v1
 │   ├── mod.rs
+│   ├── error.rs                ─── `AppError` enum + `IntoResponse`
+│   ├── response.rs             ─── Shared response types (data/meta envelope)
 │   ├── health.rs               ─── GET /health
-│   ├── media.rs
 │   ├── media/                  ─── Sub-module route group
 │   │   ├── mod.rs
 │   │   ├── list.rs             ─── GET /media (cursor-based pagination)
-│   │   ├── detail.rs           ─── GET /media/:id
+│   │   ├── detail.rs           ─── GET /media/:id and /media/:id/metadata
 │   │   ├── file.rs             ─── GET /media/:id/file (streaming + Range)
 │   │   ├── thumbnail.rs        ─── GET /media/:id/thumbnail
 │   │   └── tests.rs            ─── Media route tests
@@ -203,6 +205,8 @@ lib.rs                          ─── health_router() — mounts /api/v1/hea
 │       ├── extract.rs          ─── Extract metadata from changed file
 │       ├── store.rs            ─── Upsert into SQLite + Tantivy
 │       └── broadcast.rs        ─── Send SSE event to clients
+├── profiler.rs                  ─── /debug/pprof endpoint (compiled only under the `dev-tools` feature)
+├── util.rs                      ─── Shared helpers
 └── test_support.rs             ─── #[cfg(test)] — fixture_path helper
 ```
 
@@ -254,9 +258,13 @@ User configures watched folders ──▶ main.rs spawns background task
                                         ▼
                               ┌──────────────────┐
                               │  Phase 1:        │
-                              │  full_index()    │
+                              │  incremental_    │
+                              │  index()         │
                               └────────┬─────────┘
-                                       │
+                                        │
+                          (unchanged files — same size +
+                           mtime — skip everything below)
+                                        │
                          ┌─────────────┼─────────────┐
                          ▼             ▼             ▼
                    ┌──────────┐  ┌──────────┐  ┌──────────┐
@@ -487,32 +495,37 @@ All routes are mounted under `/api/v1`.
 
 ## Database Schema (SQLite)
 
+Live schema after migrations v001–v005 (v002: `folder_id` + `watched_folders`; v003: rebuild without column-level UNIQUE; v004: `watched_folders` becomes the config source of truth; v005: drop the write-only `thumbnail_path` column):
+
 ```sql
 CREATE TABLE media_items (
-    id              TEXT PRIMARY KEY NOT NULL,          -- UUID v4
-    filename        TEXT NOT NULL,                      -- Original filename
-    relative_path   TEXT NOT NULL UNIQUE,               -- Relative from watched root
-    mime_type       TEXT NOT NULL,                      -- "image/png", "video/webm", etc.
-    width           INTEGER,                            -- Pixels (NULL if unknown)
-    height          INTEGER,                            -- Pixels (NULL if unknown)
-    file_size       INTEGER NOT NULL,                   -- Bytes
-    thumbnail_path  TEXT,                               -- NULL if not yet generated
-    file_created_at TEXT NOT NULL,                      -- ISO 8601
-    file_modified_at TEXT NOT NULL,                     -- ISO 8601
-    indexed_at      TEXT NOT NULL DEFAULT (datetime('now')),
-    metadata_json   TEXT,                               -- Raw metadata JSON blob
-    checksum        TEXT                                -- SHA-256 hex string
+    id               TEXT PRIMARY KEY NOT NULL,   -- UUID v4
+    filename         TEXT NOT NULL,               -- Original filename
+    relative_path    TEXT NOT NULL,               -- Relative to the watched folder root
+    folder_id        TEXT REFERENCES watched_folders(id),
+    mime_type        TEXT NOT NULL,               -- "image/png", "video/webm", etc.
+    width            INTEGER,                     -- Pixels (NULL if unknown)
+    height           INTEGER,                     -- Pixels (NULL if unknown)
+    file_size        INTEGER NOT NULL,            -- Bytes
+    file_created_at  TEXT NOT NULL,               -- ISO 8601
+    file_modified_at TEXT NOT NULL,               -- ISO 8601
+    indexed_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    metadata_json    TEXT,                        -- Raw metadata JSON blob
+    checksum         TEXT                         -- SHA-256 hex string
 );
 
-CREATE INDEX idx_media_sort  ON media_items(file_created_at DESC, id);
-CREATE INDEX idx_media_path  ON media_items(relative_path);
-CREATE INDEX idx_media_mime  ON media_items(mime_type);
+CREATE INDEX idx_media_sort ON media_items(file_created_at DESC, id);
+CREATE INDEX idx_media_mime ON media_items(mime_type);
+CREATE UNIQUE INDEX idx_media_folder_path ON media_items(folder_id, relative_path);
 
-CREATE TABLE config (
-    key   TEXT PRIMARY KEY NOT NULL,
-    value TEXT NOT NULL
+CREATE TABLE watched_folders (
+    id    TEXT PRIMARY KEY NOT NULL,              -- UUID v4
+    path  TEXT NOT NULL UNIQUE,
+    label TEXT
 );
 ```
+
+Uniqueness of `(folder_id, relative_path)` is enforced **only** by the compound unique index — the same relative path may exist in different watched folders. The legacy `config` key-value table still exists but is never read: migration v004 imported its JSON blob into `watched_folders` once, and `AppConfig` is derived from `watched_folders` only.
 
 ### Tantivy Index Schema
 
@@ -522,7 +535,7 @@ CREATE TABLE config (
 | `filename`     | Text   | `STRING \| STORED`                     |
 | `mime_type`    | Text   | `STRING`                               |
 | `metadata_json`| Text   | `TEXT` (indexed for full-text search)  |
-| `created_at`   | Date   | `INDEXED`                              |
+| `created_at`   | Date   | `INDEXED \| FAST`                      |
 | `file_size`    | U64    | `INDEXED`                              |
 | `width`        | U64    | `STORED`                               |
 | `height`       | U64    | `STORED`                               |
@@ -534,32 +547,40 @@ main()
   │
   ├── 1. Parse environment (Settings::from_env)
   ├── 2. Create directories (DB, cache, Tantivy)
-  ├── 3. Create r2d2 connection pool
-  ├── 4. Run SQLite migrations
-  ├── 5. Open Tantivy index (IndexManager::open_or_create)
-  ├── 6. Create ThumbnailLimiter (per-key DashMap)
-  ├── 7. Create ProgressTracker
-  ├── 8. Spawn cache eviction timer (5-minute interval)
-  ├── 9. Create SSE broadcast channel
-  ├── 10. Load config from SQLite
-  ├── 11. Start FileWatcher (notify + debouncer)
-  ├── 12. Build state (ConfigState, MediaState, SearchState, StatsState, EventsState)
-  ├── 13. Spawn background indexing (Phase 1 → Phase 2)
-  ├── 14. Assemble Axum Router with per-route timeouts
-  ├── 15. Apply CORS + logging + security layers
-  └── 16. axum::serve with graceful shutdown (SIGINT/SIGTERM)
+  ├── 3. Create r2d2 connection pool + run migrations (v001–v005)
+  ├── 4. Open Tantivy index (IndexManager::open_or_create, 200MB writer buffer)
+  ├── 5. Create ThumbnailLimiter + ProgressTracker
+  ├── 6. Spawn cache eviction timer (5-minute interval)
+  ├── 7. Create SSE broadcast channel (capacity 256)
+  ├── 8. Load watched-folder config from SQLite (watched_folders table)
+  ├── 9. Start FileWatcher (always, even with no folders — the config route
+  │       adds watches dynamically at runtime)
+  ├── 10. Build route states (ConfigState, MediaState, SearchState, StatsState, EventsState)
+  ├── 11. Spawn background indexing (Phase 1 → Phase 2); when it completes,
+  │        drain stale events and activate the watcher event handler
+  ├── 12. Assemble router: health_router() + /api/v1 nests with per-group
+  │        timeouts (media 120s, SSE 3600s, default REQUEST_TIMEOUT_SECS)
+  ├── 13. Apply logging + CORS (env allowlist) layers; security headers outermost
+  ├── 14. Bind 127.0.0.1:{PORT}, axum::serve with graceful shutdown (SIGINT/SIGTERM)
+  └── 15. On shutdown: commit Tantivy index (30s cleanup timeout)
 ```
 
 ## Environment Variables
 
-| Variable                  | Default                                     | Purpose                          |
-| ------------------------- | ------------------------------------------- | -------------------------------- |
-| `IMAGEVIZ_DB_PATH`        | `{data_dir}/imageviz.db`                    | SQLite database location         |
-| `IMAGEVIZ_CACHE_DIR`      | `{data_dir}/thumbnails`                     | On-disk thumbnail cache          |
-| `IMAGEVIZ_TANTIVY_DIR`    | `{data_dir}/tantivy`                        | Tantivy index directory          |
-| `PORT`                    | `3001`                                      | HTTP server port                 |
+| Variable                  | Default                                     | Purpose                                        |
+| ------------------------- | ------------------------------------------- | ---------------------------------------------- |
+| `PORT`                    | `3001`                                      | HTTP server port                               |
+| `REQUEST_TIMEOUT_SECS`    | `60`                                        | Default request timeout (media: 120s, SSE: 3600s) |
+| `THUMBNAIL_CONCURRENCY`   | `4`                                         | Max concurrent thumbnail generations           |
+| `THUMBNAIL_CACHE_MAX_MB`  | `2000`                                      | Max thumbnail cache size (0 = unlimited)       |
+| `INDEX_CONCURRENCY`       | CPU cores capped at `8`                     | Max concurrently processed files in Phase 1    |
+| `MIN_FREE_DISK_MB`        | `500`                                       | Min free disk before aggressive cache eviction |
+| `CORS_ALLOW_ORIGINS`      | `http://localhost:5173,http://127.0.0.1:5173` | Comma-separated CORS origin allowlist        |
+| `IMAGEVIZ_DB_PATH`        | `{data_dir}/imageviz.db`                    | SQLite database location                       |
+| `IMAGEVIZ_CACHE_DIR`      | `{data_dir}/thumbnails`                     | On-disk thumbnail cache                        |
+| `IMAGEVIZ_TANTIVY_DIR`    | `{data_dir}/tantivy`                        | Tantivy index directory                        |
 
-Where `{data_dir}` = `$XDG_DATA_HOME/imageviz` on Linux, `~/Library/Application Support/imageviz` on macOS, or `./data` as fallback.
+Where `{data_dir}` = `$XDG_DATA_HOME/imageviz` (Linux, falling back to `~/.local/share/imageviz`), `~/Library/Application Support/imageviz` (macOS), or `./data` (fallback).
 
 ## Development & Testing
 
@@ -571,5 +592,7 @@ Where `{data_dir}` = `$XDG_DATA_HOME/imageviz` on Linux, `~/Library/Application 
 | Lint                  | `cargo clippy -- -D warnings`     | `npm run lint`             |
 | Type check            | `cargo check`                     | `npm run typecheck`        |
 | Format check          | `cargo fmt --check`               | `npm run format:check`     |
+| E2E tests             | —                                 | `npx playwright test`      |
+| Production build/run  | `./scripts/build.sh` / `./scripts/start.sh` |                   |
 
-See `documents/plans/development-plan.md` for the complete development roadmap (Waves 0–7), task breakdown, dependency graph, testing strategy, and performance budgets.
+See `documents/plans/development-plan.md` for the complete development roadmap (Waves 0–8), task breakdown, dependency graph, testing strategy, and performance budgets.

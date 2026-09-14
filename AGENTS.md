@@ -24,6 +24,8 @@ v0.8.0 — all 8 development waves complete (Wave 8: post-audit performance/reso
 
 Frontend package manager is **npm**. Path alias `@/` → `./src/`.
 
+Production: `./scripts/build.sh` (release-build both sides) · `./scripts/start.sh` (build + run backend on :3001 + `vite preview` on :4173 — preview inherits the `/api` proxy from `server.proxy`).
+
 ## Environment Variables
 
 | Variable | Default | Purpose |
@@ -72,12 +74,19 @@ Per task: write failing test → implement minimum → refactor while green → 
 
 ## CI Pipeline (`.github/workflows/ci.yml`)
 
-Push/PR to `main`. Five parallel jobs, cancel-in-progress:
-1. **backend-lint** (15m): `cargo fmt --check` → `cargo clippy -- -D warnings`
-2. **backend-test** (15m): ffmpeg via apt → `cargo test`
+Triggers on **every push** (any branch) and PRs to `main`. Five parallel jobs, cancel-in-progress:
+1. **backend-lint** (15m): `cargo fmt --check` → `cargo clippy -- -D warnings` → `cargo clippy --features dev-tools -- -D warnings`
+2. **backend-test** (15m): ffmpeg via apt → `cargo test` → `cargo test --features dev-tools` (profiler.rs tests exist only under the feature)
 3. **frontend-lint** (15m): `npm ci` → `prettier --check .` → `eslint .`
 4. **frontend-test** (15m): `npm ci` → `tsc --noEmit` → `vitest run`
 5. **frontend-e2e** (30m): `npm ci` → `generate-fixtures.sh` → `playwright install chromium` → `playwright test`
+
+## Release Process
+
+1. Bump the version in **both** manifests: `backend/Cargo.toml` and `frontend/package.json` (keep in sync).
+2. Add a `CHANGELOG.md` entry (Keep a Changelog 1.1.0 format) plus the compare link at the bottom of the file.
+3. A release build must compile and test clean **without** `--cfg tokio_unstable` or the `dev-tools` feature (CI enforces the default-feature build).
+4. Documentation to keep in step on release: `README.md` (badge, versions), `ARCHITECTURE.md` (schema/module claims), `CHANGELOG.md`.
 
 ## Git Conventions
 
