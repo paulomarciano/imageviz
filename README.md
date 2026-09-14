@@ -194,7 +194,7 @@ imageviz/
 | Run dev | `cargo run` | `npm run dev` |
 | Run tests | `cargo test` | `npm test` |
 | Single test | `cargo test test_name` | `npx vitest run -t "test name"` |
-| Lint | `cargo clippy -D warnings` | `npm run lint` |
+| Lint | `cargo clippy -- -D warnings` | `npm run lint` |
 | Format check | `cargo fmt --check` | `npm run format:check` |
 | Type check | `cargo check` | `npm run typecheck` |
 | Build | `cargo build --release` | `npm run build` |
@@ -229,7 +229,7 @@ Requires **ffmpeg** on PATH. Generates PNGs with ComfyUI-style tEXt chunks and s
 
 1. **Read the plan** — Start with [documents/plans/development-plan.md](documents/plans/development-plan.md) for architecture, API contract, and task breakdown
 2. **TDD workflow** — Write a failing test first, implement the minimum code, refactor, verify with `cargo test` / `npm test`
-3. **Code style** — Run `cargo fmt && cargo clippy -D warnings` (backend) and `npx prettier --check . && npx eslint .` (frontend) before committing
+3. **Code style** — Run `cargo fmt && cargo clippy -- -D warnings` (backend) and `npx prettier --check . && npx eslint .` (frontend) before committing
 4. **Commits** — Use descriptive commit messages. Each task generates at least one commit
 5. **Tests** — All tests must pass before opening a PR. New features require tests
 

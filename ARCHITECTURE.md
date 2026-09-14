@@ -59,7 +59,7 @@ ImageViz is a desktop-first media browser and search application for large datas
 | HTTP Framework       | **Axum**                  | 0.8     | REST API — tokio-native, Tower middleware, built-in SSE support |
 | Async Runtime        | **Tokio**                 | 1       | Async I/O, task spawning, channels (broadcast, mpsc)            |
 | Database             | **SQLite** (rusqlite)     | 0.36    | Media item metadata store, configuration storage               |
-| Connection Pool      | **r2d2**                  | 0.8     | Thread-safe connection pool (max 10 connections, WAL-compatible)|
+| Connection Pool      | **r2d2**                  | 0.8     | Thread-safe connection pool (max 10 connections, WAL-compatible) |
 | Full-Text Search     | **Tantivy**               | 0.26    | BM25-ranked search across filenames and metadata JSON           |
 | Thumbnails           | **image** crate + **WebP**| 0.25    | On-disk content-addressed thumbnail cache                      |
 | Video Thumbnails     | **ffmpeg** (subprocess)   | system  | Keyframe extraction (`-ss 00:00:01 -vframes 1`)                |
@@ -92,7 +92,7 @@ ImageViz is a desktop-first media browser and search application for large datas
 
 ### Cursor-Based Pagination (not offset)
 
-Uses `WHERE (created_at, id) < (?, ?)` with the index `idx_media_sort` instead of `LIMIT/OFFSET`. This is **O(log n)** regardless of page depth vs O(n) for offset-based pagination. The cursor is a tuple of the last item's `file_created_at` timestamp + `id`.
+Uses `WHERE (file_created_at, id) < (?, ?)` with the index `idx_media_sort` instead of `LIMIT/OFFSET`. This is **O(log n)** regardless of page depth vs O(n) for offset-based pagination. The cursor is a tuple of the last item's `file_created_at` timestamp + `id`.
 
 The response includes `meta.next_cursor`, `meta.next_cursor_id`, and `meta.has_more` so the client knows exactly where to resume.
 
@@ -100,7 +100,7 @@ The response includes `meta.next_cursor`, `meta.next_cursor_id`, and `meta.has_m
 
 Write-Ahead Logging allows concurrent reads while a single writer holds the lock. This is critical for the two-phase startup:
 - **Phase 1**: SQLite scan populates the database.
-- **Phase 2**: A separate read-only SQLite connection (opened directly, not from the pool) feeds the Tantivy reindex while the API continues serving requests.
+- **Phase 2**: A separate dedicated SQLite connection (opened directly via `db::open`, not from the pool; used only for reading) feeds the Tantivy reindex while the API continues serving requests. WAL permits the concurrent reader.
 
 Without this separation, `GET /api/v1/media` would block until the Tantivy index finished rebuilding.
 
@@ -123,7 +123,7 @@ A `DashMap` of per-key mutexes ensures only the first caller generates a thumbna
 ### Incremental Startup Indexing
 
 - **Phase 1** (`incremental_index`): scan watched folders → skip files whose size+mtime are unchanged (no re-hash, no ffprobe) → for new/modified files: SHA-256 hash → media detection → metadata extraction → SQLite upsert. Hash/ffprobe work runs with bounded concurrency (`INDEX_CONCURRENCY`, default: CPU cores capped at 8). Deletion cleanup diffs in memory and deletes in a single transaction.
-- **Phase 2** (`full_reindex`): read all SQLite rows through a **separate read-only connection** → rebuild the Tantivy index on a blocking thread.
+- **Phase 2** (`full_reindex`): read all SQLite rows through a **separate dedicated connection** (opened directly, not from the pool; used only for reading) → rebuild the Tantivy index on a blocking thread.
 
 Both phases run in a background `tokio::spawn` task, so the API is available immediately. The file-watcher event handler activates only after initial indexing completes; events accumulated during the scan are drained first (the full reindex captures those files anyway).
 
@@ -371,12 +371,14 @@ Browser (React SPA)
         ▼
 ┌────────────────────┐
 │ SQLite query:      │
-│ SELECT ... FROM     │
-│ media_items WHERE   │
-│ (created_at, id)    │
-│ < (?, ?) ORDER BY   │
-│ created_at DESC     │
-│ LIMIT ?             │
+│ SELECT ... FROM    │
+│ media_items WHERE  │
+│ (file_created_at,  │
+│ id) < (?, ?)       │
+│ ORDER BY           │
+│ file_created_at    │
+│ DESC, id DESC      │
+│ LIMIT ?            │
 └───────┬────────────┘
         │
         ▼
@@ -484,6 +486,7 @@ All routes are mounted under `/api/v1`.
 | `GET`  | `/health`                   | `routes::health`     | Health check — returns `{"status":"ok"}` |
 | `GET`  | `/media`                    | `routes::media::list`| List media items (cursor-based, infinite)|
 | `GET`  | `/media/:id`                | `routes::media::detail` | Single item with full metadata        |
+| `GET`  | `/media/:id/metadata`       | `routes::media::detail` | Structured metadata for a single item |
 | `GET`  | `/media/:id/thumbnail`      | `routes::media::thumbnail` | Thumbnail (WebP, cached)          |
 | `GET`  | `/media/:id/file`           | `routes::media::file`| Original file (streamed, Range requests) |
 | `GET`  | `/search`                   | `routes::search`     | Full-text search with cursor pagination  |
@@ -588,7 +591,7 @@ Where `{data_dir}` = `$XDG_DATA_HOME/imageviz` (Linux, falling back to `~/.local
 | --------------------- | --------------------------------- | -------------------------- |
 | Run dev server        | `cargo run` (port 3001)           | `npm run dev` (Vite proxied)|
 | Run all tests         | `cargo test`                      | `npm test` (Vitest)        |
-| Run single test       | `cargo test test_name`            | `npx vitest -t "test name"`|
+| Run single test       | `cargo test test_name`            | `npx vitest run -t "test name"` |
 | Lint                  | `cargo clippy -- -D warnings`     | `npm run lint`             |
 | Type check            | `cargo check`                     | `npm run typecheck`        |
 | Format check          | `cargo fmt --check`               | `npm run format:check`     |
