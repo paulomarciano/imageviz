@@ -2,7 +2,7 @@
 
 ## Project Status
 
-v0.8.0 — all 8 development waves complete (Wave 8: post-audit performance/resource/hygiene pass). Browser-based image/video viewer for large datasets (100K–1M files), designed for ComfyUI output with embedded PNG metadata.
+v0.8.0 — all 8 development waves complete (Wave 8: post-audit performance/resource/hygiene pass; follow-up tickets 8.29/8.30 pending). Browser-based image/video viewer for large datasets (100K–1M files), designed for ComfyUI output with embedded PNG metadata.
 
 ## Source of Truth
 
@@ -39,7 +39,7 @@ Frontend package manager is **npm**. Path alias `@/` → `./src/`.
 | `IMAGEVIZ_CACHE_DIR` | `{data_dir}/thumbnails` | Thumbnail cache location |
 | `IMAGEVIZ_TANTIVY_DIR` | `{data_dir}/tantivy` | Tantivy index directory |
 
-`{data_dir}` = `$XDG_DATA_HOME/imageviz` (Linux), `~/Library/Application Support/imageviz` (macOS), or `./data` (fallback).
+`{data_dir}` = `$XDG_DATA_HOME/imageviz` (Linux, falling back to `~/.local/share/imageviz`), `~/Library/Application Support/imageviz` (macOS), or `./data` (fallback).
 
 ## Architecture Notes
 
@@ -48,10 +48,10 @@ Frontend package manager is **npm**. Path alias `@/` → `./src/`.
 - **Indexing**: startup runs the **incremental** path — files whose size+mtime are unchanged are skipped before hashing (`run_index` core with a skip predicate shared by full/incremental wrappers). Phase 1 (hash/ffprobe) runs with bounded concurrency (`INDEX_CONCURRENCY`); deletion cleanup diffs in memory and deletes in one transaction.
 - **Thumbnails**: Content-addressed WebP cache (key = `{sha256[:16]}_{width}.webp`), generated directly into the cache dir (`{key}.tmp` + atomic rename; no `/tmp` staging). `spawn_blocking` for CPU-bound work. Per-checksum `Mutex`es in a `DashMap` prevent duplicate generation; entries are `Weak`-valued and evicted when the last holder releases. The `ThumbnailLimiter` semaphore (env `THUMBNAIL_CONCURRENCY`) is acquired **only on cache misses** — hits bypass it.
 - **File serving**: `tokio::fs::File` + streaming (never loads full file into memory). Range requests for video seeking. ETag/304 for caching.
-- **File watcher**: `notify` + `notify-debouncer-mini` (500ms debounce). `mpsc` channel decouples watcher from indexer. Watcher is held in `Arc<Mutex<FileWatcher>>`; `_watcher_guard` in `main.rs:116` keeps an `Arc::clone()` alive for server lifetime.
+- **File watcher**: `notify` + `notify-debouncer-mini` (500ms debounce). `mpsc` channel decouples watcher from indexer. Watcher is held in `Arc<Mutex<FileWatcher>>`; `_watcher_guard` in `main.rs:132` keeps an `Arc::clone()` alive for server lifetime.
 - **Security**: CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy applied as outermost Axum middleware layer.
 - **Input validation at route boundary**: limit [1–500], cursor ISO 8601, cursor_id UUID v4, search max 1000 chars, path max 4096 chars, no `..` traversal.
-- **`.cargo/config.toml`**: sets `-D warnings` for `x86_64-unknown-linux-gnu` **only** (not macOS). Default and release builds need no `--cfg tokio_unstable` (dev tooling is feature-gated, see below). The CI `frontend-e2e` job runs the default backend build.
+- **`backend/.cargo/config.toml`**: sets `-D warnings` for `x86_64-unknown-linux-gnu` **only** (not macOS). Default and release builds need no `--cfg tokio_unstable` (dev tooling is feature-gated, see below). The CI `frontend-e2e` job runs the default backend build.
 - **Supported media extensions**: PNG, JPG/JPEG, WebP, GIF, MP4, WebM, MOV (shared constant in `backend/src/media_types.rs`).
 - **Hidden files/dirs**: `is_hidden_path()` in `media_types.rs` ignores any path whose component starts with `.` — applied consistently by both scanner and watcher.
 - **Debug tooling** (feature-gated, off by default): `cargo run --features dev-tools` enables tokio-console plus `GET /debug/pprof/profile?seconds=5&format=svg` (mounted **outside** `/api/v1`, via `backend/src/profiler.rs`, compiled only under the feature). Running the dev-tools binary requires tokio built with the unstable cfg: `RUSTFLAGS="--cfg tokio_unstable" cargo run --features dev-tools` (note `RUSTFLAGS` overrides `.cargo/config.toml`). Backend logging is filtered via `RUST_LOG` (`EnvFilter::try_from_default_env()`); the request middleware emits exactly **one** line per request (the response line with duration).

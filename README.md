@@ -122,7 +122,7 @@ When files are added, deleted, or modified in watched folders, the grid updates 
 | `MIN_FREE_DISK_MB` | `500` | Minimum free disk space before aggressive eviction |
 | `CORS_ALLOW_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Comma-separated CORS origin allowlist |
 
-Where `{data_dir}` = `$XDG_DATA_HOME/imageviz` (Linux), `~/Library/Application Support/imageviz` (macOS), or `./data` (fallback).
+Where `{data_dir}` = `$XDG_DATA_HOME/imageviz` (Linux, falling back to `~/.local/share/imageviz`), `~/Library/Application Support/imageviz` (macOS), or `./data` (fallback).
 
 ## API
 

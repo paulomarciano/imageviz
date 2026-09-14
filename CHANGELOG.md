@@ -7,8 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.8.0] - 2026-09-13
 
-Wave 8 — post-audit performance, resource-load, and hygiene pass (30 tickets from the
-v0.7.0 code review, `documents/code-review-kiss-dry-performance-resources.md`).
+Wave 8 — post-audit performance, resource-load, and hygiene pass (28 of 30 audit tickets;
+follow-ups 8.29/8.30 deferred) from the v0.7.0 code review,
+`documents/code-review-kiss-dry-performance-resources.md`.
 
 ### Added
 - Incremental startup indexing: unchanged files (same size + mtime) are skipped without
@@ -57,7 +58,7 @@ v0.7.0 code review, `documents/code-review-kiss-dry-performance-resources.md`).
   connection — a latent test-correctness trap)
 
 ### Removed
-- Write-only `thumbnail_path` column and its per-thumbnail-request UPDATE (migration)
+- Write-only `thumbnail_path` column and its per-thumbnail-request UPDATE (migration v005)
 - Per-cache-miss full-directory eviction scan (the 5-minute timer covers eviction)
 - Dead code: `IndexManager::refresh()`, `Mutex<Option<IndexWriter>>` impossible state,
   redundant `unsafe impl Send/Sync` in `db/pool.rs`, unreachable JSON-blob fallback in
