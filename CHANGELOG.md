@@ -5,6 +5,64 @@ All notable changes to ImageViz are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-09-13
+
+Wave 8 — post-audit performance, resource-load, and hygiene pass (30 tickets from the
+v0.7.0 code review, `documents/code-review-kiss-dry-performance-resources.md`).
+
+### Added
+- Incremental startup indexing: unchanged files (same size + mtime) are skipped without
+  re-hashing — warm restarts no longer re-hash the whole library (was: full SHA-256 of
+  every file on every launch)
+- Parallel Phase-1 indexing with bounded concurrency (`INDEX_CONCURRENCY`, default: CPU
+  cores capped at 8; was: one file at a time)
+- `CORS_ALLOW_ORIGINS` env var: comma-separated origin allowlist (was: `CorsLayer::permissive()`)
+- `dev-tools` Cargo feature (off by default): tokio-console + `/debug/pprof` endpoint are
+  no longer compiled into release builds; releases no longer require `--cfg tokio_unstable`
+- SQLite migration v004: `watched_folders` table becomes the single source of truth; the
+  legacy `config(key='watched_folders')` JSON blob is imported once and never read again
+- `AppError` enum with `IntoResponse` replacing ~20 hand-written error tuples across routes
+
+### Changed
+- Startup index runs the incremental path (`run_index` core shared with the full wrapper;
+  deletion cleanup diffs in memory and deletes in a single transaction)
+- Thumbnails generate directly into the content-addressed cache (`{key}.tmp` + rename) —
+  the never-cleaned `/tmp` staging cache and its path-keyed temp files are removed
+- Thumbnail lock map is checksum-keyed with weak-value eviction (was: unbounded per-key
+  `DashMap` that grew forever)
+- Thumbnail semaphore is acquired only on cache misses (cache hits no longer queue behind
+  in-flight generations)
+- Search uses Tantivy `MultiCollector` — one index traversal per query (was: two)
+- Total-count cache is keyed per mime filter and no query runs while holding the lock
+- Media path resolution: single `LEFT JOIN` query + async existence checks (was: 3 queries
+  + blocking `std::fs::exists()` on the request path)
+- Stats endpoint folds COUNT/SUM/MAX into a single scan; the frontend settings panel
+  refreshes via SSE events instead of polling every 5 s
+- Request logging emits one line per request (dropped the redundant `→ request` line);
+  tokio runtime uses default worker count instead of hard-coded 4
+- Watcher loads watched-folder config once per event batch (was: per deletion event)
+- Thumbnail downscale is single-pass (`ImageReader` + `thumbnail()`) with a decode-size cap,
+  bounding transient memory spikes on large sources
+- `.mov` files are detected via the ffprobe video path (was: accepted by the scanner but
+  rejected by detection, erroring on every startup)
+- `.png` metadata serialization and ISO timestamp formatting each live in one shared
+  function (previously duplicated between indexer and watcher)
+- Frontend: single data layer shared by grid and detail view (search sort/mime-filter atoms
+  honored everywhere; arrow-key order always matches grid order), shared `useEscape` hook,
+  shared `formatFileSize` (GB/TB), typed `put<T>()` client helper, dead SSE `onmessage`
+  branch removed
+
+### Fixed
+- In-memory test pool uses a single shared connection (was: one empty database per pooled
+  connection — a latent test-correctness trap)
+
+### Removed
+- Write-only `thumbnail_path` column and its per-thumbnail-request UPDATE (migration)
+- Per-cache-miss full-directory eviction scan (the 5-minute timer covers eviction)
+- Dead code: `IndexManager::refresh()`, `Mutex<Option<IndexWriter>>` impossible state,
+  redundant `unsafe impl Send/Sync` in `db/pool.rs`, unreachable JSON-blob fallback in
+  media path resolution
+
 ## [0.7.0] - 2026-05-17
 
 ### Added
@@ -146,6 +204,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SQLite database schema (media_items, config tables with indexes)
 - Test fixture generation script (`scripts/generate-fixtures.sh`)
 
+[0.8.0]: https://github.com/paulomarciano/imageviz/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/paulomarciano/imageviz/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/paulomarciano/imageviz/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/paulomarciano/imageviz/compare/v0.4.0...v0.5.0

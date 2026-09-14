@@ -118,6 +118,7 @@ When files are added, deleted, or modified in watched folders, the grid updates 
 | `REQUEST_TIMEOUT_SECS` | `60` | Default HTTP request timeout in seconds |
 | `THUMBNAIL_CONCURRENCY` | `4` | Max concurrent thumbnail generations |
 | `THUMBNAIL_CACHE_MAX_MB` | `2000` | Max thumbnail cache size in MB (0 = unlimited) |
+| `INDEX_CONCURRENCY` | CPU cores capped at `8` | Max concurrently processed files during indexing |
 | `MIN_FREE_DISK_MB` | `500` | Minimum free disk space before aggressive eviction |
 | `CORS_ALLOW_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Comma-separated CORS origin allowlist |
 

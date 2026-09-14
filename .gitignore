@@ -31,6 +31,8 @@ rust_out
 coverage/
 coverage-*.json
 *.lcov
+frontend/test-results/
+frontend/playwright-report/
 
 # Session / temp files
 .tmp/
