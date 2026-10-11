@@ -121,10 +121,9 @@ impl FileWatcher {
 
 fn convert_event(event: &Event) -> Option<FileEvent> {
     match event.kind {
-        EventKind::Create(_) => Some(FileEvent::Created {
-            path: event.paths.first()?.clone(),
-        }),
-        EventKind::Modify(_) => Some(FileEvent::Modified {
+        // Create and Modify both surface as Modified — the event kind is
+        // inferred from path existence at handling time (see Test Strategy).
+        EventKind::Create(_) | EventKind::Modify(_) => Some(FileEvent::Modified {
             path: event.paths.first()?.clone(),
         }),
         EventKind::Remove(_) => Some(FileEvent::Deleted {
@@ -151,7 +150,7 @@ fn convert_event(event: &Event) -> Option<FileEvent> {
 
 ```rust
 #[tokio::test]
-async fn test_watcher_detects_new_file() {
+async fn test_watcher_detects_genuine_write() {
     let dir = tempfile::tempdir().unwrap();
     let (watcher, mut rx) = FileWatcher::new(&[dir.path().to_path_buf()]).unwrap();
     
@@ -162,8 +161,9 @@ async fn test_watcher_detects_new_file() {
     tokio::time::sleep(Duration::from_millis(800)).await;
     
     let events = rx.try_recv().unwrap_or_default();
-    let created = events.iter().any(|e| matches!(e, FileEvent::Created { .. }));
-    assert!(created, "Watcher should detect created file");
+    // Created and Modified both surface as Modified (inferred from path existence).
+    let found = events.iter().any(|e| matches!(e, FileEvent::Modified { .. }));
+    assert!(found, "Watcher should detect a new/created file");
 }
 
 #[tokio::test]
@@ -181,7 +181,7 @@ async fn test_watcher_ignores_hidden_files() {
 }
 
 #[tokio::test]
-async fn test_watcher_detects_deletion() {
+async fn test_watcher_detects_genuine_deletion() {
     let dir = tempfile::tempdir().unwrap();
     let file_path = dir.path().join("to_delete.png");
     std::fs::write(&file_path, b"data").unwrap();
@@ -196,6 +196,8 @@ async fn test_watcher_detects_deletion() {
     assert!(deleted, "Watcher should detect deleted file");
 }
 ```
+
+**Note:** the watcher never emits `FileEvent::Created` — it infers `Created`/`Modified` from whether the path exists on disk, so new and changed files both surface as `FileEvent::Modified`. The suite also includes `test_watcher_ignores_read_only_access`, a regression guard asserting that a read-only open produces no event (notify's inotify backend watches `IN_OPEN`, which otherwise feeds the watcher's own reads back into the event handler as a self-sustaining loop).
 
 ## External Docs
 
