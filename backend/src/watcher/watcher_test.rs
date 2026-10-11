@@ -50,6 +50,61 @@ async fn count_events(rx: &mut mpsc::Receiver<Vec<FileEvent>>) -> usize {
     }
 }
 
+/// Regression test for the self-sustaining watcher feedback loop.
+///
+/// On Linux, notify's inotify backend watches `IN_OPEN`, so *reading* a
+/// watched file emits `EventKind::Access(AccessKind::Open(_))`. The indexer
+/// reads media files (hashing, metadata extraction), so forwarding those
+/// events to the debouncer made the backend re-index forever. A pure
+/// read-only open must now produce **no** `FileEvent` at all.
+#[tokio::test]
+async fn test_watcher_ignores_read_only_access() {
+    let (_dir, dir_path) = setup_temp_dir();
+
+    // Create the media file *before* the watcher starts so that creation
+    // itself cannot contribute an event.
+    let file_path = dir_path.join("existing.png");
+    std::fs::write(&file_path, b"png data").unwrap();
+
+    let (watcher, mut rx) = FileWatcher::new(std::slice::from_ref(&dir_path)).unwrap();
+
+    // Let the debouncer settle; watches are registered synchronously by
+    // `FileWatcher::new`, so this is just belt-and-braces.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Read-only open => IN_OPEN => Access(Open). This must be filtered out
+    // before it reaches the debouncer.
+    let bytes = std::fs::read(&file_path).unwrap();
+    assert_eq!(bytes.as_slice(), b"png data".as_slice());
+
+    // Wait for well over one debounce cycle (500ms) plus margin.
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+
+    let count = count_events(&mut rx).await;
+    assert_eq!(count, 0, "read-only access must not produce a FileEvent");
+
+    drop(watcher);
+}
+
+/// A genuine write must still reach the debouncer after access-event
+/// filtering. A normal write emits CREATE/MODIFY (non-access) plus an
+/// `IN_OPEN`/`IN_CLOSE_WRITE` pair, so the non-access kinds must survive.
+#[tokio::test]
+async fn test_watcher_detects_genuine_write() {
+    let (_dir, dir_path) = setup_temp_dir();
+    let (watcher, mut rx) = FileWatcher::new(std::slice::from_ref(&dir_path)).unwrap();
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let file_path = dir_path.join("written.png");
+    std::fs::write(&file_path, b"fresh bytes").unwrap();
+
+    let found = wait_for_event(&mut rx, |e| matches!(e, FileEvent::Modified { .. })).await;
+    assert!(found, "a genuine write must still produce a FileEvent");
+
+    drop(watcher);
+}
+
 #[tokio::test]
 #[ignore]
 async fn test_watcher_detects_new_file() {
