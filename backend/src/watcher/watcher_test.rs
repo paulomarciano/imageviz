@@ -1,5 +1,10 @@
 use super::*;
 use crate::media_types::is_supported_extension;
+use notify::EventKind;
+use notify::event::{
+    AccessKind, AccessMode, CreateKind, DataChange, MetadataKind, ModifyKind, RemoveKind,
+    RenameMode,
+};
 use std::path::Path;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -105,18 +110,24 @@ async fn test_watcher_detects_genuine_write() {
     drop(watcher);
 }
 
+/// A genuine deletion must still reach the debouncer after access-event
+/// filtering (the filter's blast radius includes `Access*`, so `Remove` is a
+/// valuable complement to the read-only regression guard).
 #[tokio::test]
-#[ignore]
-async fn test_watcher_detects_new_file() {
+async fn test_watcher_detects_genuine_deletion() {
     let (_dir, dir_path) = setup_temp_dir();
+
+    // Create before the watcher starts so creation cannot contribute an event.
+    let file_path = dir_path.join("to_delete.png");
+    std::fs::write(&file_path, b"data").unwrap();
+
     let (watcher, mut rx) = FileWatcher::new(std::slice::from_ref(&dir_path)).unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let file_path = dir_path.join("new_image.png");
-    std::fs::write(&file_path, b"test image data").unwrap();
+    std::fs::remove_file(&file_path).unwrap();
 
-    // The debouncer emits Modified (file exists after creation)
-    let found = wait_for_event(&mut rx, |e| matches!(e, FileEvent::Modified { .. })).await;
-    assert!(found, "Watcher should detect a newly created .png file");
+    let found = wait_for_event(&mut rx, |e| matches!(e, FileEvent::Deleted { .. })).await;
+    assert!(found, "a genuine deletion must still produce a Deleted FileEvent");
 
     drop(watcher);
 }
@@ -267,4 +278,50 @@ fn test_is_supported_extension_rejects_txt() {
 #[test]
 fn test_is_supported_extension_rejects_no_extension() {
     assert!(!is_supported_extension(Path::new("Makefile")));
+}
+
+// ---------------------------------------------------------------------------
+// `should_forward` — platform-independent filter tests
+//
+// The watcher-level regression tests only exercise the filter on inotify
+// (where reads emit `IN_OPEN`); these guard the predicate itself on every
+// platform.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_should_forward_drops_access_open() {
+    let kind = EventKind::Access(AccessKind::Open(AccessMode::Any));
+    assert!(!should_forward(&kind), "IN_OPEN back-feed must be dropped");
+}
+
+#[test]
+fn test_should_forward_drops_access_close() {
+    for mode in [AccessMode::Write, AccessMode::Read] {
+        let kind = EventKind::Access(AccessKind::Close(mode));
+        assert!(!should_forward(&kind), "close access must be dropped");
+    }
+}
+
+#[test]
+fn test_should_forward_drops_metadata_only_modify() {
+    for meta in [MetadataKind::Any, MetadataKind::AccessTime, MetadataKind::Permissions] {
+        let kind = EventKind::Modify(ModifyKind::Metadata(meta));
+        assert!(!should_forward(&kind), "metadata-only modify must be dropped: {kind:?}");
+    }
+}
+
+#[test]
+fn test_should_forward_keeps_content_changes() {
+    let kept = [
+        EventKind::Create(CreateKind::File),
+        EventKind::Create(CreateKind::Folder),
+        EventKind::Modify(ModifyKind::Data(DataChange::Any)),
+        EventKind::Modify(ModifyKind::Data(DataChange::Content)),
+        EventKind::Modify(ModifyKind::Name(RenameMode::Any)),
+        EventKind::Remove(RemoveKind::File),
+        EventKind::Any,
+    ];
+    for kind in kept {
+        assert!(should_forward(&kind), "content change must be forwarded: {kind:?}");
+    }
 }
