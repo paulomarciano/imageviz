@@ -37,23 +37,26 @@ impl FileEvent {
 
 /// Return `true` if a notify event should be forwarded to the debouncer.
 ///
-/// Two kinds of self-inflicted events are dropped, both caused by ImageViz's
-/// own reads of watched files (hashing in `scanner::hasher`, metadata and
-/// ffprobe detection) feeding back into the event handler:
+/// Two kinds of events are dropped:
 ///
 /// - **`Access`** — notify's inotify backend watches `IN_OPEN`, so *opening a
 ///   watched file for reading* emits `EventKind::Access(AccessKind::Open(_))`.
-/// - **`Modify(Metadata)`** — a read can bump a file's access time, which the
-///   kernel reports as `IN_ATTRIB` → `Modify(ModifyKind::Metadata(_))`. On
-///   `strictatime` mounts every re-read rewrites atime, re-entering the same
-///   loop. (Metadata changes never alter content, and ImageViz derives
-///   `file_modified_at` from `IN_MODIFY`/`IN_CREATE`, so dropping them is
-///   safe.)
+///   ImageViz reads every watched media file while indexing (hashing in
+///   `scanner::hasher`, metadata and ffprobe detection), so these events feed
+///   straight back into the handler — a self-sustaining busy loop that burns a
+///   CPU core indefinitely. This is the loop that must not re-enter the
+///   debouncer.
+/// - **`Modify(Metadata)`** — defensive. Metadata-only changes (`IN_ATTRIB` on
+///   inotify: chmod/chown/xattr/explicit `utimes`; `NOTE_ATTRIB` on kqueue)
+///   never alter content, and ImageViz derives `file_modified_at` from the
+///   filesystem at index time — never from watcher events — so dropping them
+///   is safe. This cannot mask a content change: every notify backend reports
+///   content writes as `Create`/`Modify(Data)`/`Modify(Name)`.
 ///
-/// Everything that signals real content change — `Create`, `Modify(Data)`,
-/// `Modify(Name)`, `Remove`, `Any` — is forwarded unchanged.
+/// Everything else — `Create`, `Modify(Data)`, `Modify(Name)`, `Remove`,
+/// `Any`, `Other` — is forwarded unchanged.
 fn should_forward(kind: &EventKind) -> bool {
-    !kind.is_access() && !matches!(kind, EventKind::Modify(ModifyKind::Metadata(_)))
+    !matches!(kind, EventKind::Access(_) | EventKind::Modify(ModifyKind::Metadata(_)))
 }
 
 /// A [`notify::Watcher`] adaptor that drops self-inflicted events before they
@@ -146,9 +149,10 @@ impl FileWatcher {
         let (tx, rx) = mpsc::channel(256);
         let tx_clone = tx.clone();
 
-        // Mirror `new_debouncer`'s default 500ms window while swapping in
-        // `AccessFilteringWatcher`, which drops the `IN_OPEN` access events our
-        // own reads generate (see that type's docs).
+        // Explicit 500ms window (also `Config::default()`) while swapping in
+        // `AccessFilteringWatcher`, which drops access events from our own
+        // reads and metadata-only churn before they reach the debouncer — see
+        // `should_forward`.
         let config = Config::default().with_timeout(Duration::from_millis(500));
         let mut debouncer = new_debouncer_opt::<_, AccessFilteringWatcher>(
             config,

@@ -85,10 +85,12 @@ async fn test_watcher_ignores_read_only_access() {
     // Wait for well over one debounce cycle (500ms) plus margin.
     tokio::time::sleep(Duration::from_millis(1200)).await;
 
+    // Drop the watcher first so the channel closes and `count_events` returns
+    // as soon as it drains (any already-sent event is still counted).
+    drop(watcher);
+
     let count = count_events(&mut rx).await;
     assert_eq!(count, 0, "read-only access must not produce a FileEvent");
-
-    drop(watcher);
 }
 
 /// A genuine write must still reach the debouncer after access-event
@@ -128,26 +130,6 @@ async fn test_watcher_detects_genuine_deletion() {
 
     let found = wait_for_event(&mut rx, |e| matches!(e, FileEvent::Deleted { .. })).await;
     assert!(found, "a genuine deletion must still produce a Deleted FileEvent");
-
-    drop(watcher);
-}
-
-#[tokio::test]
-#[ignore]
-async fn test_watcher_detects_deletion() {
-    let (_dir, dir_path) = setup_temp_dir();
-    let file_path = dir_path.join("to_delete.png");
-    std::fs::write(&file_path, b"data").unwrap();
-
-    let (watcher, mut rx) = FileWatcher::new(std::slice::from_ref(&dir_path)).unwrap();
-
-    // Wait a bit for watcher to initialize
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    std::fs::remove_file(&file_path).unwrap();
-
-    let found = wait_for_event(&mut rx, |e| matches!(e, FileEvent::Deleted { .. })).await;
-    assert!(found, "Watcher should detect deleted file");
 
     drop(watcher);
 }
@@ -304,7 +286,15 @@ fn test_should_forward_drops_access_close() {
 
 #[test]
 fn test_should_forward_drops_metadata_only_modify() {
-    for meta in [MetadataKind::Any, MetadataKind::AccessTime, MetadataKind::Permissions] {
+    for meta in [
+        MetadataKind::Any,
+        MetadataKind::AccessTime,
+        MetadataKind::WriteTime,
+        MetadataKind::Permissions,
+        MetadataKind::Ownership,
+        MetadataKind::Extended,
+        MetadataKind::Other,
+    ] {
         let kind = EventKind::Modify(ModifyKind::Metadata(meta));
         assert!(!should_forward(&kind), "metadata-only modify must be dropped: {kind:?}");
     }
@@ -313,13 +303,19 @@ fn test_should_forward_drops_metadata_only_modify() {
 #[test]
 fn test_should_forward_keeps_content_changes() {
     let kept = [
+        EventKind::Create(CreateKind::Any),
         EventKind::Create(CreateKind::File),
         EventKind::Create(CreateKind::Folder),
+        EventKind::Modify(ModifyKind::Any),
         EventKind::Modify(ModifyKind::Data(DataChange::Any)),
+        EventKind::Modify(ModifyKind::Data(DataChange::Size)),
         EventKind::Modify(ModifyKind::Data(DataChange::Content)),
         EventKind::Modify(ModifyKind::Name(RenameMode::Any)),
+        EventKind::Modify(ModifyKind::Other),
+        EventKind::Remove(RemoveKind::Any),
         EventKind::Remove(RemoveKind::File),
         EventKind::Any,
+        EventKind::Other,
     ];
     for kind in kept {
         assert!(should_forward(&kind), "content change must be forwarded: {kind:?}");
