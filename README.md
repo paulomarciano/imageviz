@@ -182,7 +182,7 @@ imageviz/
 │   ├── e2e/                    # Playwright E2E tests
 │   └── playwright.config.ts
 ├── test-fixtures/              # Sample media files for testing
-└── documents/                  # Development plans and tickets
+└── documents/                  # Development plans + archived tickets (new tickets live in Gitea)
 ```
 
 ## Development
@@ -227,11 +227,14 @@ Requires **ffmpeg** on PATH. Generates PNGs with ComfyUI-style tEXt chunks and s
 
 ## Contributing
 
-1. **Read the plan** — Start with [documents/plans/development-plan.md](documents/plans/development-plan.md) for architecture, API contract, and task breakdown
-2. **TDD workflow** — Write a failing test first, implement the minimum code, refactor, verify with `cargo test` / `npm test`
-3. **Code style** — Run `cargo fmt && cargo clippy -- -D warnings` (backend) and `npx prettier --check . && npx eslint .` (frontend) before committing
-4. **Commits** — Use descriptive commit messages. Each task generates at least one commit
-5. **Tests** — All tests must pass before opening a PR. New features require tests
+Project management happens in the local **Gitea** instance (repo `paulo/imageviz` at http://localhost:3000/paulo/imageviz) — "ticket N" / "PR N" always refer to Gitea issues/PRs there.
+
+1. **Read the plan** — Start with [documents/plans/development-plan.md](documents/plans/development-plan.md) for architecture, API contract, and task breakdown (mirrored in the Gitea wiki)
+2. **Ticket first** — Every commit-generating change starts as a Gitea issue (docs-only changes included); scope lives in the issue body
+3. **Branch** — `git checkout -b ticket-<N>-<slug>` off `main` (push to the `gitea` remote, not GitHub)
+4. **TDD workflow** — Write a failing test first, implement the minimum code, refactor, verify with `cargo test` / `npm test`; every commit message carries the ticket ref (`(#N)`)
+5. **Code style** — Run `cargo fmt && cargo clippy -- -D warnings` (backend) and `npx prettier --check . && npx eslint .` (frontend) before committing
+6. **PR** — Push the branch to the `gitea` remote and open a PR against `main` with `Closes #N`; all tests must pass (CI-parity checks run locally — GitHub Actions doesn't run on Gitea PRs); code-review findings are posted as comments on the PR
 
 See [documents/plans/development-plan.md§7](documents/plans/development-plan.md#7-testing-strategy-tdd-first) for the full testing strategy.
 
