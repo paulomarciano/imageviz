@@ -151,11 +151,12 @@ export function DetailView({ items, currentIndex, onNavigate, onClose }: DetailV
           </button>
         )}
 
-        {/* Next arrow — positioned to avoid overlapping the 320px metadata panel */}
+        {/* Next arrow — the metadata panel is a flex sibling, so the viewer
+            area already excludes it; inset symmetrically like the prev arrow. */}
         {currentIndex < items.length - 1 && (
           <button
             onClick={() => onNavigate(currentIndex + 1)}
-            className="absolute right-[340px] top-1/2 -translate-y-1/2 z-10 w-10 h-10 flex items-center justify-center
+            className="absolute right-4 top-1/2 -translate-y-1/2 z-10 w-10 h-10 flex items-center justify-center
                        rounded-full bg-black/50 hover:bg-black/70 text-white text-xl transition-colors"
             aria-label="Next item"
           >
