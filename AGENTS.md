@@ -2,11 +2,11 @@
 
 ## Project Status
 
-v0.8.0 — all 8 development waves complete (Wave 8: post-audit performance/resource/hygiene pass; follow-up tickets 8.29/8.30 pending). Browser-based image/video viewer for large datasets (100K–1M files), designed for ComfyUI output with embedded PNG metadata.
+v0.8.0 — all 8 development waves complete (Wave 8: post-audit performance/resource/hygiene pass; follow-up tickets 8.29/8.30 pending — Gitea issues #107/#108). Browser-based image/video viewer for large datasets (100K–1M files), designed for ComfyUI output with embedded PNG metadata.
 
 ## Source of Truth
 
-**`documents/plans/development-plan.md`** (v2.0, 946 lines) — architecture, API contract, DB schema, Tantivy schema, all 8 waves. Read before any implementation.
+**`documents/plans/development-plan.md`** (v2.0, 946 lines) — architecture, API contract, DB schema, Tantivy schema, all 8 waves. Read before any implementation. Plans live twice: the repo copy is the source of truth, mirrored as provenance-quoted pages in the Gitea wiki (see Project Management — Gitea).
 
 ## Key Commands
 
@@ -68,9 +68,21 @@ Production: `./scripts/build.sh` (release-build both sides) · `./scripts/start.
 - **Frontend integration tests**: MSW handlers at `src/test-utils/msw-handlers.ts`. Render helpers at `src/test-utils/render-utils.tsx` wrap QueryClient + Jotai Provider.
 - **E2E** (Playwright): `npx playwright test` from `frontend/`. Requires `npx playwright install chromium` once. Auto-starts both servers via `webServer` config. `workers: 1` (serial, shared backend state), `retries: 1`.
 
+## Project Management — Gitea (tool of record)
+
+All project management happens in the local Gitea instance (adopted 2026-11-18): repo **`paulo/imageviz`** at http://localhost:3000/paulo/imageviz — the `gitea` git remote (GitHub `origin` stays untouched). Instance ops, API cheat sheet, and binding gotchas: `~/projetos/project-management/gitea/README.md` + `MIGRATION_RUNBOOK.md` (§7–8).
+
+- **Ticket and PR IDs mean Gitea.** Every "ticket N" / "PR N" in docs, plans, and commit messages refers to a Gitea issue/PR at `http://localhost:3000/paulo/imageviz/issues/N` — issues and PRs share one numbering space. Issues #1–108 are the historical mirror of `documents/tickets/` (imported closed, 1:1 with the ticket files); new tickets start after the highest issue/PR index (currently #109).
+- **Every commit-generating change is ticket-first in Gitea** — create/pick an issue **before** implementation begins (no ticket → no code; docs-only changes get a ticket too). Scope lives in the issue body; bug issues include **Steps to Reproduce** (observed vs. expected behavior).
+- **One ticket → one branch → one PR**: branch `ticket-<N>-<slug>` off `main`; every commit message carries `(#N)` so Gitea links them (keep the conventional prefix — `feat:` / `fix:` / `docs:`).
+- **Land via PR against `main`**: push the branch to the `gitea` remote, open the pull request with `Closes #N` in the body, run the CI-parity checks locally (GitHub Actions does **not** run on Gitea pushes/PRs — see CI Pipeline), and merge when green. **CodeReviewer findings get posted as comments on the PR** so the review trail lives there. Never push flow branches to GitHub `origin`.
+- **Plans live twice**: the repo copy (`documents/plans/*.md` — source of truth) and a provenance-quoted page in the Gitea wiki. After adding or updating a plan, re-seed: `python3 ~/projetos/project-management/gitea/tools/seed_wiki.py imageviz`.
+- **Bigger plans become epics**: one or more long-lived issues labeled `epic`, each referencing the plan and holding a `- [ ] #N` task list of its child tickets, tracked on an **epic-specific kanban board** (user-level project, created via the API — runbook gotcha 7; the **imageviz** board is the day-to-day board). Smaller plans ship as plain tickets without an epic.
+- **No new markdown tickets**: `documents/tickets/` is a frozen historical archive — never add files to it. Ticket status lives in Gitea (open/closed on the issue); the wave tables in `documents/tickets/README.md` are no longer maintained as an index.
+
 ## TDD Workflow (Mandatory)
 
-Per task: write failing test → implement minimum → refactor while green → add edge cases → verify with `cargo test` / `npm test`.
+Per ticket: create/pick the Gitea issue, branch `ticket-<N>-<slug>` off `main` → write failing test → implement minimum → refactor while green → add edge cases → verify with `cargo test` / `npm test` → PR with `Closes #N`.
 
 ## CI Pipeline (`.github/workflows/ci.yml`)
 
@@ -81,6 +93,8 @@ Triggers on **every push** (any branch) and PRs to `main`. Five parallel jobs, c
 4. **frontend-test** (15m): `npm ci` → `tsc --noEmit` → `vitest run`
 5. **frontend-e2e** (30m): `npm ci` → `generate-fixtures.sh` → `playwright install chromium` → `playwright test`
 
+**CI runs on GitHub only.** Gitea branches/PRs do **not** trigger it — before merging a PR, run the CI-parity checks locally (backend: `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo clippy --features dev-tools -- -D warnings`, `cargo test`; frontend: `npm run lint`, `npm run typecheck`, `npm test`; e2e when UI-affecting).
+
 ## Release Process
 
 1. Bump the version in **both** manifests: `backend/Cargo.toml` and `frontend/package.json` (keep in sync).
@@ -90,8 +104,9 @@ Triggers on **every push** (any branch) and PRs to `main`. Five parallel jobs, c
 
 ## Git Conventions
 
-- Remote: `git@github.com:paulomarciano/imageviz.git`.
-- **After every commit**, spawn a `CodeReviewer` subagent (new invocation, not resumed). Pass session context path. Address critical/warning issues before additional commits.
+- Remotes: `gitea` → `http://localhost:3000/paulo/imageviz.git` (all flow branches + PRs land here) · `origin` → `git@github.com:paulomarciano/imageviz.git` (public mirror; untouched by the ticket flow).
+- **Every commit-generating change follows the Gitea flow** — ticket-first, branch `ticket-<N>-<slug>` off `main`, commits carry `(#N)`, land via PR against `main` (see Project Management — Gitea).
+- **After every commit**, spawn a `CodeReviewer` subagent (new invocation, not resumed). Pass session context path. Address critical/warning issues before additional commits, and **post the review findings as comments on the Gitea PR** — the review trail lives with the PR (before the PR is open, note findings on the ticket).
 
 ## Formatter & Lint Settings
 
