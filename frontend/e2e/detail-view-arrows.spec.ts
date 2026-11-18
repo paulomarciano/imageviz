@@ -7,7 +7,9 @@ const __dirname = path.dirname(__filename);
 /** Absolute path to the project root's test-fixtures directory. */
 const FIXTURES_DIR = path.resolve(__dirname, '../../test-fixtures');
 
-/** Helpers shared with the other specs: configure fixtures as a watched folder via the API. */
+/** Setup matching the other specs: configure fixtures as a watched folder via the API.
+ * (Same pattern as basic-navigation/search-and-view — extracting a shared helper is
+ * tracked in a follow-up ticket; see PR #112 review.) */
 async function setupTestData(page: Page) {
   const response = await page.request.put('http://localhost:3001/api/v1/config', {
     data: {
@@ -53,7 +55,7 @@ test.describe('Detail View Arrow Placement', () => {
       page.locator('button[aria-label="Close detail view"]'),
     ).toBeVisible({ timeout: 5000 });
 
-    // Index 0 hides the prev arrow; step right so both arrows render (8 fixtures).
+    // Index 0 hides the prev arrow; step right so both arrows render (≥2 fixtures).
     await expect(page.getByRole('button', { name: 'Next item' })).toBeVisible({
       timeout: 5000,
     });
@@ -73,7 +75,9 @@ test.describe('Detail View Arrow Placement', () => {
     expect(panelBox).not.toBeNull();
     expect(prevBox).not.toBeNull();
     expect(nextBox).not.toBeNull();
-    if (!dialogBox || !panelBox || !prevBox || !nextBox) return;
+    if (!dialogBox || !panelBox || !prevBox || !nextBox) {
+      throw new Error('boundingBox() returned null — geometry assertions would be vacuous');
+    }
 
     const viewerLeft = dialogBox.x;
     const viewerRight = panelBox.x;
